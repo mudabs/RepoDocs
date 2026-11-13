@@ -35,7 +35,7 @@ Milestone 1 CLI commands below are implemented. GitHub Actions, hosted UI, and a
 ## D. Claude Code / Codex
 1. Agent reads `AGENTS.md` and project docs.
 2. User asks for project documentation.
-3. Agent invokes the versioned JSON CLI with structured input, rather than inventing a separate parser.
+3. Agent invokes the CLI and consumes its versioned JSON output, rather than inventing a separate parser.
 4. Agent summarizes uncertain links and asks user for confirmation.
 5. Agent invokes generators/validators and reviews diffs.
 6. Agent may prepare the coordination-repository workflow/PR only with user approval.
