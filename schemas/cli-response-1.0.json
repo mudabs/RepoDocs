@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://repodocs.dev/schemas/cli-response-1.0.json",
+  "title": "RepoDocs CLI response",
+  "type": "object",
+  "required": ["schema_version", "command", "ok", "data", "errors", "warnings"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "command": {"type": "string", "minLength": 1},
+    "ok": {"type": "boolean"},
+    "data": {},
+    "errors": {"type": "array", "items": {"type": "string"}},
+    "warnings": {"type": "array", "items": {"type": "string"}}
+  },
+  "additionalProperties": false
+}

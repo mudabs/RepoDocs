@@ -1,28 +1,28 @@
 # RepoDocs Workflows
 
-All commands below are **illustrative proposals**, not verified working commands.
+Milestone 1 CLI commands below are implemented. GitHub Actions, hosted UI, and agent workflows remain implementation proposals unless noted otherwise.
 
 ## A. Local CLI: SmartCart
 1. Install CLI.
 2. `repodocs init smartcart`.
 3. `repodocs add ./smartcart-frontend` and `repodocs add ./smartcart-backend`.
-4. `repodocs scan --format json` produces source-evidenced findings and uncertainty.
+4. `repodocs scan --format json` produces versioned JSON findings with source evidence and uncertainty.
 5. User confirms or rejects ambiguous frontend-to-backend links.
-6. Configure optional AI (managed sign-in, BYO key, or local Ollama), or use deterministic mode.
-7. `repodocs generate --interactive` or noninteractive flags selects architecture, API, ERD, component, class docs.
-8. `repodocs validate` checks diagrams, references, and artifact ownership.
-9. Review local Markdown and Mermaid/PlantUML files.
-10. Commit manually or configure GitHub PR publication.
+6. Give explicit consent before sending repository content to the cloud BYO provider, configure redaction, or use local Ollama/local-only deterministic mode.
+7. `repodocs generate` selects the current deterministic architecture/component output; interactive scope selection and ERD/API expansion follow in later milestones.
+8. `repodocs validate` checks diagrams, references, artifact ownership, and required confirmations.
+9. Review local Markdown and Mermaid files.
+10. Full-project regeneration skips a no-op; commit manually or publish system documentation through the coordination repository.
 
 ## B. GitHub Actions
 1. User commits project config and workflow; grants required repository permissions.
 2. Source PR merges in frontend or backend.
-3. Action/coordination trigger starts on pinned project revisions.
+3. The coordination repository's Action starts on pinned, clean project revisions using explicit repository credentials.
 4. Analyze changes and dependent facts; initial MVP may safely regenerate all artifacts.
-5. Optional configured AI enrichment interprets affected evidence.
+5. Optional configured AI enrichment interprets curated, redacted evidence after consent; local-only mode remains available.
 6. Render and validate docs; skip no-op output.
-7. Open or update reviewable docs PR in correct repository/location.
-8. Maintainer reviews and merges. Avoid bot-triggered loops and duplicated PRs.
+7. Open or update a reviewable documentation PR in the coordination repository.
+8. Maintainer reviews and merges. CI fails when required confirmations are unresolved; avoid bot-triggered loops and duplicated PRs.
 
 ## C. Future hosted/self-hosted web UI
 1. Sign in and authorize GitHub App.
@@ -35,15 +35,15 @@ All commands below are **illustrative proposals**, not verified working commands
 ## D. Claude Code / Codex
 1. Agent reads `AGENTS.md` and project docs.
 2. User asks for project documentation.
-3. Agent invokes CLI with structured JSON, rather than inventing a separate parser.
+3. Agent invokes the CLI and consumes its versioned JSON output, rather than inventing a separate parser.
 4. Agent summarizes uncertain links and asks user for confirmation.
 5. Agent invokes generators/validators and reviews diffs.
-6. Agent may prepare workflow/PR only with user approval.
+6. Agent may prepare the coordination-repository workflow/PR only with user approval.
 7. Future MCP may expose the same core operations.
 
 ## AI access and honest UX
 - No account/key: deterministic local output, possibly less semantic depth.
 - Local Ollama: no cloud API key but requires installed model and suitable hardware.
-- BYO cloud provider: API key and network required.
+- BYO cloud provider: explicit consent, redaction, API key, and network required.
 - RepoDocs-managed AI: no provider key for end user, but needs RepoDocs identity, hosted service, quota, and costs.
 - Coding-agent AI: can assist via structured interface; do not assume agent subscriptions grant arbitrary API access to RepoDocs.

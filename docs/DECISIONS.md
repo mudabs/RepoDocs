@@ -1,6 +1,6 @@
 # Architecture Decision Log
 
-**Status:** Design decisions are conceptual, not evidence of implemented features.
+**Status:** Approved design baseline; Milestone 1 implementation is in progress.
 
 ## Accepted design baseline
 | ID | Decision | Rationale |
@@ -19,20 +19,29 @@
 | D12 | Initial ecosystems: Spring Boot, React, FastAPI | Focused deep support |
 | D13 | AI-first preferred UX; no-key deterministic/local alternatives | Quality with choice |
 | D14 | Agent-friendly noninteractive JSON CLI | Codex/Claude Code integration |
+| D15 | System IR is a versioned JSON graph of nodes, edges, evidence, and claims | Portable, inspectable contract for all engine stages |
+| D16 | Semantic identities are separate from source evidence and content hashes | Stable references without conflating identity, location, and bytes |
+| D17 | Cross-repository relationships remain candidates until explicitly confirmed | Prevents inferred links from becoming authoritative silently |
+| D18 | MVP AI providers are one cloud BYO provider and Ollama | AI remains central while keeping provider infrastructure replaceable |
+| D19 | External AI requires explicit consent, redaction, and a local-only mode | Protects private repository content and preserves deterministic operation |
+| D20 | Trusted built-in analyzers are Python modules; external analyzers use a versioned subprocess protocol | Fast MVP iteration with a language-neutral extension boundary |
+| D21 | Generated documentation uses dedicated paths, a manifest, and fails on unexpected edits | Protects human-authored documentation from silent overwrites |
+| D22 | Mermaid is the first diagram format for architecture/component and ERD; API documentation is Markdown | Limits rendering complexity while covering the MVP demo |
+| D23 | Changes use full-project regeneration with no-op detection | Predictable output before incremental impact analysis exists |
+| D24 | System documentation and documentation PRs use one coordination repository | Gives multi-repository publication one explicit ownership location |
+| D25 | CLI output is versioned JSON with explicit exit codes; CI fails on unresolved required confirmations | Reliable automation and safe handling of ambiguity |
+| D26 | Quality is evaluated with golden fixtures, precision/recall, provenance checks, and AI comparisons | Makes factual accuracy and AI contribution measurable |
+| D27 | Development proceeds from contracts to one Spring Boot slice, then multi-repository AI-enhanced MVP | Controls risk without reducing the final MVP goal |
+| D28 | RepoDocs is licensed under Apache 2.0 | Permissive adoption with an explicit patent grant |
 
-## Open decisions: require validation/approval
+## Remaining open decisions: require validation/approval
 | ID | Question | Key tradeoff |
 |---|---|---|
-| O01 | Core language/runtime | Python vs TypeScript vs polyglot analyzers |
-| O02 | Exact IR schema and extension mechanism | Generality vs semantic richness |
-| O03 | CLI command and configuration schema | UX and backward compatibility |
-| O04 | Managed AI availability and pricing | Zero-key convenience vs cost/privacy |
-| O05 | Cross-repo triggers and credentials | Reliability vs permissions/complexity |
-| O06 | Generated/manual documentation ownership model | Safe updates vs flexibility |
-| O07 | Mermaid/PlantUML MVP support matrix | Coverage vs maintenance |
+| O03 | Exact CLI command and configuration schema | UX and backward compatibility; output and exit semantics are settled by D25 |
+| O04 | Managed AI availability and pricing | Zero-key convenience vs cost/privacy; deferred beyond the MVP |
+| O05 | Exact cross-repo triggers and credentials | Reliability vs permissions/complexity; the coordination repository is settled by D24 |
 | O08 | Sequence diagram accuracy and evidence threshold | Value vs hallucination risk |
-| O09 | Open-source license | Adoption vs commercial options |
-| O10 | MVP scope/deadline feasibility | Depth vs breadth |
+| O10 | MVP fixture depth and deadline feasibility | Depth vs breadth; the milestone strategy is settled by D27 |
 | O11 | Local vs hosted project state migration | Simplicity vs synchronization |
 | O12 | AI agent-provided reasoning contract | Avoid duplicated LLM inference |
 
