@@ -1,36 +1,41 @@
 # RepoDocs Roadmap and Validation Checklist
 
-**Target:** November 30, 2026 MVP, high schedule risk. Do not interpret this as a delivery commitment.
+**Target:** November 30, 2026 MVP, high schedule risk. Do not interpret this as a delivery commitment. Milestone 1 implementation is in progress.
 
-## Phase 0: validate before coding
+## Phase 0: contracts and threat model
 - Independent architecture review and threat model.
 - Resolve the remaining CLI/configuration, credential, agent reasoning, and hosted-state questions; the approved baseline is recorded in `docs/DECISIONS.md`.
 - Define the versioned JSON IR, repository/project snapshots, evidence and claim states, plugin protocols, ownership rules, AI consent/redaction boundary, and publication policy.
 - Define contracts: project config, IR/evidence, analyzer plugin, generator plugin, sync/publication policy, security boundary.
 - Create representative SmartCart fixture repos and expected facts, evidence, diagrams, and AI comparison baselines.
 
-## Phase 1: smallest end-to-end vertical slice
-- CLI reads one Spring Boot repo and pinned revision.
-- A trusted built-in Python adapter extracts endpoints/services/entities with evidence.
+## Phase 1: foundation and first working CLI
+- Python package provides `init`, `add`, `scan`, `generate`, and `validate`.
+- Local CLI scans working trees, including uncommitted changes.
+- Safe file discovery, language detection, basic manifest analysis, and content fingerprints run without executing repository code.
 - Versioned JSON IR serializes locally with semantic IDs, evidence, and hashes.
-- One generator creates API Markdown and a Mermaid architecture/component diagram with deterministic output.
-- Validator checks diagram syntax, provenance, required confirmations, and the artifact manifest.
-- Tests prove reproducibility, deletions, no-op detection, evaluation metrics, and manual-file safety.
+- Deterministic Markdown and one Mermaid architecture/component diagram are generated with ownership protection.
+- Tests cover reproducibility, deletions, no-op detection, provenance, and manual-file safety.
 
-## Phase 2: multi-repo and AI
+## Phase 2: framework and multi-repository analysis
+- Add Spring Boot and React adapters with deeper framework-aware extraction.
+- Add supported PostgreSQL static schema extraction.
 - Add the React repository and cross-repo candidate matching for the SmartCart system.
-- Persist confirmation overrides.
-- Add AI adapter with structured evidence-constrained responses, one cloud BYO provider, and Ollama.
-- Add Mermaid ERD generation only when evidence supports it.
+- Persist confirmation overrides and add Mermaid ERD generation when evidence supports it.
 
-## Phase 3: GitHub automation
-- GitHub Action runner integration and permissions.
+## Phase 3: AI integration
+- Add evidence-bundle construction and structured claim validation.
+- Add one cloud BYO provider, Ollama, explicit consent, redaction, and deterministic fallback.
+- Measure deterministic-versus-AI output using golden fixtures.
+
+## Phase 4: GitHub automation
+- GitHub Action runner integration and permissions for pinned clean revisions.
 - Coordination-repository config for multi-repo projects.
 - Docs PR creation, no-op detection, loop prevention, concurrency controls.
 - CI failure for unresolved required confirmations.
 - End-to-end SmartCart change-to-docs-PR demonstration.
 
-## Phase 4: post-MVP
+## Phase 5: post-MVP
 - Hosted managed AI with quotas, privacy and cost controls.
 - Web dashboard and hosted/self-hosted workers.
 - More framework adapters, advanced UML, sequence verification, MCP, interactive diagrams, sophisticated incremental impact tracking.
@@ -47,4 +52,4 @@
 - All advertised limitations are visible in output.
 
 ## Agent's next action
-Produce a short architecture critique and an ordered implementation proposal. Ask for approval before making major decisions or creating a large issue backlog.
+Complete Milestone 1, validate it with fixture repositories, then report the remaining gaps before beginning framework-aware analysis.

@@ -34,12 +34,12 @@ Stages may iterate; AI does not automatically promote guesses to facts.
 ## Core modules and boundaries
 
 ### Ingestion
-Read local directories or pinned Git snapshots. Inventory files and dependencies; track exact repository revisions, dirty-tree state where applicable, source commits/diffs, and content hashes. Exclude binaries, vendored dependencies, generated output. Never execute arbitrary repository code during normal static analysis.
+Read local working trees or pinned Git snapshots. Local CLI scans include uncommitted changes and record the Git revision plus a working-tree content fingerprint. GitHub Actions use pinned, clean Git revisions. Inventory files and dependencies; track exact repository revisions, dirty-tree state where applicable, source commits/diffs, and content hashes. Exclude binaries, vendored dependencies, generated output. Never execute arbitrary repository code during normal static analysis.
 
 ### Analysis
 - L1: generic manifests, config, CI/CD, framework signatures.
 - L2: language syntax/semantic parsing, e.g. Tree-sitter and specialist tooling.
-- L3: framework adapters, initially Spring Boot, React, FastAPI.
+- L3: framework adapters, with deeper Spring Boot and React analysis in Milestone 2. FastAPI remains an extension target.
 Separate language parsers from framework adapters. Dynamic dispatch, reflection, runtime configuration, and generated code limit completeness.
 
 ### System IR
@@ -63,7 +63,7 @@ Choose artifact type, scope, required evidence, coverage, destination, and gener
 6. Parse/render with diagram tool, validate syntax and output; retry/fail with actionable diagnostics.
 7. Save editable `.mmd` and optional SVG/PNG, plus provenance manifest.
 
-Rendering is not AI drawing: Mermaid/PlantUML perform rendering/layout; Graphviz/ELK.js may be used for complex layouts. React Flow is a possible later interactive UI, not required by CLI. Sequence diagrams are particularly difficult: a call graph alone does not establish runtime ordering or branches; do not assert observed sequence without adequate evidence.
+Rendering is not AI drawing: Mermaid performs initial rendering/layout; PlantUML and Graphviz/ELK.js remain extension points. React Flow is a possible later interactive UI, not required by CLI. Sequence diagrams are particularly difficult: a call graph alone does not establish runtime ordering or branches; do not assert observed sequence without adequate evidence.
 
 ### Publishing
 Store repository-local docs in owning repos and system-wide docs in one configured coordination repository. Generated artifact manifests track ownership, hashes, source SHAs, versions, and dependencies. Preserve human-authored files and fail on unexpected edits. The GitHub Action creates reviewable PRs in the coordination repository, suppressing empty PRs and bot loops.
@@ -72,7 +72,7 @@ Store repository-local docs in owning repos and system-wide docs in one configur
 - CLI: local core engine, local config/cache/IR; no mandatory server or GitHub login; versioned JSON output and explicit exit codes.
 - GitHub Action: runs the same CLI on a runner; multi-repo access requires explicit credentials and the coordination repository. CI fails when required relationship confirmations remain unresolved.
 - Coding agents: noninteractive CLI/JSON; skills first, MCP later.
-- Future web: React/TypeScript UI, proposed FastAPI orchestration, background workers, PostgreSQL, optional Redis, Docker Compose self-hosting; hosted SaaS later.
+- Future web: React/TypeScript UI, proposed FastAPI orchestration, background workers, PostgreSQL, optional Redis, Docker Compose self-hosting; hosted SaaS later. It is not part of the current implementation.
 
 ## Security boundaries
 Untrusted repository inputs; file/path traversal protection, resource limits, sandboxing where necessary, no arbitrary builds, prompt-injection resistant AI input, secret redaction, explicit consent before external inference, local-only mode, least-privilege GitHub App/token, safe Markdown/SVG rendering, tenancy separation in hosted mode.

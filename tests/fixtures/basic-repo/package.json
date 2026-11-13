@@ -1,0 +1,9 @@
+{
+  "name": "basic-fixture",
+  "dependencies": {
+    "react": "^18.0.0"
+  },
+  "devDependencies": {
+    "pytest": "^8.0.0"
+  }
+}
