@@ -1,6 +1,6 @@
 # Architecture Decision Log
 
-**Status:** Approved design baseline; implementation has not begun.
+**Status:** Approved design baseline; Milestone 1 implementation is in progress.
 
 ## Accepted design baseline
 | ID | Decision | Rationale |

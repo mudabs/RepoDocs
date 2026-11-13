@@ -1,6 +1,6 @@
 # RepoDocs Workflows
 
-All commands below are **illustrative proposals**, not verified working commands.
+Milestone 1 CLI commands below are implemented. GitHub Actions, hosted UI, and agent workflows remain implementation proposals unless noted otherwise.
 
 ## A. Local CLI: SmartCart
 1. Install CLI.
@@ -9,15 +9,15 @@ All commands below are **illustrative proposals**, not verified working commands
 4. `repodocs scan --format json` produces versioned JSON findings with source evidence and uncertainty.
 5. User confirms or rejects ambiguous frontend-to-backend links.
 6. Give explicit consent before sending repository content to the cloud BYO provider, configure redaction, or use local Ollama/local-only deterministic mode.
-7. `repodocs generate --interactive` or noninteractive flags selects architecture/component and ERD diagrams plus API Markdown.
+7. `repodocs generate` selects the current deterministic architecture/component output; interactive scope selection and ERD/API expansion follow in later milestones.
 8. `repodocs validate` checks diagrams, references, artifact ownership, and required confirmations.
-9. Review local Markdown and Mermaid/PlantUML files.
+9. Review local Markdown and Mermaid files.
 10. Full-project regeneration skips a no-op; commit manually or publish system documentation through the coordination repository.
 
 ## B. GitHub Actions
 1. User commits project config and workflow; grants required repository permissions.
 2. Source PR merges in frontend or backend.
-3. The coordination repository's Action starts on pinned project revisions using explicit repository credentials.
+3. The coordination repository's Action starts on pinned, clean project revisions using explicit repository credentials.
 4. Analyze changes and dependent facts; initial MVP may safely regenerate all artifacts.
 5. Optional configured AI enrichment interprets curated, redacted evidence after consent; local-only mode remains available.
 6. Render and validate docs; skip no-op output.

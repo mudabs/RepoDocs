@@ -1,6 +1,6 @@
 # RepoDocs Product Requirements
 
-**Status:** Approved design baseline, not implemented. **Initial MVP target:** November 30, 2026 (aggressive, subject to rescoping).
+**Status:** Approved design baseline, Milestone 1 implementation in progress. **Initial MVP target:** November 30, 2026 (aggressive, subject to rescoping).
 
 ## Product goal
 Automatically discover, generate, validate, and maintain documentation and diagrams for real software systems spanning one or multiple repositories. Documentation must remain reviewable, source-evidenced, and version-controlled.
@@ -13,9 +13,9 @@ Automatically discover, generate, validate, and maintain documentation and diagr
 
 ## Required capabilities
 1. Project = software system, containing multiple repositories and services; a repo may contain several services.
-2. Local paths and Git repository snapshots, with exact revision provenance.
-3. Generic discovery plus extensible language parsers and framework adapters.
-4. Initially prioritize Java/Spring Boot, JS/TS/React, Python/FastAPI; actual depth must be measured and documented.
+2. Local CLI scans of working trees, including uncommitted changes, and GitHub Action scans of pinned clean Git revisions, with exact revision provenance.
+3. Basic static analysis for all supported repositories plus extensible language parsers and framework adapters.
+4. Deeper framework-aware analysis for Java/Spring Boot and JS/TS/React; Python/FastAPI remains an extension target. Actual depth must be measured and documented.
 5. Versioned intermediate system graph with nodes, edges, evidence, confidence/classification, and overrides.
 6. Cross-repository relationship candidates with user confirmation for uncertainty.
 7. AI-assisted architecture interpretation and prose through one cloud BYO provider and Ollama for the MVP; managed RepoDocs AI is deferred.

@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://repodocs.dev/schemas/artifact-manifest-1.0.json",
+  "title": "RepoDocs generated artifact manifest",
+  "type": "object",
+  "required": ["manifest_version", "ownership", "source_ir_hash", "generator", "generator_version", "artifacts"],
+  "properties": {
+    "manifest_version": {"const": "1.0"},
+    "ownership": {"const": "repodocs-generated"},
+    "source_ir_hash": {"type": "string", "minLength": 1},
+    "generator": {"type": "string", "minLength": 1},
+    "generator_version": {"type": "string", "minLength": 1},
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "content_hash", "source_ir_hash", "generator", "generator_version"],
+        "properties": {
+          "path": {"type": "string", "minLength": 1},
+          "content_hash": {"type": "string", "minLength": 1},
+          "source_ir_hash": {"type": "string", "minLength": 1},
+          "generator": {"type": "string", "minLength": 1},
+          "generator_version": {"type": "string", "minLength": 1}
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}
