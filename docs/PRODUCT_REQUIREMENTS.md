@@ -1,6 +1,6 @@
 # RepoDocs Product Requirements
 
-**Status:** Design baseline, not implemented. **Initial MVP target:** November 30, 2026 (aggressive, subject to rescoping).
+**Status:** Approved design baseline, not implemented. **Initial MVP target:** November 30, 2026 (aggressive, subject to rescoping).
 
 ## Product goal
 Automatically discover, generate, validate, and maintain documentation and diagrams for real software systems spanning one or multiple repositories. Documentation must remain reviewable, source-evidenced, and version-controlled.
@@ -18,14 +18,14 @@ Automatically discover, generate, validate, and maintain documentation and diagr
 4. Initially prioritize Java/Spring Boot, JS/TS/React, Python/FastAPI; actual depth must be measured and documented.
 5. Versioned intermediate system graph with nodes, edges, evidence, confidence/classification, and overrides.
 6. Cross-repository relationship candidates with user confirmation for uncertainty.
-7. AI-assisted architecture interpretation and prose, with optional OpenAI, Anthropic, Google, Ollama, and potential managed RepoDocs AI.
+7. AI-assisted architecture interpretation and prose through one cloud BYO provider and Ollama for the MVP; managed RepoDocs AI is deferred.
 8. Diagram planning and deterministic diagram-source generation from validated models.
-9. Markdown plus editable Mermaid/PlantUML sources, optionally SVG/PNG previews.
+9. Markdown plus editable Mermaid sources for architecture/component and ERD views; API documentation is Markdown in the MVP.
 10. Applicable documentation catalog: architecture, API, ERD, class, component, dependencies, and progressively sequence, activity, state, deployment, security, CI/CD.
-11. Local documentation in source repos; system-wide documentation in configured coordination location.
-12. Generated artifact manifest, stable outputs, validation, and protected human edits.
+11. Local documentation in source repos; system-wide documentation and documentation PRs use one coordination repository.
+12. Generated artifact manifest, stable outputs, full-project regeneration with no-op detection, validation, and protected human edits.
 13. GitHub automation producing reviewable documentation PRs, no bot loops or empty PRs.
-14. Machine-readable, noninteractive CLI operations for agents and CI.
+14. Versioned JSON, explicit exit codes, and machine-readable, noninteractive CLI operations for agents and CI.
 
 ## Quality requirements
 - Evidence-backed claims and explicit uncertainty.
@@ -33,9 +33,10 @@ Automatically discover, generate, validate, and maintain documentation and diagr
 - Stable generation minimizing noisy diffs.
 - Privacy, safe handling of secrets, least privilege, untrusted repository isolation.
 - Reproducible output tied to per-repository commit SHAs and generator/model versions.
+- Measurable quality using golden fixtures, precision/recall, provenance checks, and deterministic-versus-AI comparisons.
 
 ## Success demo
 SmartCart: React frontend repository, Spring Boot backend repository, PostgreSQL. Discover components and APIs, propose/confirm cross-repo links, generate architecture/API/ERD/component docs, publish appropriate PRs, then update docs after an endpoint changes.
 
 ## Explicit non-goals for initial MVP
-Polished SaaS, billing, comprehensive language coverage, guaranteed runtime-accurate sequence diagrams, interactive drag-and-drop editor, runtime tracing, complete UML suite, and advanced enterprise governance.
+Polished SaaS, billing, comprehensive language coverage, guaranteed runtime-accurate sequence diagrams, interactive drag-and-drop editor, runtime tracing, complete UML suite, advanced enterprise governance, RepoDocs-managed AI, hosted web UI, and MCP integration.
