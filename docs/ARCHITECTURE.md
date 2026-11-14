@@ -34,7 +34,7 @@ Stages may iterate; AI does not automatically promote guesses to facts.
 ## Core modules and boundaries
 
 ### Ingestion
-Read local working trees or pinned Git snapshots. Local CLI scans include uncommitted changes and record the Git revision plus a working-tree content fingerprint. GitHub Actions use pinned, clean Git revisions. Inventory files and dependencies; track exact repository revisions, dirty-tree state where applicable, source commits/diffs, and content hashes. Exclude binaries, vendored dependencies, generated output. Never execute arbitrary repository code during normal static analysis.
+Read local working trees or pinned Git snapshots. Local CLI scans (`--snapshot-mode local`) include uncommitted changes and record the Git revision, branch, head state, dirty state, and a working-tree content fingerprint. Pinned scans (`--snapshot-mode pinned`) for GitHub Actions accept only clean checkouts of one exact commit and reject stale or abbreviated pins. Every snapshot and every evidence record states whether its revision is a commit SHA or a content fingerprint (ADR-014). Inventory files and dependencies; track exact repository revisions, dirty-tree state where applicable, source commits/diffs, and content hashes. Exclude binaries, vendored dependencies, generated output. Never execute arbitrary repository code during normal static analysis.
 
 ### Analysis
 - L1: generic manifests, config, CI/CD, framework signatures.
@@ -66,7 +66,7 @@ Choose artifact type, scope, required evidence, coverage, destination, and gener
 Rendering is not AI drawing: Mermaid performs initial rendering/layout; PlantUML and Graphviz/ELK.js remain extension points. React Flow is a possible later interactive UI, not required by CLI. Sequence diagrams are particularly difficult: a call graph alone does not establish runtime ordering or branches; do not assert observed sequence without adequate evidence.
 
 ### Publishing
-Store repository-local docs in owning repos and system-wide docs in one configured coordination repository. Generated artifact manifests track ownership, hashes, source SHAs, versions, and dependencies. Preserve human-authored files and fail on unexpected edits. The GitHub Action creates reviewable PRs in the coordination repository, suppressing empty PRs and bot loops.
+Store repository-local docs in owning repos and system-wide docs in one configured coordination repository. In project configuration this is the single documentation destination: a `source` repository or one `destination`-only repository, with a dedicated output directory inside it (ADR-014). Generated artifact manifests track ownership, hashes, source SHAs, versions, and dependencies. Preserve human-authored files and fail on unexpected edits. The GitHub Action creates reviewable PRs in the coordination repository, suppressing empty PRs and bot loops.
 
 ## Deployment modes
 - CLI: local core engine, local config/cache/IR; no mandatory server or GitHub login; versioned JSON output and explicit exit codes.

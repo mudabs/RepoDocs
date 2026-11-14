@@ -20,22 +20,79 @@
     "relationships": {"type": "array", "items": {"$ref": "#/$defs/relationship"}},
     "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence"}},
     "claims": {"type": "array", "items": {"$ref": "#/$defs/claim"}},
-    "provenance": {"type": "object"}
+    "provenance": {
+      "type": "object",
+      "required": ["engine", "engine_version", "analyzer", "analyzer_version", "snapshot_mode"],
+      "properties": {
+        "engine": {"type": "string", "minLength": 1},
+        "engine_version": {"type": "string", "minLength": 1},
+        "analyzer": {"type": "string", "minLength": 1},
+        "analyzer_version": {"type": "string", "minLength": 1},
+        "snapshot_mode": {"$ref": "#/$defs/snapshot_mode"}
+      },
+      "additionalProperties": true
+    }
   },
   "additionalProperties": true,
   "$defs": {
+    "snapshot_mode": {
+      "enum": ["local", "pinned"],
+      "description": "local: working tree including uncommitted changes. pinned: clean checkout of one exact commit."
+    },
+    "revision_kind": {
+      "enum": ["commit", "content"],
+      "description": "commit: the revision is a Git commit SHA that exactly describes the scanned content. content: the revision is a fingerprint of the scanned working tree."
+    },
     "snapshot": {
       "type": "object",
-      "required": ["repository_id", "path", "revision_kind", "working_tree_state", "content_fingerprint", "files"],
+      "required": [
+        "repository_id",
+        "path",
+        "role",
+        "snapshot_mode",
+        "vcs",
+        "git_revision",
+        "git_branch",
+        "head_state",
+        "git_path_prefix",
+        "working_tree_state",
+        "git_status_fingerprint",
+        "pinned_revision",
+        "content_fingerprint",
+        "revision_kind",
+        "revision",
+        "files"
+      ],
       "properties": {
         "repository_id": {"type": "string", "minLength": 1},
-        "path": {"type": "string", "minLength": 1},
-        "revision_kind": {"type": "string", "minLength": 1},
+        "path": {"type": "string", "minLength": 1, "description": "Repository path as configured, not resolved, so the IR is stable across machines."},
+        "role": {"enum": ["source", "destination"]},
+        "snapshot_mode": {"$ref": "#/$defs/snapshot_mode"},
+        "vcs": {"enum": ["git", null]},
         "git_revision": {"type": ["string", "null"]},
-        "working_tree_state": {"type": "string", "minLength": 1},
+        "git_branch": {"type": ["string", "null"]},
+        "head_state": {"enum": ["attached", "detached", null]},
+        "git_path_prefix": {"type": ["string", "null"], "description": "Path of the registered root inside its Git repository; empty when they coincide."},
+        "working_tree_state": {"enum": ["clean", "dirty", "non-git"]},
         "git_status_fingerprint": {"type": ["string", "null"]},
+        "pinned_revision": {"type": ["string", "null"]},
         "content_fingerprint": {"type": "string", "minLength": 1},
-        "files": {"type": "array", "items": {"type": "object"}}
+        "revision_kind": {"$ref": "#/$defs/revision_kind"},
+        "revision": {"type": "string", "minLength": 1, "description": "What evidence for this snapshot resolves to."},
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["path", "size", "content_hash", "language"],
+            "properties": {
+              "path": {"type": "string", "minLength": 1},
+              "size": {"type": "integer", "minimum": 0},
+              "content_hash": {"type": "string", "minLength": 1},
+              "language": {"type": ["string", "null"]}
+            },
+            "additionalProperties": true
+          }
+        }
       },
       "additionalProperties": true
     },
@@ -67,13 +124,14 @@
     },
     "evidence": {
       "type": "object",
-      "required": ["id", "repository_id", "path", "content_hash", "revision", "kind"],
+      "required": ["id", "repository_id", "path", "content_hash", "revision", "revision_kind", "kind"],
       "properties": {
         "id": {"type": "string", "minLength": 1},
         "repository_id": {"type": "string", "minLength": 1},
         "path": {"type": "string", "minLength": 1},
         "content_hash": {"type": "string", "minLength": 1},
         "revision": {"type": "string", "minLength": 1},
+        "revision_kind": {"$ref": "#/$defs/revision_kind"},
         "kind": {"type": "string", "minLength": 1}
       },
       "additionalProperties": true

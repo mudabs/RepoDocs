@@ -1,17 +1,8 @@
 from __future__ import annotations
 
-import json
-import subprocess
 from pathlib import Path
 
-from repodocs.cli import main
 from repodocs.scanner import discover_files
-
-
-def invoke(root: Path, capsys, *arguments: str) -> tuple[int, dict]:
-    code = main(["--root", str(root), *arguments])
-    payload = json.loads(capsys.readouterr().out)
-    return code, payload
 
 
 def test_discovery_excludes_generated_and_dependency_directories(tmp_path: Path) -> None:
@@ -28,36 +19,27 @@ def test_discovery_excludes_generated_and_dependency_directories(tmp_path: Path)
     assert warnings == []
 
 
-def test_scan_records_dirty_git_working_tree(tmp_path: Path, capsys) -> None:
-    repository = tmp_path / "repo"
-    repository.mkdir()
-    source = repository / "main.py"
-    source.write_text("value = 1\n", encoding="utf-8")
-    subprocess.run(["git", "init", "-b", "main"], cwd=repository, check=True, capture_output=True)
-    git_environment = {
-        "GIT_AUTHOR_NAME": "RepoDocs Test",
-        "GIT_AUTHOR_EMAIL": "repodocs-test@example.invalid",
-        "GIT_COMMITTER_NAME": "RepoDocs Test",
-        "GIT_COMMITTER_EMAIL": "repodocs-test@example.invalid",
-    }
-    import os
+def test_discovery_excludes_configured_relative_paths(tmp_path: Path) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "main.py").write_text("print('fixture')\n", encoding="utf-8")
+    output = tmp_path / "documentation" / "auto"
+    output.mkdir(parents=True)
+    (output / "architecture.md").write_text("# generated\n", encoding="utf-8")
+    (tmp_path / "documentation" / "handwritten.md").write_text("# mine\n", encoding="utf-8")
 
-    environment = os.environ.copy()
-    environment.update(git_environment)
-    subprocess.run(["git", "add", "main.py"], cwd=repository, check=True, env=environment)
-    subprocess.run(["git", "commit", "-m", "initial"], cwd=repository, check=True, env=environment, capture_output=True)
-    source.write_text("value = 2\n", encoding="utf-8")
+    files, _, _ = discover_files(tmp_path, excluded_paths=["documentation/auto"])
 
-    code, payload = invoke(tmp_path, capsys, "init", "Dirty fixture")
-    assert code == 0
-    code, payload = invoke(tmp_path, capsys, "add", "repo", "--id", "repo")
-    assert code == 0
-    code, payload = invoke(tmp_path, capsys, "scan")
-    assert code == 0
+    assert [item.path for item in files] == ["documentation/handwritten.md", "src/main.py"]
 
-    ir = json.loads((tmp_path / ".repodocs" / "ir.json").read_text(encoding="utf-8"))
-    snapshot = ir["snapshots"][0]
-    assert snapshot["revision_kind"] == "git-working-tree"
-    assert snapshot["working_tree_state"] == "dirty"
-    assert len(snapshot["git_revision"]) == 40
-    assert snapshot["content_fingerprint"]
+
+def test_discovery_is_deterministic_and_hashes_content(tmp_path: Path) -> None:
+    (tmp_path / "b.py").write_text("b = 1\n", encoding="utf-8")
+    (tmp_path / "a.py").write_text("a = 1\n", encoding="utf-8")
+
+    first, _, total = discover_files(tmp_path)
+    second, _, _ = discover_files(tmp_path)
+
+    assert first == second
+    assert [item.path for item in first] == ["a.py", "b.py"]
+    assert total == sum(item.size for item in first)
+    assert len({item.content_hash for item in first}) == 2

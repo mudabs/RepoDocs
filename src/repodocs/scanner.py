@@ -4,17 +4,17 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 import tomllib
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
-from .common import sha256_bytes, sha256_text, semantic_id
-from .config import ProjectConfig, RepositorySpec
+from .common import sha256_bytes
+from .config import ProjectConfig
 from .errors import ScanError
 from .ir import build_ir, claim_id, evidence_id, node_id, relationship_id
+from .snapshot import SNAPSHOT_MODE_LOCAL, content_fingerprint, read_git_state, resolve_snapshot
 
 
 MAX_FILE_BYTES = 2 * 1024 * 1024
@@ -94,10 +94,20 @@ def _is_binary(data: bytes) -> bool:
     return b"\x00" in data[:8192]
 
 
-def discover_files(root: Path) -> tuple[list[DiscoveredFile], list[str], int]:
+def discover_files(
+    root: Path, excluded_paths: Iterable[str] = ()
+) -> tuple[list[DiscoveredFile], list[str], int]:
+    """Walk a repository without following symlinks or executing anything.
+
+    ``excluded_paths`` are repository-relative POSIX directory paths that are skipped in
+    addition to the well-known dependency and build directories, for example the generated
+    documentation directory when the repository is also the documentation destination.
+    """
+
     root = root.resolve()
     if not root.exists() or not root.is_dir():
         raise ScanError(f"Repository path is not a directory: {root}")
+    excluded = {item.strip("/").lower() for item in excluded_paths if item and item.strip("/") not in {"", "."}}
     discovered: list[DiscoveredFile] = []
     warnings: list[str] = []
     total_bytes = 0
@@ -113,7 +123,8 @@ def discover_files(root: Path) -> tuple[list[DiscoveredFile], list[str], int]:
                 warnings.append(f"Skipped symlink: {entry.path}")
                 continue
             if entry.is_dir(follow_symlinks=False):
-                if entry.name.lower() not in EXCLUDED_DIRECTORIES:
+                relative_dir = Path(entry.path).relative_to(root).as_posix().lower()
+                if entry.name.lower() not in EXCLUDED_DIRECTORIES and relative_dir not in excluded:
                     pending.append(Path(entry.path))
                 continue
             if not entry.is_file(follow_symlinks=False):
@@ -152,37 +163,7 @@ def discover_files(root: Path) -> tuple[list[DiscoveredFile], list[str], int]:
     return discovered, sorted(set(warnings)), total_bytes
 
 
-def _git_context(root: Path) -> dict[str, Any]:
-    def run(*args: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            ["git", "-C", str(root), *args],
-            check=False,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
-
-    top_level = run("rev-parse", "--show-toplevel")
-    if top_level.returncode != 0:
-        return {
-            "revision_kind": "content",
-            "git_revision": None,
-            "working_tree_state": "untracked",
-            "git_status_fingerprint": None,
-        }
-    revision_result = run("rev-parse", "HEAD")
-    status_result = run("status", "--porcelain=v1", "--untracked-files=all", "--")
-    status = status_result.stdout
-    return {
-        "revision_kind": "git-working-tree",
-        "git_revision": revision_result.stdout.strip() if revision_result.returncode == 0 else None,
-        "working_tree_state": "dirty" if status else "clean",
-        "git_status_fingerprint": sha256_text(status) if status else None,
-    }
-
-
-def _manifest_dependencies(path: Path, relative_path: str) -> list[str]:
+def _manifest_dependencies(path: Path) -> list[str]:
     name = path.name.lower()
     try:
         if name == "package.json":
@@ -226,30 +207,54 @@ def _manifest_dependencies(path: Path, relative_path: str) -> list[str]:
     return []
 
 
-def scan_project(config: ProjectConfig) -> tuple[dict[str, Any], list[str]]:
+def _excluded_output_paths(config: ProjectConfig, repository_id: str) -> list[str]:
+    """When a source repository is also the destination, never scan its generated output."""
+
+    if config.destination_repository_id != repository_id:
+        return []
+    output_path = config.output_path
+    destination_root = config.destination_root()
+    return [output_path.relative_to(destination_root).as_posix()]
+
+
+def scan_project(
+    config: ProjectConfig,
+    *,
+    mode: str = SNAPSHOT_MODE_LOCAL,
+    pins: dict[str, str] | None = None,
+) -> tuple[dict[str, Any], list[str]]:
+    """Scan every source repository into a System IR under the requested snapshot mode.
+
+    ``pins`` maps repository IDs to expected commit SHAs for this run and overrides the
+    configured ``pinned_revision``. Destination-only repositories are not scanned.
+    """
+
+    pins = pins or {}
+    for repository_id in pins:
+        config.repository(repository_id)
+    project_node = node_id("project", config.project_id)
     snapshots: list[dict[str, Any]] = []
     nodes: list[dict[str, Any]] = [
-        {
-            "id": node_id("project", config.project_id),
-            "type": "project",
-            "name": config.project_name,
-            "attributes": {},
-            "evidence_ids": [],
-        }
+        {"id": project_node, "type": "project", "name": config.project_name, "attributes": {}, "evidence_ids": []}
     ]
     relationships: list[dict[str, Any]] = []
     evidence: list[dict[str, Any]] = []
     claims: list[dict[str, Any]] = []
     warnings: list[str] = []
 
-    for repository in sorted(config.repositories, key=lambda item: item.id):
+    for repository in config.source_repositories():
         root = config.resolve_repository(repository)
-        files, file_warnings, total_bytes = discover_files(root)
+        files, file_warnings, total_bytes = discover_files(root, _excluded_output_paths(config, repository.id))
         warnings.extend(f"{repository.id}: {warning}" for warning in file_warnings)
-        git = _git_context(root)
-        content_fingerprint = sha256_text(
-            "\n".join(f"{item.path}\0{item.content_hash}" for item in files)
+        header = resolve_snapshot(
+            repository_id=repository.id,
+            mode=mode,
+            git=read_git_state(root),
+            fingerprint=content_fingerprint([(item.path, item.content_hash) for item in files]),
+            pinned_revision=pins.get(repository.id, repository.pinned_revision),
         )
+        revision = header["revision"]
+        revision_kind = header["revision_kind"]
         repo_node = node_id("repository", repository.id)
         repo_evidence_ids = [evidence_id(repository.id, item.path, item.content_hash) for item in files]
         languages = sorted({item.language for item in files if item.language})
@@ -260,7 +265,7 @@ def scan_project(config: ProjectConfig) -> tuple[dict[str, Any], list[str]]:
                 "type": "repository",
                 "name": repository.id,
                 "attributes": {
-                    "path": root.as_posix(),
+                    "path": repository.path,
                     "role": repository.role,
                     "file_count": len(files),
                     "total_bytes": total_bytes,
@@ -272,9 +277,9 @@ def scan_project(config: ProjectConfig) -> tuple[dict[str, Any], list[str]]:
         )
         relationships.append(
             {
-                "id": relationship_id("contains", node_id("project", config.project_id), repo_node),
+                "id": relationship_id("contains", project_node, repo_node),
                 "type": "contains",
-                "source": node_id("project", config.project_id),
+                "source": project_node,
                 "target": repo_node,
                 "classification": "observed",
                 "confidence": 1.0,
@@ -282,14 +287,14 @@ def scan_project(config: ProjectConfig) -> tuple[dict[str, Any], list[str]]:
             }
         )
         for item in files:
-            ev_id = evidence_id(repository.id, item.path, item.content_hash)
             evidence.append(
                 {
-                    "id": ev_id,
+                    "id": evidence_id(repository.id, item.path, item.content_hash),
                     "repository_id": repository.id,
                     "path": item.path,
                     "content_hash": item.content_hash,
-                    "revision": git["git_revision"] or content_fingerprint,
+                    "revision": revision,
+                    "revision_kind": revision_kind,
                     "kind": "file",
                 }
             )
@@ -301,13 +306,7 @@ def scan_project(config: ProjectConfig) -> tuple[dict[str, Any], list[str]]:
                 if item.language == language
             ]
             nodes.append(
-                {
-                    "id": language_node,
-                    "type": "language",
-                    "name": language,
-                    "attributes": {},
-                    "evidence_ids": language_evidence,
-                }
+                {"id": language_node, "type": "language", "name": language, "attributes": {}, "evidence_ids": language_evidence}
             )
             relationships.append(
                 {
@@ -363,16 +362,15 @@ def scan_project(config: ProjectConfig) -> tuple[dict[str, Any], list[str]]:
                     "evidence_ids": manifest_evidence,
                 }
             )
-            for dependency in _manifest_dependencies(root / item.path, item.path):
+            for dependency in _manifest_dependencies(root / item.path):
                 dependency_node = node_id("dependency", repository.id, dependency)
-                dependency_evidence = manifest_evidence
                 nodes.append(
                     {
                         "id": dependency_node,
                         "type": "dependency",
                         "name": dependency,
                         "attributes": {"source_manifest": item.path},
-                        "evidence_ids": dependency_evidence,
+                        "evidence_ids": manifest_evidence,
                     }
                 )
                 relationships.append(
@@ -383,15 +381,15 @@ def scan_project(config: ProjectConfig) -> tuple[dict[str, Any], list[str]]:
                         "target": dependency_node,
                         "classification": "observed",
                         "confidence": 1.0,
-                        "evidence_ids": dependency_evidence,
+                        "evidence_ids": manifest_evidence,
                     }
                 )
         snapshots.append(
             {
                 "repository_id": repository.id,
-                "path": root.as_posix(),
-                **git,
-                "content_fingerprint": content_fingerprint,
+                "path": repository.path,
+                "role": repository.role,
+                **header,
                 "files": [
                     {
                         "path": item.path,
@@ -406,6 +404,7 @@ def scan_project(config: ProjectConfig) -> tuple[dict[str, Any], list[str]]:
     return build_ir(
         project_id=config.project_id,
         project_name=config.project_name,
+        snapshot_mode=mode,
         snapshots=snapshots,
         nodes=nodes,
         relationships=relationships,
