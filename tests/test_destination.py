@@ -158,11 +158,104 @@ def test_manifest_destination_must_match_configuration(tmp_path: Path, capsys) -
     code, payload = invoke(root, capsys, "validate")
     assert code == 3
     assert "does not match the configured destination" in payload["errors"][0]
+    assert "repository_id 'docs' -> 'backend'" in payload["errors"][0]
 
     code, payload = invoke(root, capsys, "generate")
     assert code == 4
-    assert "belongs to destination 'docs'" in payload["errors"][0]
+    assert "belongs to a different destination" in payload["errors"][0]
     assert not (root / "backend" / "docs" / "generated").exists()
+
+
+def test_repointing_destination_path_or_output_directory_is_refused(tmp_path: Path, capsys) -> None:
+    """The same repository ID must not silently write somewhere else."""
+
+    root = project_with_sources(tmp_path, capsys)
+    (root / "docs-repo").mkdir()
+    assert invoke(root, capsys, "add", "docs-repo", "--id", "docs", "--role", "destination")[0] == 0
+    assert invoke(root, capsys, "scan")[0] == 0
+    assert invoke(root, capsys, "generate")[0] == 0
+    config_path = root / "repodocs.json"
+    original = config_path.read_text(encoding="utf-8")
+
+    (root / "elsewhere").mkdir()
+    config = json.loads(original)
+    for item in config["repositories"]:
+        if item["id"] == "docs":
+            item["path"] = "elsewhere"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    code, payload = invoke(root, capsys, "generate")
+    assert code == 4
+    assert "path 'docs-repo' -> 'elsewhere'" in payload["errors"][0]
+    assert not any((root / "elsewhere").iterdir())
+    code, payload = invoke(root, capsys, "validate")
+    assert code == 3
+    assert "path 'docs-repo' -> 'elsewhere'" in payload["errors"][0]
+
+    config = json.loads(original)
+    config["documentation"]["output_directory"] = "site/generated"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    code, payload = invoke(root, capsys, "generate")
+    assert code == 4
+    assert "output_directory 'docs/generated' -> 'site/generated'" in payload["errors"][0]
+    assert not (root / "docs-repo" / "site").exists()
+    code, payload = invoke(root, capsys, "validate")
+    assert code == 3
+
+    config_path.write_text(original, encoding="utf-8")
+    code, payload = invoke(root, capsys, "generate")
+    assert code == 0
+    assert payload["data"]["changed"] is False
+
+
+def test_set_destination_promotes_an_existing_source_repository(tmp_path: Path, capsys) -> None:
+    root = project_with_sources(tmp_path, capsys)
+
+    code, payload = invoke(root, capsys, "set-destination", "backend")
+    assert code == 0
+    assert payload["data"] == {
+        "repository_id": "backend",
+        "previous_repository_id": None,
+        "output_directory": "docs/generated",
+    }
+    config = json.loads((root / "repodocs.json").read_text(encoding="utf-8"))
+    assert config["documentation"]["destination"] == {"repository_id": "backend"}
+    assert next(item["role"] for item in config["repositories"] if item["id"] == "backend") == "source"
+
+    assert invoke(root, capsys, "scan")[0] == 0
+    assert invoke(root, capsys, "generate")[0] == 0
+    assert (root / "backend" / "docs" / "generated" / "architecture.md").exists()
+
+    code, payload = invoke(root, capsys, "set-destination", "frontend")
+    assert code == 2
+    assert "already configured: backend" in payload["errors"][0]
+    assert "--replace" in payload["errors"][0]
+
+    code, payload = invoke(root, capsys, "set-destination", "frontend", "--replace")
+    assert code == 0
+    assert payload["data"]["previous_repository_id"] == "backend"
+
+    code, payload = invoke(root, capsys, "generate")
+    assert code == 4
+    assert "belongs to a different destination" in payload["errors"][0]
+    assert not (root / "frontend" / "docs").exists()
+
+    code, payload = invoke(root, capsys, "set-destination", "ghost")
+    assert code == 2
+    assert "Unknown repository ID: ghost" in payload["errors"][0]
+
+
+def test_set_destination_cannot_bypass_a_destination_only_repository(tmp_path: Path, capsys) -> None:
+    root = project_with_sources(tmp_path, capsys)
+    (root / "docs-repo").mkdir()
+    assert invoke(root, capsys, "add", "docs-repo", "--id", "docs", "--role", "destination")[0] == 0
+
+    code, payload = invoke(root, capsys, "set-destination", "backend", "--replace")
+    assert code == 2
+    assert "docs has role destination and must remain the destination" in payload["errors"][0]
+
+    code, payload = invoke(root, capsys, "set-destination", "docs")
+    assert code == 0
+    assert payload["data"]["previous_repository_id"] == "docs"
 
 
 def test_pinned_destination_must_match_checkout(tmp_path: Path, capsys) -> None:

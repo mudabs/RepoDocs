@@ -3,7 +3,7 @@
 A snapshot describes exactly which repository content a scan observed. Local
 mode accepts whatever is on disk, including uncommitted changes, and records
 enough Git state to explain it. Pinned mode is for automation such as GitHub
-Actions: it accepts only a clean checkout of one exact commit.
+Actions: it accepts only a clean checkout of one explicitly pinned commit.
 """
 
 from __future__ import annotations
@@ -149,6 +149,11 @@ def resolve_snapshot(
         if git.working_tree_state != TREE_CLEAN:
             raise SnapshotError(
                 f"{repository_id}: pinned snapshots require a clean working tree, found {git.working_tree_state}"
+            )
+        if pin is None:
+            raise SnapshotError(
+                f"{repository_id}: pinned snapshots require an explicit pinned revision; set pinned_revision in "
+                f"repodocs.json or pass --pin {repository_id}=<commit-sha>"
             )
     if pin is not None:
         if git.revision is None:

@@ -34,7 +34,7 @@ Stages may iterate; AI does not automatically promote guesses to facts.
 ## Core modules and boundaries
 
 ### Ingestion
-Read local working trees or pinned Git snapshots. Local CLI scans (`--snapshot-mode local`) include uncommitted changes and record the Git revision, branch, head state, dirty state, and a working-tree content fingerprint. Pinned scans (`--snapshot-mode pinned`) for GitHub Actions accept only clean checkouts of one exact commit and reject stale or abbreviated pins. Every snapshot and every evidence record states whether its revision is a commit SHA or a content fingerprint (ADR-014). Inventory files and dependencies; track exact repository revisions, dirty-tree state where applicable, source commits/diffs, and content hashes. Exclude binaries, vendored dependencies, generated output. Never execute arbitrary repository code during normal static analysis.
+Read local working trees or pinned Git snapshots. Local CLI scans (`--snapshot-mode local`) include uncommitted changes and record the Git revision, branch, head state, dirty state, and a working-tree content fingerprint. Pinned scans (`--snapshot-mode pinned`) for GitHub Actions accept only clean checkouts of one explicitly pinned commit and reject unpinned repositories and stale or abbreviated pins. Every snapshot and every evidence record states whether its revision is a commit SHA or a content fingerprint (ADR-014). Inventory files and dependencies; track exact repository revisions, dirty-tree state where applicable, source commits/diffs, and content hashes. Exclude binaries, vendored dependencies, generated output. Never execute arbitrary repository code during normal static analysis.
 
 ### Analysis
 - L1: generic manifests, config, CI/CD, framework signatures.

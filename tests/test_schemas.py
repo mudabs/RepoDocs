@@ -33,7 +33,7 @@ def test_schema_files_are_valid_drafts(name: str) -> None:
 def test_persisted_files_and_responses_match_schemas(tmp_path: Path, capsys) -> None:
     root = tmp_path / "project"
     root.mkdir()
-    init_git_repository(copy_fixture(root / "backend"))
+    sha = init_git_repository(copy_fixture(root / "backend"))
     (root / "docs-repo").mkdir()
 
     responses = []
@@ -41,10 +41,11 @@ def test_persisted_files_and_responses_match_schemas(tmp_path: Path, capsys) -> 
         ("init", "SmartCart"),
         ("add", "backend", "--id", "backend"),
         ("add", "docs-repo", "--id", "docs", "--role", "destination"),
+        ("set-destination", "docs"),
         ("scan",),
         ("generate",),
         ("validate",),
-        ("scan", "--snapshot-mode", "pinned"),
+        ("scan", "--snapshot-mode", "pinned", "--pin", f"backend={sha}"),
     ):
         code, payload = invoke(root, capsys, *arguments)
         assert code == 0, (arguments, payload)

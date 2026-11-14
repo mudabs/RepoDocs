@@ -17,7 +17,7 @@ Milestone 1 CLI commands below are implemented. GitHub Actions, hosted UI, and a
 ## B. GitHub Actions
 1. User commits project config and workflow; grants required repository permissions.
 2. Source PR merges in frontend or backend.
-3. The coordination repository's Action starts on pinned, clean project revisions using explicit repository credentials: `repodocs scan --snapshot-mode pinned --pin <id>=<sha>` fails closed (exit code 6) on dirty trees, non-Git paths, or a checkout that does not match the pin.
+3. The coordination repository's Action starts on pinned, clean project revisions using explicit repository credentials: `repodocs scan --snapshot-mode pinned --pin <id>=<sha>` fails closed (exit code 6) on dirty trees, non-Git paths, unpinned repositories, or a checkout that does not match the pin.
 4. Analyze changes and dependent facts; initial MVP may safely regenerate all artifacts.
 5. Optional configured AI enrichment interprets curated, redacted evidence after consent; local-only mode remains available.
 6. Render and validate docs; skip no-op output.

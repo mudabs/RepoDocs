@@ -10,7 +10,15 @@ from typing import Any
 from .common import sha256_text
 from .config import ProjectConfig
 from .errors import OwnershipError, ValidationError
-from .generator import MANIFEST_SCHEMA_VERSION, _all_files, _read_manifest, manifest_path
+from .generator import (
+    MANIFEST_SCHEMA_VERSION,
+    _all_files,
+    _read_manifest,
+    describe_destination,
+    describe_destination_change,
+    destination_identity,
+    manifest_path,
+)
 from .ir import IR_SCHEMA_VERSION, ir_hash
 from .snapshot import REVISION_KIND_COMMIT, REVISION_KIND_CONTENT, SNAPSHOT_MODES
 
@@ -97,7 +105,7 @@ def validate_ir(ir: dict[str, Any]) -> list[str]:
 
 
 def validate_artifacts(config: ProjectConfig, ir: dict[str, Any]) -> list[str]:
-    destination = config.destination()
+    destination = describe_destination(config)
     output_dir = config.output_path
     path_to_manifest = manifest_path(config)
     manifest = _read_manifest(path_to_manifest)
@@ -106,10 +114,11 @@ def validate_artifacts(config: ProjectConfig, ir: dict[str, Any]) -> list[str]:
     if manifest.get("manifest_version") != MANIFEST_SCHEMA_VERSION:
         raise ValidationError(f"Unsupported artifact manifest version: {manifest.get('manifest_version')!r}")
     recorded = manifest.get("destination")
-    if not isinstance(recorded, dict) or recorded.get("repository_id") != destination.id:
+    if destination_identity(recorded) != destination_identity(destination):
         raise ValidationError(
-            f"Artifact manifest destination {recorded.get('repository_id') if isinstance(recorded, dict) else None!r} "
-            f"does not match the configured destination {destination.id!r}"
+            "Artifact manifest destination does not match the configured destination ("
+            + describe_destination_change(recorded, destination)
+            + ")"
         )
     if manifest.get("source_ir_hash") != ir_hash(ir):
         raise ValidationError("Artifact manifest was generated from a different System IR")

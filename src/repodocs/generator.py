@@ -19,6 +19,23 @@ MANIFEST_FILENAME = "artifact-manifest.json"
 GENERATOR_NAME = "repodocs-deterministic"
 GENERATOR_VERSION = "1.0"
 
+# The fields that identify where generated output lives. Revision and tree state change
+# legitimately between runs and are deliberately not part of the identity.
+DESTINATION_IDENTITY_FIELDS = ("repository_id", "role", "path", "output_directory")
+
+
+def destination_identity(destination: Any) -> dict[str, Any]:
+    source = destination if isinstance(destination, dict) else {}
+    return {field: source.get(field) for field in DESTINATION_IDENTITY_FIELDS}
+
+
+def describe_destination_change(recorded: Any, current: dict[str, Any]) -> str:
+    before = destination_identity(recorded)
+    after = destination_identity(current)
+    return ", ".join(
+        f"{field} {before[field]!r} -> {after[field]!r}" for field in DESTINATION_IDENTITY_FIELDS if before[field] != after[field]
+    )
+
 
 @dataclass(frozen=True)
 class GenerationResult:
@@ -224,11 +241,12 @@ def generate_docs(config: ProjectConfig, ir: dict[str, Any]) -> GenerationResult
     path_to_manifest = manifest_path(config)
     manifest = _read_manifest(path_to_manifest)
     if manifest is not None:
-        previous = manifest.get("destination", {}).get("repository_id")
-        if previous != destination["repository_id"]:
+        recorded = manifest.get("destination")
+        if destination_identity(recorded) != destination_identity(destination):
             raise OwnershipError(
-                f"Artifact manifest belongs to destination {previous!r}, but the configured destination is "
-                f"{destination['repository_id']!r}; remove the previous generated output before switching"
+                "Artifact manifest belongs to a different destination ("
+                + describe_destination_change(recorded, destination)
+                + "); remove the previous generated output and manifest before switching"
             )
     contents = {
         "architecture.md": render_markdown(ir),

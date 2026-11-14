@@ -125,12 +125,31 @@ class ProjectConfig:
             raise ConfigError("documentation.output_directory must be a dedicated subdirectory, not the repository root")
         return resolved
 
-    def set_destination(self, repository_id: str) -> None:
-        if self.destination_repository_id and self.destination_repository_id != repository_id:
-            raise ConfigError(
-                f"A documentation destination is already configured: {self.destination_repository_id}"
-            )
+    def set_destination(self, repository_id: str, *, replace: bool = False) -> None:
+        """Make a registered repository the documentation destination.
+
+        A destination-only repository must remain the destination while it is registered, so
+        switching away from it requires removing it from the configuration first.
+        """
+
         self.repository(repository_id)
+        destination_only = sorted(
+            spec.id for spec in self.repositories if spec.role == ROLE_DESTINATION and spec.id != repository_id
+        )
+        if destination_only:
+            raise ConfigError(
+                f"Repository {destination_only[0]} has role destination and must remain the destination; "
+                f"remove it from {CONFIG_FILENAME} before choosing {repository_id}"
+            )
+        if (
+            self.destination_repository_id
+            and self.destination_repository_id != repository_id
+            and not replace
+        ):
+            raise ConfigError(
+                f"A documentation destination is already configured: {self.destination_repository_id}; "
+                "pass --replace to switch"
+            )
         self.destination_repository_id = repository_id
 
     def to_dict(self) -> dict[str, Any]:

@@ -46,11 +46,13 @@ The CLI writes versioned JSON responses to standard output. Scan state and the a
 - `source` repositories are scanned into the System IR.
 - Exactly one registered repository is the documentation destination: a source repository marked with `--destination`, or one `--role destination` repository that is never scanned.
 - `documentation.output_directory` is relative to the destination root and must be a dedicated subdirectory inside it. When a source repository is also the destination, that directory is excluded from its own scan.
+- `repodocs set-destination <repository-id>` promotes an already registered repository; `--replace` switches from a previous destination after its generated output is removed.
+- The artifact manifest records the destination's id, role, path, and output directory. Changing any of them for an existing manifest is refused rather than written elsewhere.
 - `generate` and `validate` fail with a JSON error when the destination is missing, unknown, or not a directory.
 
 ### Snapshot modes
 - `repodocs scan --snapshot-mode local` (default) scans the working tree including uncommitted and untracked files. Evidence resolves to the commit SHA only when the tree is exactly that commit; otherwise it resolves to a content fingerprint of the scanned tree.
-- `repodocs scan --snapshot-mode pinned` is for automation. It requires a Git repository with a clean working tree and rejects anything else.
+- `repodocs scan --snapshot-mode pinned` is for automation. It requires a Git repository with a clean working tree and an explicit pin for every source repository, and rejects anything else.
 - `--pin <repository-id>=<sha>` or `pinned_revision` in `repodocs.json` states the commit a repository must be checked out at. Abbreviated SHAs are rejected as ambiguous, and a different HEAD is rejected as stale.
 
 ### Exit codes
@@ -61,7 +63,7 @@ The CLI writes versioned JSON responses to standard output. Scan state and the a
 | 3 | Persisted IR or generated artifacts failed validation |
 | 4 | Ownership failure: unowned files or unexpected edits in generated output |
 | 5 | Reserved: required relationship confirmation unresolved |
-| 6 | Snapshot rejected: dirty, non-Git, stale, or ambiguous revision |
+| 6 | Snapshot rejected: dirty, non-Git, unpinned in pinned mode, stale, or ambiguous revision |
 
 ## Setup
 1. Open the repository in Codex Desktop, Claude Code, or another development environment.

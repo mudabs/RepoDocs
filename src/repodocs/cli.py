@@ -122,6 +122,23 @@ def _cmd_add(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _cmd_set_destination(args: argparse.Namespace) -> int:
+    config = ProjectConfig.load(_root(args))
+    previous = config.destination_repository_id
+    config.set_destination(args.repository_id, replace=args.replace)
+    config.save()
+    _emit(
+        "set-destination",
+        ok=True,
+        data={
+            "repository_id": args.repository_id,
+            "previous_repository_id": previous,
+            "output_directory": config.output_directory,
+        },
+    )
+    return EXIT_OK
+
+
 def _parse_pins(values: list[str] | None) -> dict[str, str]:
     pins: dict[str, str] = {}
     for value in values or []:
@@ -229,12 +246,23 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     add_parser.set_defaults(handler=_cmd_add)
 
+    destination_parser = subparsers.add_parser(
+        "set-destination", help="Make an already registered repository the generated-documentation destination"
+    )
+    destination_parser.add_argument("repository_id")
+    destination_parser.add_argument(
+        "--replace",
+        action="store_true",
+        help="Switch away from a previously configured destination; remove its generated output first",
+    )
+    destination_parser.set_defaults(handler=_cmd_set_destination)
+
     scan_parser = subparsers.add_parser("scan", help="Scan registered source repositories into the System IR")
     scan_parser.add_argument(
         "--snapshot-mode",
         default=SNAPSHOT_MODE_LOCAL,
         choices=SNAPSHOT_MODES,
-        help="local scans working trees including uncommitted changes; pinned requires clean exact commits",
+        help="local scans working trees including uncommitted changes; pinned requires clean, explicitly pinned commits",
     )
     scan_parser.add_argument(
         "--pin",

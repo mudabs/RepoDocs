@@ -127,8 +127,19 @@ def test_pinned_mode_accepts_detached_checkout(tmp_path: Path, capsys) -> None:
     root, repository, sha = project_with_repository(tmp_path, capsys, make_git=True)
     git(repository, "checkout", "-q", "--detach", sha)
 
-    assert invoke(root, capsys, "scan", "--snapshot-mode", "pinned")[0] == 0
+    assert invoke(root, capsys, "scan", "--snapshot-mode", "pinned", "--pin", f"backend={sha}")[0] == 0
     assert snapshot(root)["head_state"] == "detached"
+
+
+def test_pinned_mode_requires_an_explicit_pin(tmp_path: Path, capsys) -> None:
+    root, _, _ = project_with_repository(tmp_path, capsys, make_git=True)
+
+    code, payload = invoke(root, capsys, "scan", "--snapshot-mode", "pinned")
+    assert code == 6
+    assert payload["ok"] is False
+    assert "require an explicit pinned revision" in payload["errors"][0]
+    assert "--pin backend=" in payload["errors"][0]
+    assert not (root / ".repodocs" / "ir.json").exists()
 
 
 def test_pinned_mode_rejects_dirty_tree(tmp_path: Path, capsys) -> None:
@@ -237,9 +248,10 @@ def test_registered_subdirectory_of_repository_tracks_commit_and_subtree_status(
 
 @pytest.mark.parametrize("mode", ["local", "pinned"])
 def test_scan_output_is_reproducible(tmp_path: Path, capsys, mode: str) -> None:
-    root, _, _ = project_with_repository(tmp_path, capsys, make_git=True)
-    assert invoke(root, capsys, "scan", "--snapshot-mode", mode)[0] == 0
+    root, _, sha = project_with_repository(tmp_path, capsys, make_git=True)
+    arguments = ("scan", "--snapshot-mode", mode, "--pin", f"backend={sha}")
+    assert invoke(root, capsys, *arguments)[0] == 0
     first = (root / ".repodocs" / "ir.json").read_text(encoding="utf-8")
-    assert invoke(root, capsys, "scan", "--snapshot-mode", mode)[0] == 0
+    assert invoke(root, capsys, *arguments)[0] == 0
     second = (root / ".repodocs" / "ir.json").read_text(encoding="utf-8")
     assert first == second
