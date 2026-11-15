@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import math
 import re
@@ -10,6 +11,7 @@ from typing import Any
 
 from .common import semantic_id, sha256_text
 from .config import ProjectConfig
+from .confirmations import DECISIONS, STATUS_CANDIDATE, STATUS_STALE, STATUSES, apply_decisions, load_decisions
 from .errors import OwnershipError, ValidationError
 from .generator import (
     MANIFEST_SCHEMA_VERSION,
@@ -142,10 +144,18 @@ def validate_candidates(ir: dict[str, Any]) -> None:
 
         if not isinstance(candidate, dict):
             fail()
-        if set(candidate) != {
+        if set(candidate) - {"confirmation"} != {
             "id", "type", "source", "target", "status", "classification",
             "confidence", "reasons", "evidence_ids", "snapshots", "attributes",
         }:
+            fail()
+        status, confirmation = candidate.get("status"), candidate.get("confirmation")
+        if status == STATUS_CANDIDATE:
+            if confirmation is not None:
+                fail()
+        elif (status not in STATUSES or not isinstance(confirmation, dict)
+                or confirmation.get("decision") not in DECISIONS
+                or (status != STATUS_STALE and confirmation["decision"] != status)):
             fail()
         if not isinstance(candidate.get("source"), str) or not isinstance(candidate.get("target"), str):
             fail()
@@ -161,7 +171,7 @@ def validate_candidates(ir: dict[str, Any]) -> None:
             fail()
         seen.add(expected_id)
         confidence = candidate.get("confidence")
-        if (candidate.get("type") != "http" or candidate.get("status") != "candidate"
+        if (candidate.get("type") != "http"
                 or candidate.get("classification") != "inferred"
                 or type(confidence) not in (int, float) or not math.isfinite(confidence) or not 0 <= confidence < 1):
             fail()
@@ -267,7 +277,17 @@ def validate_markdown(content: str, ir: dict[str, Any]) -> None:
                 raise ValidationError(f"Markdown artifact is missing evidence reference: {evidence_id}")
 
 
-def validate_project(config: ProjectConfig) -> list[str]:
+def validate_candidate_states(config: ProjectConfig, ir: dict[str, Any]) -> None:
+    """The persisted candidate states must be what the recorded decisions produce."""
+
+    expected = copy.deepcopy(ir)
+    apply_decisions(expected, load_decisions(config.root))
+    if expected["candidates"] != ir["candidates"]:
+        raise ValidationError("Candidate states do not match the recorded decisions; run scan again")
+
+
+def validate_project(config: ProjectConfig) -> tuple[list[str], dict[str, Any]]:
     ir = load_ir(config.internal_path / "ir.json")
     validate_ir(ir)
-    return validate_artifacts(config, ir)
+    validate_candidate_states(config, ir)
+    return validate_artifacts(config, ir), ir

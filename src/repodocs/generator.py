@@ -152,10 +152,12 @@ def _cell(value: Any) -> str:
 def _render_candidate_section(
     ir: dict[str, Any], nodes: dict[str, dict[str, Any]], evidence: dict[str, dict[str, Any]]
 ) -> list[str]:
-    lines = ["", "## Cross-repository candidates (unconfirmed)", ""]
+    lines = ["", "## Cross-repository candidates", ""]
     lines.append(
         "These are inferred matches, not authoritative service links or observed traffic."
         " All matches, including unique high-confidence ones, require explicit confirmation."
+        " A `candidate` has no decision, `confirmed` and `rejected` record a human decision against the"
+        " listed evidence, and `stale` means that evidence changed after the decision."
         " Method/path agreement alone does not establish service ownership; competing matches are preserved."
     )
     candidates = ir.get("candidates", [])
@@ -172,7 +174,7 @@ def _render_candidate_section(
         )
         refs = ", ".join(_evidence_ref(evidence, key) for key in candidate["evidence_ids"])
         lines.append(
-            f"| `{candidate['id']}` (candidate) | {_cell(source['attributes']['repository_id'])}: {_cell(source['name'])} | "
+            f"| `{candidate['id']}` ({candidate['status']}) | {_cell(source['attributes']['repository_id'])}: {_cell(source['name'])} | "
             f"{_cell(target['attributes']['repository_id'])}: {_cell(target['name'])} | {candidate['confidence']} | "
             f"{_cell(', '.join(candidate['reasons']))} | {revisions} | {refs} |"
         )

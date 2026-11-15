@@ -132,9 +132,9 @@ def test_urls_are_sanitized_before_persistence_and_generation(tmp_path, capsys) 
     root = project(tmp_path, capsys)
     ir = scan(root, capsys)
     assert invoke(root, capsys, "generate")[0] == 0
-    assert invoke(root, capsys, "validate")[0] == 0
+    assert invoke(root, capsys, "validate", "--allow-unresolved")[0] == 0
     markdown = (root / "docs" / "docs" / "generated" / "architecture.md").read_text(encoding="utf-8")
-    assert "Cross-repository candidates (unconfirmed)" in markdown
+    assert "## Cross-repository candidates" in markdown
     assert "not authoritative" in markdown
     for candidate in ir["candidates"]:
         assert candidate["id"] in markdown

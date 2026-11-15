@@ -119,8 +119,24 @@ See ADR-018 for matching rules, confidence ranks, and the exact OpenAPI subset.
 The IR has a required `candidates` array; the JSON scan response reports its count.
 Generated Markdown labels candidates as unconfirmed and cites both sides'
 evidence and revisions. Candidates are not authoritative diagram edges.
-Confirmation/rejection commands, stale confirmations, and required-confirmation
-CI failures belong to #18 and are not implemented here.
+
+### Confirming and rejecting candidates
+
+Every candidate needs a human decision before it is treated as resolved:
+
+```powershell
+repodocs candidates
+repodocs confirm <candidate-id> --note "Verified against the gateway config"
+repodocs reject <candidate-id> <candidate-id>
+repodocs generate
+repodocs validate
+```
+
+- `repodocs candidates` lists unresolved candidates from the last scan; `--status` selects `candidate`, `confirmed`, `rejected`, `stale`, or `all`.
+- `confirm` and `reject` are noninteractive and write `repodocs.confirmations.json` next to `repodocs.json`. Commit that file. A later decision for the same candidate replaces the earlier one.
+- Each decision records the candidate's evidence and both repository revisions. When a participating source file changes, the decision becomes `stale` and the candidate must be decided again.
+- `repodocs validate` exits with code 5 while any candidate is unresolved or stale. Use `--allow-unresolved` for local drafts only.
+- A decision changes the IR, so run `generate` again before `validate`. See ADR-019.
 
 ### Exit codes
 | Code | Meaning |
@@ -129,7 +145,7 @@ CI failures belong to #18 and are not implemented here.
 | 2 | Usage or configuration error, including a missing destination |
 | 3 | Persisted IR or generated artifacts failed validation |
 | 4 | Ownership failure: unowned files or unexpected edits in generated output |
-| 5 | Reserved: required relationship confirmation unresolved |
+| 5 | Cross-repository candidates are unresolved or their decisions are stale |
 | 6 | Snapshot rejected: dirty, non-Git, unpinned in pinned mode, stale, or ambiguous revision |
 
 ## Setup
