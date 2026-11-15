@@ -85,7 +85,7 @@ INSTANCE_CREATE = re.compile(r"(?:const|let|var)\s+([\w$]+)\s*=\s*(axios\s*\.\s*
 EVAL_CALL = re.compile(r"(?<![\w$.])(?:eval\s*\(|new\s+Function\s*\()")
 LAZY_CALL = re.compile(r"(?<![\w$.])(?:React\s*\.\s*)?lazy\s*\(")
 NEXT_ROUTE_HANDLER = re.compile(r"\bexport\s+(?:async\s+)?(?:function\s+|const\s+)(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\b")
-REACT_IMPORT = re.compile(r"""from\s+["']react(?:/[\w-]+)?["']|require\s*\(\s*["']react(?:/[\w-]+)?["']\s*\)""")
+REACT_SPECIFIER = re.compile(r"react(?:/[\w-]+)?")
 
 
 @dataclass
@@ -135,6 +135,9 @@ class Module:
 class ReactAnalyzer:
     name = "react"
     version = "1.0"
+
+    def __init__(self) -> None:
+        self._scan_cache: dict[tuple[str, str, str], JsSource | None] = {}
 
     # ----------------------------------------------------------------- detection
     def detect(self, context: RepositoryContext) -> bool:
@@ -196,13 +199,28 @@ class ReactAnalyzer:
             result.append(source)
         return result
 
-    @staticmethod
-    def _is_react_source(context: RepositoryContext, source: SourceFile) -> bool:
-        """A module that imports ``react`` explicitly. JSX alone is not a React signal (Preact, Solid, and
-        other libraries use JSX too), so such files are analyzed only when a package declares react."""
+    def _scanned(self, context: RepositoryContext, source: SourceFile) -> JsSource | None:
+        """The masked scan of a module, cached per repository, path, and content hash."""
 
-        text = context.text(source.path)
-        return text is not None and REACT_IMPORT.search(text) is not None
+        key = (context.repository_id, source.path, source.content_hash)
+        if key not in self._scan_cache:
+            text = context.text(source.path)
+            self._scan_cache[key] = None if text is None else scan_source(source.path, text)
+        return self._scan_cache[key]
+
+    def _is_react_source(self, context: RepositoryContext, source: SourceFile) -> bool:
+        """A module whose parsed import declarations name ``react`` or a ``react/...`` subpath.
+
+        Imports are read from the comment- and string-masked scan, so a comment or string literal
+        that mentions ``import React from "react"`` is not a signal. JSX alone is not a signal
+        either (Preact, Solid, and other libraries use JSX), so JSX files are analyzed only when
+        a package declares react or a module imports it.
+        """
+
+        scanned = self._scanned(context, source)
+        if scanned is None:
+            return False
+        return any(REACT_SPECIFIER.fullmatch(decl.specifier) for decl in parse_imports(scanned))
 
     # ------------------------------------------------------------------ analysis
     def analyze(self, context: RepositoryContext) -> AnalysisResult:
@@ -338,10 +356,10 @@ class ReactAnalyzer:
     ) -> dict[str, Module]:
         modules: dict[str, Module] = {}
         for source in module_files:
-            text = context.text(source.path)
+            scanned = self._scanned(context, source)
             evidence = context.file_evidence(source.path)
             result.evidence.append(evidence)
-            if text is None:
+            if scanned is None:
                 result.limitations.append(
                     context.limitation(
                         LIMITATION_UNREADABLE_SOURCE,
@@ -356,7 +374,7 @@ class ReactAnalyzer:
                     if owner is None or len(package.directory) > len(owner.directory):
                         owner = package
             module = Module(
-                source=scan_source(source.path, text),
+                source=scanned,
                 file=source,
                 node_id=node_id("module", context.repository_id, source.path),
                 evidence_id=evidence["id"],

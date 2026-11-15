@@ -264,7 +264,7 @@ def test_react_dependency_without_modules_is_not_detected(tmp_path: Path, capsys
 
 def single_module_project(tmp_path: Path, capsys, files: dict[str, str]) -> dict:
     root = tmp_path / "project"
-    root.mkdir()
+    root.mkdir(parents=True)
     repository = root / "web"
     for relative, content in files.items():
         path = repository / relative
@@ -325,6 +325,35 @@ def test_jsx_without_react_dependency_or_import_is_not_detected(tmp_path: Path, 
     )
     assert {item["name"]: item["repositories"] for item in ir["provenance"]["analyzers"]}["react"] == []
     assert nodes_of(ir, "framework") == [] and nodes_of(ir, "component") == [] and ir["limitations"] == []
+
+
+def test_react_mentioned_only_in_comments_or_strings_is_not_detected(tmp_path: Path, capsys) -> None:
+    """Detection reads parsed import declarations, never raw text."""
+
+    ir = single_module_project(
+        tmp_path,
+        capsys,
+        {
+            "src/notes.js": (
+                '// Example: import React from "react"\n'
+                "/* Legacy code used:\n"
+                '   const React = require("react");\n'
+                "*/\n"
+                "const snippet = 'import React from \"react\"';\n"
+                "const other = `import { useState } from \"react\"`;\n"
+                "export const message = snippet + other;\n"
+            ),
+        },
+    )
+    assert {item["name"]: item["repositories"] for item in ir["provenance"]["analyzers"]}["react"] == []
+    assert nodes_of(ir, "framework") == [] and ir["limitations"] == []
+
+    detected = single_module_project(
+        tmp_path / "second",
+        capsys,
+        {"src/real.js": 'const React = require("react/jsx-runtime");\nexport const x = React;\n'},
+    )
+    assert {item["name"]: item["repositories"] for item in detected["provenance"]["analyzers"]}["react"] == ["web"]
 
 
 def test_distinct_client_instances_are_not_merged(tmp_path: Path, capsys) -> None:
