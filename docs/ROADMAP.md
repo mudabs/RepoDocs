@@ -16,7 +16,7 @@
 - Safe file discovery, language detection, basic manifest analysis, and content fingerprints run without executing repository code.
 - Versioned JSON IR serializes locally with semantic IDs, evidence, and hashes.
 - Deterministic Markdown and one Mermaid architecture/component diagram are generated with ownership protection.
-- Tests cover reproducibility, deletions, no-op detection, provenance, manual-file safety, snapshot modes, destination ownership, and schema conformance.
+- Tests cover reproducibility, no-op detection, provenance, manual-file safety, scanner safety limits, snapshot modes, destination ownership, and schema conformance, and run in CI on Linux and Windows for every pull request.
 
 ## Phase 2: framework and multi-repository analysis
 - Analyzer contract with span evidence and reported limitations (ADR-015), the Spring Boot adapter, and the React adapter (ADR-016) are implemented.

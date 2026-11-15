@@ -20,7 +20,8 @@
 ## Testing and documentation
 
 - Add focused tests for new behavior, edge cases, failures, provenance, and safety boundaries.
-- Run the relevant test suite before reporting completion.
+- A behavior change needs tests that cover it; a bug fix needs a regression test that fails without the fix.
+- Run the relevant test suite before reporting completion. Local runs supplement the required GitHub `Tests` checks and do not replace them; check the pull request's actual results.
 - Update documentation and ADRs when an implementation changes an architectural contract.
 - Report limitations and incomplete work explicitly.
 
