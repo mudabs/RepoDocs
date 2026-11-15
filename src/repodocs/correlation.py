@@ -51,6 +51,10 @@ def discover_candidates(ir: dict[str, Any]) -> list[dict[str, Any]]:
         if target_url is None or source.get("http_method") == "ANY":
             continue
         origin, path = target_url
+        # An unknown client base makes a relative request's real path unknown. Only an
+        # absolute request URL, which overrides the base, is still a usable target.
+        if source.get("base_url_unresolved") and origin is None:
+            continue
         for endpoint in endpoints:
             target = endpoint["attributes"]
             source_repo, target_repo = source.get("repository_id"), target.get("repository_id")

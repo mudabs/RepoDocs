@@ -33,6 +33,11 @@ confirmation CI failures. The user approved the bounded discovery scope below.
 - Literal client base paths are concatenated with relative request paths;
   absolute request URLs override the base. Imported axios/ky instance declarations
   are included in request evidence. Runtime variables are not evaluated.
+  A client whose base URL option is present but is not a supported literal
+  (a runtime expression, a template, or an unsupported scheme) has an unknown
+  base, not an absent one: it is marked `base_url_unresolved`, reported as a
+  limitation, and its relative requests are excluded from matching. An absolute
+  request URL on such a client still overrides the base and is matched.
 - Endpoint server base paths come only from that endpoint's OpenAPI document.
   An OpenAPI server is not copied onto a similarly named Spring Boot service.
   A client URL alone establishes no backend ownership.
@@ -56,7 +61,9 @@ confirmation CI failures. The user approved the bounded discovery scope below.
   Issue #18 can use this metadata to invalidate old confirmations.
 - Candidate schema/runtime validation checks node types, different repositories,
   semantic identity, evidence on both sides, exact snapshot bindings, confidence,
-  classification, and candidate-only state.
+  classification, and candidate-only state. It also re-derives the matches from
+  the request and endpoint nodes and rejects stored candidates that differ, so a
+  well-formed candidate with a path or origin its endpoint does not support fails.
 - `scan` reports a JSON candidate count. Generated Markdown has an explicitly
   unconfirmed candidate section with reasons, confidence, revisions, and evidence.
   Candidates are not rendered as authoritative Mermaid architecture edges.

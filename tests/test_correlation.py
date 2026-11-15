@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from conftest import init_git_repository, invoke, read_ir
+from repodocs.common import semantic_id
 from repodocs.correlation import discover_candidates
 from repodocs.errors import ValidationError
 from repodocs.validation import validate_ir
@@ -165,6 +166,87 @@ def test_candidate_validation_rejects_invalid_metadata(tmp_path, capsys, field, 
     ir["candidates"][0][field] = value
     with pytest.raises(ValidationError):
         validate_ir(ir)
+
+
+@pytest.mark.parametrize("tamper", ["path", "origin", "dropped", "added"])
+def test_candidate_validation_rejects_matches_the_graph_does_not_support(tmp_path, capsys, tamper) -> None:
+    """Well-formed metadata is not enough: the stored match must follow from the nodes."""
+
+    ir = scan(project(tmp_path, capsys), capsys)
+    nodes = {node["id"]: node for node in ir["nodes"]}
+    if tamper == "path":
+        # A valid, sanitized path that is not the request's path.
+        ir["candidates"][0]["attributes"]["path"] = "/api/unrelated"
+    elif tamper == "origin":
+        weak = next(item for item in ir["candidates"] if not item["attributes"]["origin_supported"])
+        weak["attributes"]["origin_supported"] = True
+        weak["reasons"].append("declared-server-origin-match")
+        weak["confidence"] = 0.9
+    elif tamper == "dropped":
+        ir["candidates"].pop()
+    else:
+        # Pair a request with an endpoint in another repository that it does not match.
+        request = next(node for node in nodes.values() if node["type"] == "http_request"
+                       and node["attributes"]["http_method"] == "DELETE")
+        endpoint = next(node for node in nodes.values() if node["type"] == "endpoint"
+                        and node["attributes"]["http_method"] == "GET")
+        forged = copy.deepcopy(ir["candidates"][0])
+        forged.update({
+            "id": semantic_id("candidate", "http", request["id"], endpoint["id"]),
+            "source": request["id"], "target": endpoint["id"],
+            "evidence_ids": sorted(set(request["evidence_ids"]) | set(endpoint["evidence_ids"])),
+        })
+        forged["attributes"]["method"] = "DELETE"
+        ir["candidates"] = sorted(ir["candidates"] + [forged], key=lambda item: item["id"])
+    with pytest.raises(ValidationError):
+        validate_ir(ir)
+
+
+@pytest.mark.parametrize("base", ["process.env.API_URL", '"ftp://files.example.invalid/api"', "`${HOST}/api`"])
+def test_unresolved_client_base_url_is_reported_and_not_correlated(tmp_path, capsys, base) -> None:
+    root = project(tmp_path, capsys)
+    (root / "frontend" / "src" / "client.ts").write_text(
+        'import axios from "axios";\n\nexport const api = axios.create({baseURL: %s});\n' % base, encoding="utf-8"
+    )
+    ir = scan(root, capsys)
+    nodes = {node["id"]: node for node in ir["nodes"]}
+    via_instance = [
+        node for node in nodes.values() if node["type"] == "http_request" and node["attributes"]["instance"] == "api"
+    ]
+    assert via_instance
+    for node in via_instance:
+        assert node["attributes"]["base_url"] is None
+        assert node["attributes"]["base_url_unresolved"] is True
+    # `api.get("/orders")` must not be matched as if it were the plain relative path /orders.
+    matched_sources = {item["source"] for item in ir["candidates"]}
+    assert not matched_sources & {node["id"] for node in via_instance}
+    # Requests with no client instance keep a known, absent base and are still matched.
+    assert any(nodes[source]["attributes"]["instance"] is None for source in matched_sources)
+    limitations = [item for item in ir["limitations"] if "base URL that is not a supported literal" in item["message"]]
+    assert limitations and all(item["kind"] == "runtime-configuration" and item["evidence_ids"] for item in limitations)
+
+
+def test_absolute_request_url_overrides_an_unresolved_base(tmp_path, capsys) -> None:
+    root = project(tmp_path, capsys)
+    (root / "frontend" / "src" / "client.ts").write_text(
+        'import axios from "axios";\n\nexport const api = axios.create({baseURL: process.env.API_URL});\n',
+        encoding="utf-8",
+    )
+    app = root / "frontend" / "src" / "App.tsx"
+    app.write_text(
+        app.read_text(encoding="utf-8").replace(
+            'api.get("/orders");', 'api.get("https://shop.example.invalid/api/orders");'
+        ),
+        encoding="utf-8",
+    )
+    ir = scan(root, capsys)
+    nodes = {node["id"]: node for node in ir["nodes"]}
+    absolute = [
+        item for item in ir["candidates"]
+        if nodes[item["source"]]["attributes"]["instance"] == "api"
+    ]
+    assert absolute
+    assert all(nodes[item["source"]]["attributes"]["url"].startswith("https://") for item in absolute)
 
 
 def test_pinned_candidates_bind_to_both_exact_commits(tmp_path, capsys) -> None:
