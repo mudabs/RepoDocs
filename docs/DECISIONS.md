@@ -33,11 +33,12 @@
 | D26 | Quality is evaluated with golden fixtures, precision/recall, provenance checks, and AI comparisons | Makes factual accuracy and AI contribution measurable |
 | D27 | Development proceeds from contracts to one Spring Boot slice, then multi-repository AI-enhanced MVP | Controls risk without reducing the final MVP goal |
 | D28 | RepoDocs is licensed under Apache 2.0 | Permissive adoption with an explicit patent grant |
+| D29 | Repositories have a `source` or `destination` role with one explicit documentation destination; scans run in `local` or `pinned` snapshot mode, pinned requires an explicit pin, and evidence resolves to a commit or a content fingerprint (ADR-014) | Stable destination and provenance contracts before framework adapters build on the IR |
 
 ## Remaining open decisions: require validation/approval
 | ID | Question | Key tradeoff |
 |---|---|---|
-| O03 | Exact CLI command and configuration schema | UX and backward compatibility; output and exit semantics are settled by D25 |
+| O03 | Exact CLI command and configuration schema | UX and backward compatibility; output and exit semantics are settled by D25. Repository roles, the single documentation destination, and local/pinned snapshot modes are settled by D29; remaining open items are AI, correlation, and publication settings |
 | O04 | Managed AI availability and pricing | Zero-key convenience vs cost/privacy; deferred beyond the MVP |
 | O05 | Exact cross-repo triggers and credentials | Reliability vs permissions/complexity; the coordination repository is settled by D24 |
 | O08 | Sequence diagram accuracy and evidence threshold | Value vs hallucination risk |

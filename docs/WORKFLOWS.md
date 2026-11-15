@@ -5,8 +5,8 @@ Milestone 1 CLI commands below are implemented. GitHub Actions, hosted UI, and a
 ## A. Local CLI: SmartCart
 1. Install CLI.
 2. `repodocs init smartcart`.
-3. `repodocs add ./smartcart-frontend` and `repodocs add ./smartcart-backend`.
-4. `repodocs scan --format json` produces versioned JSON findings with source evidence and uncertainty.
+3. `repodocs add ./smartcart-frontend` and `repodocs add ./smartcart-backend`, then register the coordination repository that receives generated system documentation with `repodocs add . --id docs --role destination` (or mark a single source repository with `--destination`).
+4. `repodocs scan` produces versioned JSON findings with source evidence and uncertainty. The default local snapshot mode includes uncommitted changes and records whether evidence resolves to a commit or to a working-tree fingerprint.
 5. User confirms or rejects ambiguous frontend-to-backend links.
 6. Give explicit consent before sending repository content to the cloud BYO provider, configure redaction, or use local Ollama/local-only deterministic mode.
 7. `repodocs generate` selects the current deterministic architecture/component output; interactive scope selection and ERD/API expansion follow in later milestones.
@@ -17,7 +17,7 @@ Milestone 1 CLI commands below are implemented. GitHub Actions, hosted UI, and a
 ## B. GitHub Actions
 1. User commits project config and workflow; grants required repository permissions.
 2. Source PR merges in frontend or backend.
-3. The coordination repository's Action starts on pinned, clean project revisions using explicit repository credentials.
+3. The coordination repository's Action starts on pinned, clean project revisions using explicit repository credentials: `repodocs scan --snapshot-mode pinned --pin <id>=<sha>` fails closed (exit code 6) on dirty trees, non-Git paths, unpinned repositories, or a checkout that does not match the pin.
 4. Analyze changes and dependent facts; initial MVP may safely regenerate all artifacts.
 5. Optional configured AI enrichment interprets curated, redacted evidence after consent; local-only mode remains available.
 6. Render and validate docs; skip no-op output.

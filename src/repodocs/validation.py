@@ -10,17 +10,42 @@ from typing import Any
 from .common import sha256_text
 from .config import ProjectConfig
 from .errors import OwnershipError, ValidationError
-from .generator import _all_files, _read_manifest
+from .generator import (
+    MANIFEST_SCHEMA_VERSION,
+    _all_files,
+    _read_manifest,
+    describe_destination,
+    describe_destination_change,
+    destination_identity,
+    manifest_path,
+)
 from .ir import IR_SCHEMA_VERSION, ir_hash
+from .snapshot import REVISION_KIND_COMMIT, REVISION_KIND_CONTENT, SNAPSHOT_MODES
+
+
+CLASSIFICATIONS = {"observed", "inferred", "proposed"}
+REQUIRED_SNAPSHOT_FIELDS = {
+    "repository_id",
+    "path",
+    "snapshot_mode",
+    "working_tree_state",
+    "content_fingerprint",
+    "revision_kind",
+    "revision",
+    "files",
+}
 
 
 def load_ir(path: Path) -> dict[str, Any]:
     if not path.exists():
         raise ValidationError(f"System IR not found: {path}; run scan first")
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise ValidationError(f"Unable to read System IR: {path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ValidationError(f"System IR must be a JSON object: {path}")
+    return data
 
 
 def validate_ir(ir: dict[str, Any]) -> list[str]:
@@ -30,17 +55,46 @@ def validate_ir(ir: dict[str, Any]) -> list[str]:
         raise ValidationError("System IR is missing fields: " + ", ".join(missing))
     if ir["ir_version"] != IR_SCHEMA_VERSION:
         raise ValidationError(f"Unsupported IR version: {ir['ir_version']!r}")
+    if ir["provenance"].get("snapshot_mode") not in SNAPSHOT_MODES:
+        raise ValidationError(f"Unsupported snapshot mode in IR provenance: {ir['provenance'].get('snapshot_mode')!r}")
+    snapshot_revisions: dict[str, str] = {}
+    for snapshot in ir["snapshots"]:
+        missing_fields = sorted(REQUIRED_SNAPSHOT_FIELDS - set(snapshot))
+        if missing_fields:
+            raise ValidationError(
+                f"Snapshot {snapshot.get('repository_id')!r} is missing fields: " + ", ".join(missing_fields)
+            )
+        if snapshot["snapshot_mode"] != ir["provenance"]["snapshot_mode"]:
+            raise ValidationError(f"Snapshot {snapshot['repository_id']} does not match the IR snapshot mode")
+        kind = snapshot["revision_kind"]
+        if kind == REVISION_KIND_COMMIT:
+            if snapshot["revision"] != snapshot.get("git_revision"):
+                raise ValidationError(f"Snapshot {snapshot['repository_id']} commit revision does not match HEAD")
+        elif kind == REVISION_KIND_CONTENT:
+            if snapshot["revision"] != snapshot["content_fingerprint"]:
+                raise ValidationError(
+                    f"Snapshot {snapshot['repository_id']} content revision does not match its fingerprint"
+                )
+        else:
+            raise ValidationError(f"Snapshot {snapshot['repository_id']} has unknown revision kind {kind!r}")
+        snapshot_revisions[snapshot["repository_id"]] = snapshot["revision"]
     node_ids = {item.get("id") for item in ir["nodes"]}
     evidence_ids = {item.get("id") for item in ir["evidence"]}
+    for item in ir["evidence"]:
+        repository_id = item.get("repository_id")
+        if repository_id not in snapshot_revisions:
+            raise ValidationError(f"Evidence references an unknown snapshot: {item.get('id')}")
+        if item.get("revision") != snapshot_revisions[repository_id]:
+            raise ValidationError(f"Evidence does not resolve to its snapshot revision: {item.get('id')}")
     for relationship in ir["relationships"]:
         if relationship.get("source") not in node_ids or relationship.get("target") not in node_ids:
             raise ValidationError(f"Relationship references an unknown node: {relationship.get('id')}")
-        if relationship.get("classification") not in {"observed", "inferred", "proposed"}:
+        if relationship.get("classification") not in CLASSIFICATIONS:
             raise ValidationError(f"Invalid relationship classification: {relationship.get('id')}")
         if not set(relationship.get("evidence_ids", [])) <= evidence_ids:
             raise ValidationError(f"Relationship references unknown evidence: {relationship.get('id')}")
     for claim in ir["claims"]:
-        if claim.get("classification") not in {"observed", "inferred", "proposed"}:
+        if claim.get("classification") not in CLASSIFICATIONS:
             raise ValidationError(f"Invalid claim classification: {claim.get('id')}")
         if not set(claim.get("evidence_ids", [])) <= evidence_ids:
             raise ValidationError(f"Claim references unknown evidence: {claim.get('id')}")
@@ -51,13 +105,21 @@ def validate_ir(ir: dict[str, Any]) -> list[str]:
 
 
 def validate_artifacts(config: ProjectConfig, ir: dict[str, Any]) -> list[str]:
+    destination = describe_destination(config)
     output_dir = config.output_path
-    manifest_path = config.internal_path / "artifact-manifest.json"
-    manifest = _read_manifest(manifest_path)
+    path_to_manifest = manifest_path(config)
+    manifest = _read_manifest(path_to_manifest)
     if manifest is None:
-        raise ValidationError(f"Artifact manifest not found: {manifest_path}; run generate first")
-    if manifest.get("manifest_version") != "1.0":
+        raise ValidationError(f"Artifact manifest not found: {path_to_manifest}; run generate first")
+    if manifest.get("manifest_version") != MANIFEST_SCHEMA_VERSION:
         raise ValidationError(f"Unsupported artifact manifest version: {manifest.get('manifest_version')!r}")
+    recorded = manifest.get("destination")
+    if destination_identity(recorded) != destination_identity(destination):
+        raise ValidationError(
+            "Artifact manifest destination does not match the configured destination ("
+            + describe_destination_change(recorded, destination)
+            + ")"
+        )
     if manifest.get("source_ir_hash") != ir_hash(ir):
         raise ValidationError("Artifact manifest was generated from a different System IR")
     artifacts = manifest.get("artifacts", [])
@@ -72,10 +134,9 @@ def validate_artifacts(config: ProjectConfig, ir: dict[str, Any]) -> list[str]:
         path = output_dir / relative_path
         if not path.exists():
             raise ValidationError(f"Generated artifact is missing: {path}")
-        current_hash = sha256_text(path.read_text(encoding="utf-8"))
-        if current_hash != item.get("content_hash"):
-            raise OwnershipError(f"Generated file was edited unexpectedly: {path}")
         content = path.read_text(encoding="utf-8")
+        if sha256_text(content) != item.get("content_hash"):
+            raise OwnershipError(f"Generated file was edited unexpectedly: {path}")
         if path.suffix == ".mmd":
             validate_mermaid(content)
         elif path.suffix == ".md":

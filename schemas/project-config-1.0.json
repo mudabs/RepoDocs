@@ -2,6 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://repodocs.dev/schemas/project-config-1.0.json",
   "title": "RepoDocs project configuration",
+  "description": "Source repositories are scanned into the System IR. Exactly one repository, either a source repository or a destination-only repository, receives generated system documentation.",
   "type": "object",
   "required": ["schema_version", "project", "repositories", "documentation"],
   "properties": {
@@ -23,7 +24,12 @@
         "properties": {
           "id": {"type": "string", "minLength": 1},
           "path": {"type": "string", "minLength": 1},
-          "role": {"type": "string", "minLength": 1}
+          "role": {"enum": ["source", "destination"]},
+          "pinned_revision": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{40}$",
+            "description": "Full commit SHA the repository is expected to be checked out at. Scans and generation fail when the checkout does not match."
+          }
         },
         "additionalProperties": false
       }
@@ -32,7 +38,19 @@
       "type": "object",
       "required": ["output_directory"],
       "properties": {
-        "output_directory": {"type": "string", "minLength": 1}
+        "output_directory": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Dedicated generated-output directory, relative to the destination repository root."
+        },
+        "destination": {
+          "type": "object",
+          "required": ["repository_id"],
+          "properties": {
+            "repository_id": {"type": "string", "minLength": 1}
+          },
+          "additionalProperties": false
+        }
       },
       "additionalProperties": false
     }

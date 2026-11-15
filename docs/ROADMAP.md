@@ -11,11 +11,12 @@
 
 ## Phase 1: foundation and first working CLI
 - Python package provides `init`, `add`, `scan`, `generate`, and `validate`.
-- Local CLI scans working trees, including uncommitted changes.
+- Local CLI scans working trees, including uncommitted changes; pinned scans accept only clean exact commits for automation.
+- Project configuration models source repositories and one documentation destination, which may be a source repository or a separate destination repository.
 - Safe file discovery, language detection, basic manifest analysis, and content fingerprints run without executing repository code.
 - Versioned JSON IR serializes locally with semantic IDs, evidence, and hashes.
 - Deterministic Markdown and one Mermaid architecture/component diagram are generated with ownership protection.
-- Tests cover reproducibility, deletions, no-op detection, provenance, and manual-file safety.
+- Tests cover reproducibility, deletions, no-op detection, provenance, manual-file safety, snapshot modes, destination ownership, and schema conformance.
 
 ## Phase 2: framework and multi-repository analysis
 - Add Spring Boot and React adapters with deeper framework-aware extraction.

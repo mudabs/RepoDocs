@@ -9,12 +9,15 @@ from .common import canonical_json, semantic_id, sha256_text, write_json
 
 
 IR_SCHEMA_VERSION = "1.0"
+ANALYZER_NAME = "basic-manifest"
+ANALYZER_VERSION = "1.0"
 
 
 def build_ir(
     *,
     project_id: str,
     project_name: str,
+    snapshot_mode: str,
     snapshots: list[dict[str, Any]],
     nodes: list[dict[str, Any]],
     relationships: list[dict[str, Any]],
@@ -35,8 +38,9 @@ def build_ir(
         "provenance": {
             "engine": "repodocs",
             "engine_version": __version__,
-            "analyzer": "basic-manifest",
-            "analyzer_version": "1.0",
+            "analyzer": ANALYZER_NAME,
+            "analyzer_version": ANALYZER_VERSION,
+            "snapshot_mode": snapshot_mode,
         },
     }
 
