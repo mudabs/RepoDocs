@@ -23,10 +23,15 @@ def build_ir(
     relationships: list[dict[str, Any]],
     evidence: list[dict[str, Any]],
     claims: list[dict[str, Any]],
+    limitations: list[dict[str, Any]] | None = None,
+    analyzers: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     def unique(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return list({item["id"]: item for item in items}.values())
 
+    analyzer_entries = analyzers if analyzers is not None else [
+        {"name": ANALYZER_NAME, "version": ANALYZER_VERSION, "repositories": sorted(s["repository_id"] for s in snapshots)}
+    ]
     return {
         "ir_version": IR_SCHEMA_VERSION,
         "project": {"id": project_id, "name": project_name},
@@ -35,11 +40,13 @@ def build_ir(
         "relationships": sorted(unique(relationships), key=lambda item: item["id"]),
         "evidence": sorted(unique(evidence), key=lambda item: item["id"]),
         "claims": sorted(unique(claims), key=lambda item: item["id"]),
+        "limitations": sorted(unique(limitations or []), key=lambda item: item["id"]),
         "provenance": {
             "engine": "repodocs",
             "engine_version": __version__,
             "analyzer": ANALYZER_NAME,
             "analyzer_version": ANALYZER_VERSION,
+            "analyzers": sorted(analyzer_entries, key=lambda item: item["name"]),
             "snapshot_mode": snapshot_mode,
         },
     }
@@ -61,8 +68,10 @@ def relationship_id(relationship_type: str, source: str, target: str) -> str:
     return semantic_id("relationship", relationship_type, source, target)
 
 
-def evidence_id(repository_id: str, path: str, content_hash: str) -> str:
-    return semantic_id("evidence", repository_id, path, content_hash)
+def evidence_id(repository_id: str, path: str, content_hash: str, *locator: str) -> str:
+    """Evidence identity: the file content plus an optional span locator and symbol."""
+
+    return semantic_id("evidence", repository_id, path, content_hash, *locator)
 
 
 def claim_id(text: str, evidence_ids: list[str]) -> str:
