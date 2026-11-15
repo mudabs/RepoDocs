@@ -41,6 +41,7 @@ def build_ir(
         "evidence": sorted(unique(evidence), key=lambda item: item["id"]),
         "claims": sorted(unique(claims), key=lambda item: item["id"]),
         "limitations": sorted(unique(limitations or []), key=lambda item: item["id"]),
+        "candidates": [],
         "provenance": {
             "engine": "repodocs",
             "engine_version": __version__,

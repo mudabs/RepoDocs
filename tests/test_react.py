@@ -31,6 +31,7 @@ def test_detects_react_package_and_lists_modules(tmp_path: Path, capsys) -> None
     analyzers = {item["name"]: item["repositories"] for item in payload["data"]["analyzers"]}
     assert analyzers == {
         "basic-manifest": ["frontend"],
+        "openapi": [],
         "orm-metadata": [],
         "postgresql": [],
         "react": ["frontend"],

@@ -262,6 +262,7 @@ def test_scan_is_deterministic_schema_valid_and_renders(tmp_path: Path, capsys) 
     assert_valid("system-ir-1.0.json", first)
     assert first["provenance"]["analyzers"] == [
         {"name": "basic-manifest", "repositories": ["backend"], "version": "1.0"},
+        {"name": "openapi", "repositories": [], "version": "1.0"},
         {"name": "orm-metadata", "repositories": ["backend"], "version": "1.0"},
         {"name": "postgresql", "repositories": [], "version": "1.0"},
         {"name": "react", "repositories": [], "version": "1.0"},
@@ -302,6 +303,7 @@ def test_repository_without_spring_boot_runs_no_adapter(tmp_path: Path, capsys) 
     assert ir["limitations"] == []
     assert {item["name"]: item["repositories"] for item in ir["provenance"]["analyzers"]} == {
         "basic-manifest": ["backend"],
+        "openapi": [],
         "orm-metadata": [],
         "postgresql": [],
         "react": [],

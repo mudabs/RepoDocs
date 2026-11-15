@@ -12,6 +12,7 @@ from typing import Any, Iterable
 
 from .analyzers import Analyzer, RepositoryContext, SourceFile, builtin_analyzers, run_analyzers
 from .common import sha256_bytes
+from .correlation import CORRELATOR_NAME, CORRELATOR_VERSION, discover_candidates
 from .config import ProjectConfig
 from .errors import ScanError
 from .ir import ANALYZER_NAME, ANALYZER_VERSION, build_ir, claim_id, evidence_id, node_id, relationship_id
@@ -431,7 +432,7 @@ def scan_project(
                 ],
             }
         )
-    return build_ir(
+    ir = build_ir(
         project_id=config.project_id,
         project_name=config.project_name,
         snapshot_mode=mode,
@@ -444,4 +445,7 @@ def scan_project(
         analyzers=[
             {**summary, "repositories": sorted(summary["repositories"])} for summary in analyzer_summary.values()
         ],
-    ), sorted(set(warnings))
+    )
+    ir["candidates"] = discover_candidates(ir)
+    ir["provenance"]["correlator"] = {"name": CORRELATOR_NAME, "version": CORRELATOR_VERSION}
+    return ir, sorted(set(warnings))

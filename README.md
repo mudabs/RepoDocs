@@ -38,7 +38,7 @@ For a single repository that documents itself, mark it as both source and destin
 repodocs add . --id app --destination
 ```
 
-The CLI writes versioned JSON responses to standard output. Scan state and the artifact manifest are stored under `.repodocs/` next to `repodocs.json`; generated artifacts are written to the destination repository under the configured dedicated output directory, which defaults to `docs/generated/`. Every scan reports languages, manifests, and dependencies; the Spring Boot, React, and PostgreSQL adapters add framework-aware facts for repositories where they detect their framework (see Framework-aware analysis below).
+The CLI writes versioned JSON responses to standard output. Scan state and the artifact manifest are stored under `.repodocs/` next to `repodocs.json`; generated artifacts are written to the destination repository under the configured dedicated output directory, which defaults to `docs/generated/`. Every scan reports languages, manifests, and dependencies; the Spring Boot, React, PostgreSQL, and OpenAPI adapters add supported source facts (see Framework-aware analysis and Cross-repository candidates below).
 
 ## CLI contract
 
@@ -91,6 +91,36 @@ The ORM metadata step (`orm-metadata`) connects a persistence entity to the tabl
 Standalone index, table-drop, schema, extension, and enum-type migrations are included in migration order. Repeated column and named-index definitions preserve existing state rather than duplicating it. Implicit foreign keys are removed when a referenced primary-key column is dropped. A recorded driver declaration cites its manifest in the database node's evidence.
 
 Standalone unsupported DDL and procedural migrations are reported with evidence too. Index names are scoped to the owning table's schema; qualified index drops target that schema, while ambiguous unqualified drops are reported without changing state. Runtime search paths are not guessed.
+
+### Cross-repository candidates
+
+After analysis, `scan` matches React `http_request` findings to endpoints in
+other repositories. Exact methods and literal/template paths must agree.
+All discovered matches remain **unconfirmed, inferred candidates**, even if
+only one high-confidence match exists. Candidate IDs use source/target semantic
+identities; confidence, evidence, and both snapshot revisions are stored separately.
+A client base URL alone does not prove service ownership. Competing endpoints
+are retained; an origin match only strengthens a candidate when backend OpenAPI
+server evidence supports it. Conflicting explicit origins are excluded.
+
+The `openapi` analyzer supports **OpenAPI 3.0.x and 3.1.x JSON** paths and
+standard HTTP operations, literal HTTP(S)/root-relative servers (operation,
+Path Item, then document precedence), and same-document `#/...` JSON Pointers.
+Local Path Item reference chains are bounded; cycles, missing targets, siblings,
+operation references, YAML, 3.2.x, variable servers, and all external references
+are reported rather than guessed. Remote references are never fetched, and
+file references are never opened, even within the repository.
+
+URL credentials, all queries, and fragments are removed before request identities,
+metadata, claims, and docs are created. Dynamic hosts and unsupported schemes
+are rejected. Imported client configuration is included in request evidence.
+See ADR-018 for matching rules, confidence ranks, and the exact OpenAPI subset.
+
+The IR has a required `candidates` array; the JSON scan response reports its count.
+Generated Markdown labels candidates as unconfirmed and cites both sides'
+evidence and revisions. Candidates are not authoritative diagram edges.
+Confirmation/rejection commands, stale confirmations, and required-confirmation
+CI failures belong to #18 and are not implemented here.
 
 ### Exit codes
 | Code | Meaning |

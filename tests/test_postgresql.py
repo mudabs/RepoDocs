@@ -334,6 +334,7 @@ def test_scan_is_deterministic_schema_valid_and_renders(tmp_path: Path, capsys) 
     assert_valid("system-ir-1.0.json", first)
     assert first["provenance"]["analyzers"] == [
         {"name": "basic-manifest", "repositories": ["database"], "version": "1.0"},
+        {"name": "openapi", "repositories": [], "version": "1.0"},
         {"name": "orm-metadata", "repositories": [], "version": "1.0"},
         {"name": "postgresql", "repositories": ["database"], "version": "1.0"},
         {"name": "react", "repositories": [], "version": "1.0"},
