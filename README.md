@@ -71,5 +71,9 @@ The CLI writes versioned JSON responses to standard output. Scan state and the a
 3. Work on a feature branch and submit all changes through a pull request to `main`.
 4. Run the test suite with `python -m pytest`.
 
+## License
+
+RepoDocs is licensed under the Apache License, Version 2.0. The complete license text is in `LICENSE`, and attribution notices are in `NOTICE`. The decision is recorded in `docs/DECISIONS.md` (D28) and `docs/adr/ADR-013-open-source-license.md`. See `docs/RELEASE.md` for release notes on licensing.
+
 ## Keeping context current
 When decisions change, update `docs/DECISIONS.md`, the relevant ADR, and affected specifications. These files, not remembered conversation fragments, should be the authoritative source.
