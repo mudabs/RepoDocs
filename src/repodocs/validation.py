@@ -12,6 +12,7 @@ from typing import Any
 from .common import semantic_id, sha256_text
 from .config import ProjectConfig
 from .confirmations import DECISIONS, STATUS_CANDIDATE, STATUS_STALE, STATUSES, apply_decisions, load_decisions
+from .correlation import discover_candidates
 from .errors import OwnershipError, ValidationError
 from .generator import (
     MANIFEST_SCHEMA_VERSION,
@@ -203,6 +204,15 @@ def validate_candidates(ir: dict[str, Any]) -> None:
         if (attributes["origin_supported"] != ("declared-server-origin-match" in reasons)
                 or source["attributes"].get("http_method") != target["attributes"].get("http_method")):
             fail()
+
+    # Field checks alone would accept a well-formed candidate whose path or origin does not
+    # match its endpoint. The stored matches must be exactly what discovery derives from the
+    # graph; decision state is validated separately.
+    def match_facts(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [{k: v for k, v in item.items() if k not in ("status", "confirmation")} for item in items]
+
+    if match_facts(candidates) != match_facts(discover_candidates(ir)):
+        raise ValidationError("Cross-repository candidates do not match the request and endpoint facts; run scan again")
 
 
 def validate_artifacts(config: ProjectConfig, ir: dict[str, Any]) -> list[str]:
