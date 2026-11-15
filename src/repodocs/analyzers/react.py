@@ -85,6 +85,7 @@ INSTANCE_CREATE = re.compile(r"(?:const|let|var)\s+([\w$]+)\s*=\s*(axios\s*\.\s*
 EVAL_CALL = re.compile(r"(?<![\w$.])(?:eval\s*\(|new\s+Function\s*\()")
 LAZY_CALL = re.compile(r"(?<![\w$.])(?:React\s*\.\s*)?lazy\s*\(")
 NEXT_ROUTE_HANDLER = re.compile(r"\bexport\s+(?:async\s+)?(?:function\s+|const\s+)(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\b")
+REACT_IMPORT = re.compile(r"""from\s+["']react(?:/[\w-]+)?["']|require\s*\(\s*["']react(?:/[\w-]+)?["']\s*\)""")
 
 
 @dataclass
@@ -197,10 +198,11 @@ class ReactAnalyzer:
 
     @staticmethod
     def _is_react_source(context: RepositoryContext, source: SourceFile) -> bool:
-        if source.path.endswith((".jsx", ".tsx")):
-            return True
+        """A module that imports ``react`` explicitly. JSX alone is not a React signal (Preact, Solid, and
+        other libraries use JSX too), so such files are analyzed only when a package declares react."""
+
         text = context.text(source.path)
-        return text is not None and re.search(r"""from\s+["']react["']|require\s*\(\s*["']react["']\s*\)""", text) is not None
+        return text is not None and REACT_IMPORT.search(text) is not None
 
     # ------------------------------------------------------------------ analysis
     def analyze(self, context: RepositoryContext) -> AnalysisResult:
@@ -212,8 +214,17 @@ class ReactAnalyzer:
             return result
 
         framework_node = node_id("framework", repository, "react")
-        manifest_evidence = [context.file_evidence(package.path) for package in packages]
-        result.evidence.extend(manifest_evidence)
+        # Detection evidence: the manifests that declare react, or, without any, the modules that import it.
+        if packages:
+            detection_evidence = [context.file_evidence(package.path) for package in packages]
+            detected_from = "manifest"
+        else:
+            detection_evidence = [
+                context.file_evidence(source.path) for source in module_files if self._is_react_source(context, source)
+            ]
+            detected_from = "source"
+        result.evidence.extend(detection_evidence)
+        detection_evidence_ids = sorted(item["id"] for item in detection_evidence)
         version = next((package.react_version for package in packages if package.react_version), None)
         result.nodes.append(
             {
@@ -224,13 +235,14 @@ class ReactAnalyzer:
                     "repository_id": repository,
                     "version": version,
                     "version_kind": "declared-range" if version else None,
+                    "detected_from": detected_from,
                     "manifests": [package.path for package in packages],
                 },
-                "evidence_ids": [item["id"] for item in manifest_evidence],
+                "evidence_ids": detection_evidence_ids,
             }
         )
         result.relationships.append(
-            self._edge("depends_on", context.repository_node_id, framework_node, [item["id"] for item in manifest_evidence], {"framework": FRAMEWORK_NAME})
+            self._edge("depends_on", context.repository_node_id, framework_node, detection_evidence_ids, {"framework": FRAMEWORK_NAME})
         )
         for package in packages:
             self._service(context, package, result)
@@ -238,9 +250,10 @@ class ReactAnalyzer:
             result.limitations.append(
                 context.limitation(
                     LIMITATION_UNSUPPORTED_CONSTRUCT,
-                    "React was detected from source imports only; no package.json declares react, so the package, "
-                    "toolchain, and version are unknown and modules are attached to the repository.",
-                    [],
+                    f"React was detected from {len(detection_evidence)} module(s) that import react; no package.json "
+                    "declares react, so the package, toolchain, and version are unknown and modules are attached to "
+                    "the repository.",
+                    detection_evidence_ids,
                 )
             )
 
@@ -827,7 +840,7 @@ class ReactAnalyzer:
                 default = modules[target_path].default_export
                 if decl.default_name and default in exported:
                     instances[decl.default_name] = exported[default]
-            sites: dict[tuple[str, str, str], dict[str, Any]] = {}
+            sites: dict[tuple[str, str, str, str, str], dict[str, Any]] = {}
             calls: list[tuple[int, str, str | None, str | None]] = []  # (paren offset, client, verb, instance)
             for match in FETCH_CALL.finditer(masked):
                 calls.append((match.end() - 1, "fetch", None, None))
@@ -900,12 +913,16 @@ class ReactAnalyzer:
                                 )
                                 method = "ANY"
                 base_url = instances[instance][1] if instance else None
-                key = (method, url, client)
+                # Identity includes the client instance and its base URL, so `api.get("/users")` and
+                # `admin.get("/users")` on instances with different base URLs stay distinct sites.
+                key = (method, url, client, instance or "", base_url or "")
                 result.evidence.append(span)
                 site = sites.setdefault(
                     key,
                     {
-                        "id": node_id("http_request", context.repository_id, module.file.path, client, method, url),
+                        "id": node_id(
+                            "http_request", context.repository_id, module.file.path, client, instance or "", base_url or "", method, url
+                        ),
                         "type": "http_request",
                         "name": f"{method} {url}",
                         "attributes": {

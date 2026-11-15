@@ -262,6 +262,107 @@ def test_react_dependency_without_modules_is_not_detected(tmp_path: Path, capsys
     assert nodes_of(ir, "service") == [] and ir["limitations"] == []
 
 
+def single_module_project(tmp_path: Path, capsys, files: dict[str, str]) -> dict:
+    root = tmp_path / "project"
+    root.mkdir()
+    repository = root / "web"
+    for relative, content in files.items():
+        path = repository / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    assert invoke(root, capsys, "init", "Web")[0] == 0
+    assert invoke(root, capsys, "add", "web", "--id", "web", "--destination")[0] == 0
+    assert invoke(root, capsys, "scan")[0] == 0
+    return read_ir(root)
+
+
+def test_source_only_detection_carries_evidence(tmp_path: Path, capsys) -> None:
+    """Without a package.json, the framework node, its edge, and the limitation cite the importing modules."""
+
+    ir = single_module_project(
+        tmp_path,
+        capsys,
+        {
+            "src/App.jsx": 'import React from "react";\n\nexport default function App() {\n  return <h1>Hi</h1>;\n}\n',
+            "src/util.js": "export const x = 1;\n",
+        },
+    )
+    assert {item["name"]: item["repositories"] for item in ir["provenance"]["analyzers"]}["react"] == ["web"]
+    evidence = {item["id"]: item for item in ir["evidence"]}
+    (framework,) = nodes_of(ir, "framework")
+    assert framework["attributes"]["detected_from"] == "source"
+    assert framework["attributes"]["manifests"] == [] and framework["attributes"]["version"] is None
+    assert [evidence[item]["path"] for item in framework["evidence_ids"]] == ["src/App.jsx"]
+    (edge,) = [item for item in ir["relationships"] if item["type"] == "depends_on" and item["target"] == framework["id"]]
+    assert edge["evidence_ids"] == framework["evidence_ids"]
+    by_kind = {item["kind"]: item for item in ir["limitations"]}
+    assert sorted(by_kind) == ["ambiguous-reference", "unsupported-construct"]
+    limitation = by_kind["unsupported-construct"]
+    assert limitation["message"].startswith("React was detected from 1 module(s) that import react; no package.json declares react")
+    assert limitation["evidence_ids"] == framework["evidence_ids"]
+    # Without a manifest there is no dependency node for react, so the import is reported, not linked.
+    assert "react" in by_kind["ambiguous-reference"]["message"]
+    assert nodes_of(ir, "service") == []
+    assert ("web", "src/App.jsx", {}) in relationships_of(ir, "contains")
+    assert [node["name"] for node in nodes_of(ir, "component")] == ["App"]
+    assert all(item["evidence_ids"] for item in ir["limitations"])
+    # Every analyzer contribution carries evidence; only the basic project-to-repository edge has none.
+    project_node = next(node["id"] for node in ir["nodes"] if node["type"] == "project")
+    assert all(item["evidence_ids"] for item in ir["relationships"] if item["source"] != project_node)
+    assert_valid("system-ir-1.0.json", ir)
+
+
+def test_jsx_without_react_dependency_or_import_is_not_detected(tmp_path: Path, capsys) -> None:
+    """JSX is used by Preact, Solid, and others; it is not a React signal on its own."""
+
+    ir = single_module_project(
+        tmp_path,
+        capsys,
+        {
+            "package.json": json.dumps({"name": "solid-app", "dependencies": {"solid-js": "^1.8.0"}}),
+            "src/App.tsx": 'import { render } from "solid-js/web";\n\nexport default function App() {\n  return <h1>Hi</h1>;\n}\n',
+        },
+    )
+    assert {item["name"]: item["repositories"] for item in ir["provenance"]["analyzers"]}["react"] == []
+    assert nodes_of(ir, "framework") == [] and nodes_of(ir, "component") == [] and ir["limitations"] == []
+
+
+def test_distinct_client_instances_are_not_merged(tmp_path: Path, capsys) -> None:
+    ir = single_module_project(
+        tmp_path,
+        capsys,
+        {
+            "package.json": json.dumps({"name": "web", "dependencies": {"react": "^18.3.1", "axios": "^1.7.2"}}),
+            "src/clients.ts": (
+                'import axios from "axios";\n\n'
+                'export const api = axios.create({ baseURL: "/api" });\n'
+                'export const admin = axios.create({ baseURL: "/admin" });\n'
+                "export async function load() {\n"
+                '  await api.get("/users");\n'
+                '  await admin.get("/users");\n'
+                '  await axios.get("/users");\n'
+                '  await api.get("/users");\n'
+                "}\n"
+            ),
+        },
+    )
+    sites = sorted(
+        (
+            (node["attributes"]["instance"], node["attributes"]["base_url"], node["name"], node["attributes"]["lines"])
+            for node in nodes_of(ir, "http_request")
+        ),
+        key=lambda item: (item[0] or "", item[1] or ""),
+    )
+    assert sites == [
+        (None, None, "GET /users", [8]),
+        ("admin", "/admin", "GET /users", [7]),
+        ("api", "/api", "GET /users", [6, 9]),
+    ]
+    assert len({node["id"] for node in nodes_of(ir, "http_request")}) == 3
+    assert len(relationships_of(ir, "requests")) == 3
+    assert ir["limitations"] == []
+
+
 def test_next_file_conventions_become_routes_and_api_endpoints(tmp_path: Path, capsys) -> None:
     root = tmp_path / "project"
     root.mkdir()
