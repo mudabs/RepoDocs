@@ -86,6 +86,17 @@ def validate_ir(ir: dict[str, Any]) -> list[str]:
             raise ValidationError(f"Evidence references an unknown snapshot: {item.get('id')}")
         if item.get("revision") != snapshot_revisions[repository_id]:
             raise ValidationError(f"Evidence does not resolve to its snapshot revision: {item.get('id')}")
+        if item.get("kind") == "span":
+            start, end = item.get("line_start"), item.get("line_end")
+            if not isinstance(start, int) or not isinstance(end, int) or start < 1 or end < start:
+                raise ValidationError(f"Span evidence has an invalid line range: {item.get('id')}")
+    for limitation in ir.get("limitations", []):
+        if limitation.get("repository_id") not in snapshot_revisions:
+            raise ValidationError(f"Limitation references an unknown snapshot: {limitation.get('id')}")
+        if not limitation.get("kind") or not limitation.get("message") or not limitation.get("analyzer"):
+            raise ValidationError(f"Limitation is missing analyzer, kind, or message: {limitation.get('id')}")
+        if not set(limitation.get("evidence_ids", [])) <= evidence_ids:
+            raise ValidationError(f"Limitation references unknown evidence: {limitation.get('id')}")
     for relationship in ir["relationships"]:
         if relationship.get("source") not in node_ids or relationship.get("target") not in node_ids:
             raise ValidationError(f"Relationship references an unknown node: {relationship.get('id')}")

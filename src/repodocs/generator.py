@@ -78,39 +78,149 @@ def render_markdown(ir: dict[str, Any]) -> str:
             " otherwise it resolves to the working-tree content fingerprint.",
         ]
     )
+    nodes = {node["id"]: node for node in ir["nodes"]}
+    lines.extend(_render_analysis_sections(ir, nodes, evidence))
     lines.extend(["", "## Observed relationships", ""])
     observed_relationships = [item for item in relationships if item.get("classification") == "observed"]
     if observed_relationships:
         lines.extend(["| Type | Source | Target |", "|---|---|---|"])
-        nodes = {node["id"]: node for node in ir["nodes"]}
         for relationship in observed_relationships:
             source = nodes.get(relationship["source"], {}).get("name", relationship["source"])
             target = nodes.get(relationship["target"], {}).get("name", relationship["target"])
-            lines.append(f"| {relationship['type']} | {source} | {target} |")
+            lines.append(f"| {relationship['type']} | {_cell(source)} | {_cell(target)} |")
     else:
         lines.append("No observed relationships were extracted.")
     lines.extend(["", "## Evidence-backed claims", ""])
     for claim in claims:
-        evidence_refs = []
-        for evidence_id in claim["evidence_ids"]:
-            source = evidence.get(evidence_id)
-            if source:
-                evidence_refs.append(f"`{source['repository_id']}:{source['path']}` ({evidence_id})")
-            else:
-                evidence_refs.append(f"`{evidence_id}`")
-        evidence_text = ", ".join(evidence_refs)
-        lines.append(f"- {claim['text']} Evidence: {evidence_text or 'none'}.")
+        evidence_text = ", ".join(_evidence_ref(evidence, evidence_id) for evidence_id in claim["evidence_ids"])
+        lines.append(f"- {_cell(claim['text'])} Evidence: {evidence_text or 'none'}.")
+    lines.extend(["", "## Reported limitations", ""])
+    limitations = ir.get("limitations", [])
+    if limitations:
+        lines.append(
+            "Each entry names a construct the analyzers saw but did not turn into a fact. Nothing listed here"
+            " is inferred into the documentation."
+        )
+        lines.append("")
+        for limitation in sorted(limitations, key=lambda item: (item["repository_id"], item["kind"], item["message"])):
+            evidence_text = ", ".join(_evidence_ref(evidence, evidence_id) for evidence_id in limitation["evidence_ids"])
+            lines.append(
+                f"- **{limitation['repository_id']}** `{limitation['kind']}` ({limitation['analyzer']}): "
+                f"{_cell(limitation['message'])} Evidence: {evidence_text or 'none'}."
+            )
+    else:
+        lines.append("The analyzers that ran reported no limitations.")
     lines.extend(
         [
             "",
             "## Limitations",
             "",
-            "Framework-aware endpoint and entity extraction is not enabled by this foundation slice."
-            " Dynamic behavior and runtime execution are not inferred.",
+            "Only the analyzers listed under Analysis coverage ran, and only for the repositories named there."
+            " Facts are extracted from source text; dynamic behavior, reflection, generated code, and runtime"
+            " configuration are reported above rather than inferred. Runtime execution order is never inferred.",
             "",
         ]
     )
     return "\n".join(lines)
+
+
+def _cell(value: Any) -> str:
+    return str(value).replace("|", "\\|").replace("\n", " ")
+
+
+def _evidence_ref(evidence: dict[str, dict[str, Any]], evidence_id: str) -> str:
+    source = evidence.get(evidence_id)
+    if not source:
+        return f"`{evidence_id}`"
+    location = f"{source['repository_id']}:{source['path']}"
+    if source.get("kind") == "span":
+        location += f":L{source['line_start']}-L{source['line_end']}"
+    return f"`{location}` ({evidence_id})"
+
+
+def _render_analysis_sections(
+    ir: dict[str, Any], nodes: dict[str, dict[str, Any]], evidence: dict[str, dict[str, Any]]
+) -> list[str]:
+    """Framework-aware sections: coverage, services, endpoints, entities."""
+
+    lines = ["", "## Analysis coverage", ""]
+    for analyzer in ir["provenance"].get("analyzers", []):
+        repositories = ", ".join(analyzer.get("repositories", [])) or "no repository detected"
+        lines.append(f"- `{analyzer['name']}` {analyzer['version']}: {repositories}")
+    relationships = ir["relationships"]
+    contains: dict[str, list[str]] = {}
+    exposes: dict[str, list[str]] = {}
+    references: dict[str, int] = {}
+    for relationship in relationships:
+        if relationship["type"] == "contains":
+            contains.setdefault(relationship["source"], []).append(relationship["target"])
+        elif relationship["type"] == "exposes":
+            exposes.setdefault(relationship["source"], []).append(relationship["target"])
+        elif relationship["type"] == "references":
+            references[relationship["source"]] = references.get(relationship["source"], 0) + 1
+
+    services = sorted((node for node in nodes.values() if node["type"] == "service"), key=lambda item: (item["attributes"].get("repository_id", ""), item["name"]))
+    lines.extend(["", "## Services", ""])
+    if services:
+        lines.extend(
+            [
+                "| Service | Repository | Framework | Application class | Controllers | Endpoints | Entities |",
+                "|---|---|---|---|---:|---:|---:|",
+            ]
+        )
+        for service in services:
+            attributes = service["attributes"]
+            members = [nodes[target] for target in contains.get(service["id"], []) if target in nodes]
+            controllers = [item for item in members if item["attributes"].get("stereotype") == "controller"]
+            entities = [item for item in members if item["attributes"].get("stereotype") == "entity"]
+            endpoint_count = sum(len(exposes.get(item["id"], [])) for item in controllers)
+            framework = attributes.get("framework", "")
+            if attributes.get("framework_version"):
+                framework += f" {attributes['framework_version']}"
+            lines.append(
+                f"| {_cell(service['name'])} | {attributes.get('repository_id', '')} | {_cell(framework)} | "
+                f"`{_cell(attributes.get('application_class', ''))}` | {len(controllers)} | {endpoint_count} | {len(entities)} |"
+            )
+    else:
+        lines.append("No framework-aware services were detected.")
+
+    endpoints = sorted(
+        (node for node in nodes.values() if node["type"] == "endpoint"),
+        key=lambda item: (item["attributes"].get("repository_id", ""), item["attributes"].get("path", ""), item["attributes"].get("http_method", "")),
+    )
+    lines.extend(["", "## Endpoints", ""])
+    if endpoints:
+        lines.extend(["| Method | Path | Controller | Handler | Repository | Evidence |", "|---|---|---|---|---|---|"])
+        for endpoint in endpoints:
+            attributes = endpoint["attributes"]
+            refs = ", ".join(_evidence_ref(evidence, evidence_id) for evidence_id in endpoint["evidence_ids"])
+            lines.append(
+                f"| {attributes.get('http_method', '')} | `{_cell(attributes.get('path', ''))}` | "
+                f"`{_cell(attributes.get('controller', ''))}` | {_cell(attributes.get('handler', ''))} | "
+                f"{attributes.get('repository_id', '')} | {refs} |"
+            )
+    else:
+        lines.append("No request mappings with literal paths were extracted.")
+
+    entities = sorted(
+        (node for node in nodes.values() if node["type"] == "class" and node["attributes"].get("stereotype") == "entity"),
+        key=lambda item: (item["attributes"].get("repository_id", ""), item["attributes"].get("qualified_name", "")),
+    )
+    lines.extend(["", "## Entities", ""])
+    if entities:
+        lines.extend(["| Entity | Table | Fields | Associations | Repository |", "|---|---|---:|---:|---|"])
+        for entity in entities:
+            attributes = entity["attributes"]
+            table = attributes.get("table") or "not declared"
+            lines.append(
+                f"| `{_cell(attributes.get('qualified_name', entity['name']))}` | {_cell(table)} | "
+                f"{len(attributes.get('fields', []))} | {references.get(entity['id'], 0)} | {attributes.get('repository_id', '')} |"
+            )
+        lines.append("")
+        lines.append("Table names are listed only when declared with @Table; default naming strategies are not applied.")
+    else:
+        lines.append("No persistence entities were extracted.")
+    return lines
 
 
 def render_mermaid(ir: dict[str, Any]) -> str:
@@ -119,6 +229,14 @@ def render_mermaid(ir: dict[str, Any]) -> str:
     lines = ["flowchart TD"]
     project_key = "project"
     lines.append(f'    {project_key}["{_escape_label(project["name"])}"]')
+    nodes = {node["id"]: node for node in ir["nodes"]}
+    exposes: dict[str, int] = {}
+    contains: dict[str, list[str]] = {}
+    for relationship in ir["relationships"]:
+        if relationship["type"] == "exposes":
+            exposes[relationship["source"]] = exposes.get(relationship["source"], 0) + 1
+        elif relationship["type"] == "contains":
+            contains.setdefault(relationship["source"], []).append(relationship["target"])
     for snapshot in snapshots:
         repo_id = snapshot["repository_id"]
         repo_key = "repo_" + sha256_text(repo_id)[:10]
@@ -129,6 +247,22 @@ def render_mermaid(ir: dict[str, Any]) -> str:
             language_key = "lang_" + sha256_text(f"{repo_id}:{language}")[:10]
             lines.append(f'    {language_key}["{_escape_label(language)}"]')
             lines.append(f"    {repo_key} --> {language_key}")
+        services = sorted(
+            (node for node in nodes.values() if node["type"] == "service" and node["attributes"].get("repository_id") == repo_id),
+            key=lambda item: item["id"],
+        )
+        for service in services:
+            members = [nodes[target] for target in contains.get(service["id"], []) if target in nodes]
+            controllers = [item for item in members if item["attributes"].get("stereotype") == "controller"]
+            endpoint_count = sum(exposes.get(item["id"], 0) for item in controllers)
+            entity_count = sum(1 for item in members if item["attributes"].get("stereotype") == "entity")
+            label = (
+                f"{service['name']} ({service['attributes'].get('framework', 'service')}): "
+                f"{len(controllers)} controllers, {endpoint_count} endpoints, {entity_count} entities"
+            )
+            service_key = "svc_" + sha256_text(service["id"])[:10]
+            lines.append(f'    {service_key}["{_escape_label(label)}"]')
+            lines.append(f"    {repo_key} --> {service_key}")
     return "\n".join(lines) + "\n"
 
 

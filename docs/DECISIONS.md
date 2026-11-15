@@ -34,6 +34,7 @@
 | D27 | Development proceeds from contracts to one Spring Boot slice, then multi-repository AI-enhanced MVP | Controls risk without reducing the final MVP goal |
 | D28 | RepoDocs is licensed under Apache 2.0 | Permissive adoption with an explicit patent grant |
 | D29 | Repositories have a `source` or `destination` role with one explicit documentation destination; scans run in `local` or `pinned` snapshot mode, pinned requires an explicit pin, and evidence resolves to a commit or a content fingerprint (ADR-014) | Stable destination and provenance contracts before framework adapters build on the IR |
+| D30 | Built-in analyzers implement a `detect`/`analyze` contract over a read-only, hash-checked repository context; evidence is `file` or `span` with line ranges; literal source facts are `observed` and name matches are `inferred`; unsupported constructs go into a required IR `limitations` list with a closed set of kinds; configuration values are never recorded (ADR-015) | Framework adapters share one boundary, keep evidence precise, and report what they cannot support instead of guessing |
 
 ## Remaining open decisions: require validation/approval
 | ID | Question | Key tradeoff |

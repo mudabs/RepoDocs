@@ -176,6 +176,8 @@ def _cmd_scan(args: argparse.Namespace) -> int:
             "relationships": len(ir["relationships"]),
             "evidence": len(ir["evidence"]),
             "claims": len(ir["claims"]),
+            "limitations": len(ir["limitations"]),
+            "analyzers": ir["provenance"]["analyzers"],
         },
         warnings=warnings,
     )

@@ -10,10 +10,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
+from .analyzers import Analyzer, RepositoryContext, SourceFile, builtin_analyzers, run_analyzers
 from .common import sha256_bytes
 from .config import ProjectConfig
 from .errors import ScanError
-from .ir import build_ir, claim_id, evidence_id, node_id, relationship_id
+from .ir import ANALYZER_NAME, ANALYZER_VERSION, build_ir, claim_id, evidence_id, node_id, relationship_id
 from .snapshot import SNAPSHOT_MODE_LOCAL, content_fingerprint, read_git_state, resolve_snapshot
 
 
@@ -222,16 +223,20 @@ def scan_project(
     *,
     mode: str = SNAPSHOT_MODE_LOCAL,
     pins: dict[str, str] | None = None,
+    analyzers: tuple[Analyzer, ...] | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
     """Scan every source repository into a System IR under the requested snapshot mode.
 
     ``pins`` maps repository IDs to expected commit SHAs for this run and overrides the
-    configured ``pinned_revision``. Destination-only repositories are not scanned.
+    configured ``pinned_revision``. Destination-only repositories are not scanned. The
+    basic manifest facts are always extracted; ``analyzers`` (default: the built-in
+    framework adapters) run afterwards on every repository they detect.
     """
 
     pins = pins or {}
     for repository_id in pins:
         config.repository(repository_id)
+    analyzers = builtin_analyzers() if analyzers is None else analyzers
     project_node = node_id("project", config.project_id)
     snapshots: list[dict[str, Any]] = []
     nodes: list[dict[str, Any]] = [
@@ -240,9 +245,14 @@ def scan_project(
     relationships: list[dict[str, Any]] = []
     evidence: list[dict[str, Any]] = []
     claims: list[dict[str, Any]] = []
+    limitations: list[dict[str, Any]] = []
     warnings: list[str] = []
+    analyzer_summary: dict[str, dict[str, Any]] = {
+        ANALYZER_NAME: {"name": ANALYZER_NAME, "version": ANALYZER_VERSION, "repositories": []}
+    }
 
     for repository in config.source_repositories():
+        analyzer_summary[ANALYZER_NAME]["repositories"].append(repository.id)
         root = config.resolve_repository(repository)
         files, file_warnings, total_bytes = discover_files(root, _excluded_output_paths(config, repository.id))
         warnings.extend(f"{repository.id}: {warning}" for warning in file_warnings)
@@ -296,6 +306,7 @@ def scan_project(
                     "revision": revision,
                     "revision_kind": revision_kind,
                     "kind": "file",
+                    "analyzer": ANALYZER_NAME,
                 }
             )
         for language in languages:
@@ -384,6 +395,25 @@ def scan_project(
                         "evidence_ids": manifest_evidence,
                     }
                 )
+        context = RepositoryContext(
+            repository_id=repository.id,
+            root=root,
+            files=[SourceFile(item.path, item.size, item.content_hash, item.language) for item in files],
+            revision=revision,
+            revision_kind=revision_kind,
+        )
+        analysis, report = run_analyzers(context, analyzers)
+        nodes.extend(analysis.nodes)
+        relationships.extend(analysis.relationships)
+        evidence.extend(analysis.evidence)
+        claims.extend(analysis.claims)
+        limitations.extend(analysis.limitations)
+        for entry in report:
+            summary = analyzer_summary.setdefault(
+                entry["name"], {"name": entry["name"], "version": entry["version"], "repositories": []}
+            )
+            if entry["detected"]:
+                summary["repositories"].append(repository.id)
         snapshots.append(
             {
                 "repository_id": repository.id,
@@ -410,4 +440,8 @@ def scan_project(
         relationships=relationships,
         evidence=evidence,
         claims=claims,
+        limitations=limitations,
+        analyzers=[
+            {**summary, "repositories": sorted(summary["repositories"])} for summary in analyzer_summary.values()
+        ],
     ), sorted(set(warnings))

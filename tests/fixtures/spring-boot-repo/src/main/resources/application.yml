@@ -1,0 +1,27 @@
+spring:
+  application:
+    name: smartcart-backend
+  datasource:
+    url: jdbc:postgresql://db.internal:5432/smartcart
+    username: smartcart
+    password: S3cretValueMustNotLeak
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+server:
+  port: 8080
+smartcart:
+  orders:
+    page-size: 25
+  features: {recommendations: true}
+logging:
+  level:
+    root: INFO
+---
+spring:
+  config:
+    activate:
+      on-profile: local
+  datasource:
+    url: jdbc:postgresql://localhost:5432/smartcart
