@@ -14,5 +14,10 @@ CREATE TABLE orders (
     reference TEXT
 );
 
+CREATE TABLE legacy_orders (
+    id BIGINT PRIMARY KEY
+);
+
 CREATE INDEX idx_orders_customer ON orders (customer_id);
 CREATE UNIQUE INDEX idx_orders_reference ON orders (reference);
+CREATE INDEX idx_customers_tenant ON customers (tenant);

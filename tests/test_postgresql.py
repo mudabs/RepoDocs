@@ -258,6 +258,14 @@ def test_orm_metadata_is_linked_as_an_inferred_relationship(tmp_path: Path, caps
     analyzers = {item["name"]: item for item in payload["data"]["analyzers"]}
     assert analyzers["orm-metadata"]["repositories"] == ["store"]
     assert analyzers["postgresql"]["repositories"] == ["store"]
+
+    # The declared driver is recorded, and the database node cites the manifest.
+    (database,) = nodes_of(ir, "database")
+    assert database["attributes"]["driver"] == {"manifest": "pom.xml", "dependency": "org.postgresql"}
+    evidence = {item["id"]: item for item in ir["evidence"]}
+    manifest = [evidence[item] for item in database["evidence_ids"] if evidence[item]["path"] == "pom.xml"]
+    assert len(manifest) == 1
+    assert manifest[0]["kind"] == "file"
     assert_valid("system-ir-1.0.json", ir)
 
 
@@ -309,6 +317,76 @@ def test_repeated_table_definition_does_not_erase_the_schema(tmp_path: Path, cap
     assert any("PostgreSQL keeps the existing definition" in message for message in messages)
 
 
+def test_repeated_column_and_index_do_not_duplicate_state(tmp_path: Path, capsys) -> None:
+    """`IF NOT EXISTS` keeps what is already there instead of adding it twice."""
+
+    root, _ = migration_project(tmp_path, capsys)
+    assert invoke(root, capsys, "scan")[0] == 0
+    ir = read_ir(root)
+
+    orders = table_of(ir, "orders")
+    assert [column["name"] for column in orders["attributes"]["columns"]] == ["id", "customer"]
+    assert [index["name"] for index in orders["attributes"]["indexes"]] == ["idx_orders_customer"]
+    messages = [item["message"] for item in ir["limitations"]]
+    assert any("column customer already exists" in message for message in messages)
+    assert any("index idx_orders_customer already exists" in message for message in messages)
+
+
+def test_standalone_schema_migrations_are_applied(tmp_path: Path, capsys) -> None:
+    """A migration that only changes the schema around the tables still counts."""
+
+    root, _ = migration_project(tmp_path, capsys)
+    assert invoke(root, capsys, "scan")[0] == 0
+    ir = read_ir(root)
+
+    # The table the standalone migration drops is gone.
+    assert "legacy_orders" not in {node["name"] for node in nodes_of(ir, "table")}
+    # The index the standalone migration adds is there, and the one it drops is not.
+    customers = table_of(ir, "customers")
+    assert [index["name"] for index in customers["attributes"]["indexes"]] == ["idx_customers_email"]
+    # The schema and the extension the standalone migration declares are recorded.
+    database = database_of(ir)
+    assert database["attributes"]["schemas"] == ["reporting"]
+    assert database["attributes"]["extensions"] == ["pgcrypto"]
+    assert database["attributes"]["sql_files"] == [
+        "db/migration/V1__init.sql",
+        "db/migration/V2__evolve.sql",
+        "db/migration/V3__standalone.sql",
+        "db/migration/V4__repeated.sql",
+        "db/migration/V5__implicit_reference.sql",
+    ]
+
+def test_drop_only_migration_removes_the_last_table(tmp_path: Path, capsys) -> None:
+    root, repository = migration_project(tmp_path, capsys)
+    migrations = repository / "db" / "migration"
+    (migrations / "V6__drop.sql").write_text(
+        "DROP TABLE customers, orders, implicit_child, implicit_parent CASCADE;\n",
+        encoding="utf-8",
+    )
+    assert invoke(root, capsys, "scan")[0] == 0
+    ir = read_ir(root)
+    assert nodes_of(ir, "table") == []
+    assert database_of(ir)["attributes"]["table_count"] == 0
+    assert not any(item["type"] == "references" for item in ir["relationships"])
+    assert_valid("system-ir-1.0.json", ir)
+
+
+def test_implicit_reference_goes_with_the_dropped_primary_key(tmp_path: Path, capsys) -> None:
+    """A foreign key that names no column depends on the primary key of its target."""
+
+    root, _ = migration_project(tmp_path, capsys)
+    assert invoke(root, capsys, "scan")[0] == 0
+    ir = read_ir(root)
+
+    parent = table_of(ir, "implicit_parent")
+    assert parent["attributes"]["primary_key"] == []
+    child = table_of(ir, "implicit_child")
+    assert child["attributes"]["foreign_keys"] == []
+    assert ("implicit_child", "implicit_parent") not in [
+        (source, target) for source, target, _ in relationships_of(ir, "references")
+    ]
+
+
 def test_column_migrations_keep_the_rest_of_the_schema_consistent(tmp_path: Path, capsys) -> None:
     """Renaming or dropping a column updates every key, index, and reference."""
 
@@ -350,7 +428,12 @@ def test_commented_out_tables_stay_commented_out(tmp_path: Path, capsys) -> None
     ir = read_ir(root)
 
     assert "commented_out" not in {node["name"] for node in nodes_of(ir, "table")}
-    assert sorted(node["name"] for node in nodes_of(ir, "table")) == ["customers", "orders"]
+    assert sorted(node["name"] for node in nodes_of(ir, "table")) == [
+        "customers",
+        "implicit_child",
+        "implicit_parent",
+        "orders",
+    ]
 
 
 def test_portable_sql_without_postgres_evidence_is_not_analyzed(tmp_path: Path, capsys) -> None:

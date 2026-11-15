@@ -240,7 +240,7 @@ class PostgreSqlAnalyzer:
             source
             for source in sql_files
             if source.path in parsed_files
-            and any(_creates_table(statement) for statement in parsed_files[source.path].statements)
+            and any(_changes_schema(statement) for statement in parsed_files[source.path].statements)
         ]
         liquibase = [source for source in context.files if LIQUIBASE_FILE.search(source.path)]
         if not schema_files and not liquibase:
@@ -304,6 +304,11 @@ class PostgreSqlAnalyzer:
         database_node = node_id("database", repository, "postgresql")
         migration_tool = "flyway" if any(FLYWAY_VERSIONED.match(s.path.rsplit("/", 1)[-1]) for s in schema_files) else "sql-files"
         driver = self._postgres_driver(context)
+        driver_evidence_ids: list[str] = []
+        if driver is not None:
+            driver_evidence = context.file_evidence(driver["manifest"])
+            result.evidence.append(driver_evidence)
+            driver_evidence_ids.append(driver_evidence["id"])
         result.nodes.append(
             {
                 "id": database_node,
@@ -323,14 +328,16 @@ class PostgreSqlAnalyzer:
                     "table_count": len(tables),
                     "data_statements_skipped": data_statements,
                 },
-                "evidence_ids": sorted(file_evidence_ids),
+                "evidence_ids": sorted(file_evidence_ids + driver_evidence_ids),
             }
         )
-        result.relationships.append(self._edge("contains", context.repository_node_id, database_node, sorted(file_evidence_ids)))
+        result.relationships.append(
+            self._edge("contains", context.repository_node_id, database_node, sorted(file_evidence_ids + driver_evidence_ids))
+        )
         result.claims.append(
             self._claim(
                 f"Repository {repository} defines {len(tables)} table(s) in {len(schema_files)} SQL file(s) applied in {migration_tool} order.",
-                sorted(file_evidence_ids),
+                sorted(file_evidence_ids + driver_evidence_ids),
             )
         )
 
@@ -429,6 +436,28 @@ class PostgreSqlAnalyzer:
 
     # ------------------------------------------------------------ helpers: IR
     @staticmethod
+    def _duplicate_limitation(
+        context: RepositoryContext,
+        parsed: SqlFile,
+        span: dict[str, Any],
+        subject: str,
+        reason: str,
+        if_not_exists: bool,
+    ) -> dict[str, Any]:
+        """The limitation for a definition that repeats one that already exists."""
+
+        return context.limitation(
+            LIMITATION_UNSUPPORTED_CONSTRUCT,
+            f"{parsed.path} line {span['line_start']}: {subject} {reason}; "
+            + (
+                "PostgreSQL keeps the existing definition, so this statement was not applied."
+                if if_not_exists
+                else "PostgreSQL rejects that, so the existing definition was kept."
+            ),
+            [span["id"]],
+        )
+
+    @staticmethod
     def _edge(
         edge_type: str, source: str, target: str, evidence_ids: list[str], attributes: dict[str, Any] | None = None
     ) -> dict[str, Any]:
@@ -486,7 +515,7 @@ class PostgreSqlAnalyzer:
                 self._create_table(context, parsed, tokens, index + 1, span, tables, dialect_markers, result)
                 return 0
             if kind == "INDEX":
-                self._create_index(parsed, tokens, index + 1, span, tables, result)
+                self._create_index(context, parsed, tokens, index + 1, span, tables, result)
                 return 0
             if kind == "SCHEMA":
                 name_index = _skip_if_not_exists(tokens, index + 1)
@@ -530,6 +559,26 @@ class PostgreSqlAnalyzer:
                 for table in tables.values():
                     table.foreign_keys = [fk for fk in table.foreign_keys if fk.references_table != name]
             return 0
+        if head == "DROP" and len(tokens) > 1 and tokens[1].is_word("INDEX"):
+            result.evidence.append(span)
+            start = 2
+            index = _skip_if_exists(tokens, 2)
+            if_exists = index > start
+            name = identifier_name(tokens[index]) if index < len(tokens) else ""
+            removed = False
+            for table in tables.values():
+                remaining = [item for item in table.indexes if item["name"] != name]
+                removed = removed or len(remaining) != len(table.indexes)
+                table.indexes = remaining
+            if not removed and not if_exists:
+                result.limitations.append(
+                    context.limitation(
+                        LIMITATION_AMBIGUOUS_REFERENCE,
+                        f"{parsed.path} line {parsed.line(statement.start)}: DROP INDEX {name} does not match an index in the scanned SQL.",
+                        [span["id"]],
+                    )
+                )
+            return 0
         if head == "DO":
             raise StatementError("DO block contains procedural code that is not analyzed")
         if head in DATA_HEADS:
@@ -570,15 +619,8 @@ class PostgreSqlAnalyzer:
             existing.evidence_ids.append(span["id"])
             existing.defined_in.append(parsed.path)
             result.limitations.append(
-                context.limitation(
-                    LIMITATION_UNSUPPORTED_CONSTRUCT,
-                    f"{parsed.path} line {table.created_line}: table {key} is defined more than once; "
-                    + (
-                        "PostgreSQL keeps the existing definition, so this statement was not applied."
-                        if if_not_exists
-                        else "PostgreSQL rejects that, so the first definition was kept."
-                    ),
-                    [span["id"]],
+                self._duplicate_limitation(
+                    context, parsed, span, f"table {key}", "is defined more than once", if_not_exists
                 )
             )
             return
@@ -798,12 +840,21 @@ class PostgreSqlAnalyzer:
         return ForeignKey(name, local, target, columns, on_delete, on_update, span["id"], implicit), index
 
     def _create_index(
-        self, parsed: SqlFile, tokens: list[Token], index: int, span: dict[str, Any], tables: dict[str, Table], result: AnalysisResult
+        self,
+        context: RepositoryContext,
+        parsed: SqlFile,
+        tokens: list[Token],
+        index: int,
+        span: dict[str, Any],
+        tables: dict[str, Table],
+        result: AnalysisResult,
     ) -> None:
         unique = any(token.is_word("UNIQUE") for token in tokens[:index])
         if index < len(tokens) and tokens[index].is_word("CONCURRENTLY"):
             index += 1
+        start = index
         index = _skip_if_not_exists(tokens, index)
+        if_not_exists = index > start
         name: str | None = None
         if index < len(tokens) and not tokens[index].is_word("ON"):
             name = identifier_name(tokens[index])
@@ -823,6 +874,19 @@ class PostgreSqlAnalyzer:
         table = tables.get(table_key)
         if table is None:
             raise StatementError(f"CREATE INDEX on {table_key}, which is not defined in the scanned SQL")
+        if name is not None and _index_exists(tables, name):
+            result.evidence.append(span)
+            result.limitations.append(
+                self._duplicate_limitation(
+                    context,
+                    parsed,
+                    span,
+                    f"index {name}",
+                    "already exists",
+                    if_not_exists,
+                )
+            )
+            return
         result.evidence.append(span)
         table.evidence_ids.append(span["id"])
         table.defined_in.append(parsed.path)
@@ -866,11 +930,21 @@ class PostgreSqlAnalyzer:
                 i = 1
                 if i < len(action) and action[i].is_word("COLUMN"):
                     i += 1
+                start = i
                 i = _skip_if_not_exists(action, i)
+                if_not_exists = i > start
                 if i < len(action) and action[i].upper in TABLE_CONSTRAINT_WORDS and action[i].kind == "word":
                     if action[i].is_word("EXCLUDE") or (action[i].is_word("CONSTRAINT") and len(action) > i + 2 and action[i + 2].is_word("EXCLUDE")):
                         raise StatementError(f"ALTER TABLE {key}: EXCLUDE constraints are not modeled")
                     self._table_constraint(parsed, action[i:], table, span)
+                    continue
+                name = identifier_name(action[i])
+                if table.column(name) is not None:
+                    result.limitations.append(
+                        self._duplicate_limitation(
+                            context, parsed, span, f"column {name}", "already exists", if_not_exists
+                        )
+                    )
                     continue
                 table.columns.append(self._column(parsed, action[i:], table, span, dialect_markers))
                 continue
@@ -992,6 +1066,32 @@ def _creates_table(statement: Statement) -> bool:
     return False
 
 
+def _changes_schema(statement: Statement) -> bool:
+    """True when the statement can change the schema the adapter models.
+
+    A migration does not have to create a table to matter: it can add an index,
+    drop a table, or declare a schema or an extension. Such a file is applied
+    like any other migration, so the final schema is the one the migrations
+    leave behind.
+    """
+
+    tokens = statement.tokens
+    if not tokens:
+        return False
+    head = tokens[0].upper
+    if head == "CREATE":
+        index = 1
+        while index < len(tokens) and tokens[index].is_word(*CREATE_MODIFIERS):
+            index += 1
+        kind = tokens[index].upper if index < len(tokens) else ""
+        return kind in ("TABLE", "INDEX", "SCHEMA", "EXTENSION", "TYPE")
+    if head == "ALTER":
+        return len(tokens) > 1 and tokens[1].is_word("TABLE")
+    if head == "DROP":
+        return len(tokens) > 1 and tokens[1].is_word("TABLE", "INDEX")
+    return False
+
+
 def _table_name(tokens: list[Token], index: int) -> tuple[str, int, bool]:
     """The qualified table name, the index after it, and whether IF NOT EXISTS was used."""
 
@@ -1036,11 +1136,14 @@ def _drop_column(tables: dict[str, Table], table: Table, name: str) -> None:
     """Apply a column drop to every piece of schema state that depends on the column.
 
     PostgreSQL drops the constraints and indexes that depend on a dropped column,
-    so they are removed instead of left naming a column that no longer exists.
+    so they are removed instead of left naming a column that no longer exists. A
+    foreign key that references the primary key without naming it depends on that
+    key, so it goes with it.
     """
 
+    was_primary_key = name in table.primary_key
     table.columns = [column for column in table.columns if column.name != name]
-    if name in table.primary_key:
+    if was_primary_key:
         table.primary_key = []
         table.primary_key_name = None
     table.unique_constraints = [item for item in table.unique_constraints if name not in item["columns"]]
@@ -1052,8 +1155,17 @@ def _drop_column(tables: dict[str, Table], table: Table, name: str) -> None:
         other.foreign_keys = [
             item
             for item in other.foreign_keys
-            if not (item.references_table == table.key and name in item.references_columns)
+            if not (
+                item.references_table == table.key
+                and (name in item.references_columns or (item.implicit_target_columns and was_primary_key))
+            )
         ]
+
+
+def _index_exists(tables: dict[str, Table], name: str) -> bool:
+    """True when an index with this name was already created."""
+
+    return any(any(item["name"] == name for item in table.indexes) for table in tables.values())
 
 
 def _uses_column(expression: str, column: str) -> bool:

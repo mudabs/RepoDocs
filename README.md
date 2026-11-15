@@ -88,6 +88,8 @@ The adapter applies to a repository that shows PostgreSQL usage: a manifest that
 
 The ORM metadata step (`orm-metadata`) connects a persistence entity to the table it declares with `@Table` when the declared name matches exactly one extracted table of the same repository. Nothing in the sources states that the entity and the table describe the same rows, so the `maps_to` edge is `inferred` with confidence 0.8, names its basis, and cites the evidence of both sides. The generated documentation lists inferred relationships in their own section. An entity without a declared table name, and a table without an entity, stay unlinked.
 
+Standalone index, table-drop, schema, extension, and enum-type migrations are included in migration order. Repeated column and named-index definitions preserve existing state rather than duplicating it. Implicit foreign keys are removed when a referenced primary-key column is dropped. A recorded driver declaration cites its manifest in the database node's evidence.
+
 ### Exit codes
 | Code | Meaning |
 |---:|---|
