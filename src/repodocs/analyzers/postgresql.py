@@ -561,23 +561,33 @@ class PostgreSqlAnalyzer:
             return 0
         if head == "DROP" and len(tokens) > 1 and tokens[1].is_word("INDEX"):
             result.evidence.append(span)
-            start = 2
-            index = _skip_if_exists(tokens, 2)
+            index = 2
+            if index < len(tokens) and tokens[index].is_word("CONCURRENTLY"):
+                index += 1
+            start = index
+            index = _skip_if_exists(tokens, index)
             if_exists = index > start
-            name = identifier_name(tokens[index]) if index < len(tokens) else ""
-            removed = False
-            for table in tables.values():
-                remaining = [item for item in table.indexes if item["name"] != name]
-                removed = removed or len(remaining) != len(table.indexes)
-                table.indexes = remaining
-            if not removed and not if_exists:
-                result.limitations.append(
-                    context.limitation(
-                        LIMITATION_AMBIGUOUS_REFERENCE,
-                        f"{parsed.path} line {parsed.line(statement.start)}: DROP INDEX {name} does not match an index in the scanned SQL.",
-                        [span["id"]],
-                    )
-                )
+            removals = []
+            for item in split_items(tokens[index:]):
+                schema, name, after = _index_name(item, 0)
+                if any(not token.is_word("CASCADE", "RESTRICT") for token in item[after:]):
+                    raise StatementError("unsupported DROP INDEX clause")
+                matches = [
+                    (table, entry)
+                    for table in tables.values()
+                    for entry in table.indexes
+                    if entry["name"] == name and (schema is None or (table.schema or "public") == schema)
+                ]
+                if len(matches) > 1:
+                    raise StatementError(f"DROP INDEX {name} is ambiguous across schemas; qualify the index name")
+                if not matches and not if_exists:
+                    raise StatementError(f"DROP INDEX {name} does not match an index in the scanned SQL")
+                removals.extend(matches)
+            for table, entry in removals:
+                if entry in table.indexes:
+                    table.indexes.remove(entry)
+                    table.evidence_ids.append(span["id"])
+                    table.defined_in.append(parsed.path)
             return 0
         if head == "DO":
             raise StatementError("DO block contains procedural code that is not analyzed")
@@ -857,8 +867,9 @@ class PostgreSqlAnalyzer:
         if_not_exists = index > start
         name: str | None = None
         if index < len(tokens) and not tokens[index].is_word("ON"):
-            name = identifier_name(tokens[index])
-            index += 1
+            schema, name, index = _index_name(tokens, index)
+            if schema is not None:
+                raise StatementError("CREATE INDEX names cannot be schema-qualified; qualify the table instead")
         if index >= len(tokens) or not tokens[index].is_word("ON"):
             raise StatementError("CREATE INDEX without ON")
         index += 1
@@ -874,7 +885,7 @@ class PostgreSqlAnalyzer:
         table = tables.get(table_key)
         if table is None:
             raise StatementError(f"CREATE INDEX on {table_key}, which is not defined in the scanned SQL")
-        if name is not None and _index_exists(tables, name):
+        if name is not None and _index_exists(tables, name, table.schema):
             result.evidence.append(span)
             result.limitations.append(
                 self._duplicate_limitation(
@@ -1078,18 +1089,9 @@ def _changes_schema(statement: Statement) -> bool:
     tokens = statement.tokens
     if not tokens:
         return False
-    head = tokens[0].upper
-    if head == "CREATE":
-        index = 1
-        while index < len(tokens) and tokens[index].is_word(*CREATE_MODIFIERS):
-            index += 1
-        kind = tokens[index].upper if index < len(tokens) else ""
-        return kind in ("TABLE", "INDEX", "SCHEMA", "EXTENSION", "TYPE")
-    if head == "ALTER":
-        return len(tokens) > 1 and tokens[1].is_word("TABLE")
-    if head == "DROP":
-        return len(tokens) > 1 and tokens[1].is_word("TABLE", "INDEX")
-    return False
+    # Do not filter unsupported DDL/procedural migrations before _apply can
+    # report them. Only pure data/query files are irrelevant to schema analysis.
+    return tokens[0].upper not in DATA_HEADS
 
 
 def _table_name(tokens: list[Token], index: int) -> tuple[str, int, bool]:
@@ -1162,10 +1164,32 @@ def _drop_column(tables: dict[str, Table], table: Table, name: str) -> None:
         ]
 
 
-def _index_exists(tables: dict[str, Table], name: str) -> bool:
-    """True when an index with this name was already created."""
+def _index_exists(tables: dict[str, Table], name: str, schema: str | None) -> bool:
+    """Index names share the namespace of the owning table's schema."""
 
-    return any(any(item["name"] == name for item in table.indexes) for table in tables.values())
+    return any(
+        (table.schema or "public") == (schema or "public")
+        and any(item["name"] == name for item in table.indexes)
+        for table in tables.values()
+    )
+
+
+def _index_name(tokens: list[Token], index: int) -> tuple[str | None, str, int]:
+    """Parse an optional schema and an index name without losing quoted dots."""
+
+    if index >= len(tokens) or tokens[index].kind not in ("word", "ident"):
+        raise StatementError("expected an index name")
+    name = identifier_name(tokens[index])
+    index += 1
+    schema = None
+    if index < len(tokens) and tokens[index].text == ".":
+        schema = name
+        index += 1
+        if index >= len(tokens) or tokens[index].kind not in ("word", "ident"):
+            raise StatementError("expected an index name after schema")
+        name = identifier_name(tokens[index])
+        index += 1
+    return schema, name, index
 
 
 def _uses_column(expression: str, column: str) -> bool:

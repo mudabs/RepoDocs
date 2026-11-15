@@ -90,6 +90,8 @@ The ORM metadata step (`orm-metadata`) connects a persistence entity to the tabl
 
 Standalone index, table-drop, schema, extension, and enum-type migrations are included in migration order. Repeated column and named-index definitions preserve existing state rather than duplicating it. Implicit foreign keys are removed when a referenced primary-key column is dropped. A recorded driver declaration cites its manifest in the database node's evidence.
 
+Standalone unsupported DDL and procedural migrations are reported with evidence too. Index names are scoped to the owning table's schema; qualified index drops target that schema, while ambiguous unqualified drops are reported without changing state. Runtime search paths are not guessed.
+
 ### Exit codes
 | Code | Meaning |
 |---:|---|

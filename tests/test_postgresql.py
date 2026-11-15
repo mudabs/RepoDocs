@@ -6,6 +6,8 @@ import json
 import shutil
 from pathlib import Path
 
+import pytest
+
 from conftest import copy_fixture, invoke, read_ir
 from test_schemas import assert_valid
 
@@ -13,6 +15,60 @@ from test_schemas import assert_valid
 POSTGRES_FIXTURE = Path(__file__).parent / "fixtures" / "postgres-repo"
 MIGRATION_FIXTURE = Path(__file__).parent / "fixtures" / "postgres-migration-repo"
 ORM_FIXTURE = Path(__file__).parent / "fixtures" / "postgres-orm-repo"
+
+
+@pytest.mark.parametrize("statement, label", [
+    ("CREATE VIEW standalone AS SELECT 1;", "CREATE VIEW"),
+    ("CREATE FUNCTION standalone() RETURNS void AS $$ BEGIN RETURN; END; $$ LANGUAGE plpgsql;", "CREATE FUNCTION"),
+    ("CREATE TRIGGER standalone BEFORE INSERT ON orders EXECUTE FUNCTION f();", "CREATE TRIGGER"),
+    ("DO $$ BEGIN RAISE NOTICE 'not executed'; END; $$;", "DO block"),
+])
+def test_standalone_unsupported_migrations_are_reported(tmp_path: Path, capsys, statement: str, label: str) -> None:
+    root, repository = postgres_project(tmp_path, capsys)
+    path = "db/migration/V6__unsupported.sql"
+    (repository / path).write_text(statement, encoding="utf-8")
+    assert invoke(root, capsys, "scan")[0] == 0
+    ir = read_ir(root)
+    evidence = {entry["id"]: entry for entry in ir["evidence"]}
+    limitations = [
+        entry for entry in ir["limitations"]
+        if label in entry["message"] and any(evidence[key]["path"] == path for key in entry["evidence_ids"])
+    ]
+    assert len(limitations) == 1
+    assert limitations[0]["kind"] == "unsupported-construct"
+    span = evidence[limitations[0]["evidence_ids"][0]]
+    assert span["kind"] == "span" and span["line_start"] == 1
+    assert span["revision"] == ir["snapshots"][0]["revision"]
+    assert_valid("system-ir-1.0.json", ir)
+
+
+@pytest.mark.parametrize("drop, remaining, ambiguous", [
+    ("DROP INDEX billing.shared;", ["audit"], False),
+    ("DROP INDEX shared;", ["audit", "billing"], True),
+    ("DROP INDEX billing.shared, audit.shared;", [], False),
+])
+def test_index_identity_is_scoped_to_schema(tmp_path: Path, capsys, drop: str, remaining: list[str], ambiguous: bool) -> None:
+    root, repository = postgres_project(tmp_path, capsys)
+    migrations = repository / "db" / "migration"
+    (migrations / "V6__indexes.sql").write_text(
+        "CREATE TABLE billing.accounts (id BIGSERIAL PRIMARY KEY);\n"
+        "CREATE TABLE audit.accounts (id BIGSERIAL PRIMARY KEY);\n"
+        "CREATE INDEX shared ON billing.accounts (id);\n"
+        "CREATE INDEX IF NOT EXISTS shared ON audit.accounts (id);\n"
+        # A duplicate in one schema must preserve that schema's original index.
+        "CREATE UNIQUE INDEX IF NOT EXISTS shared ON audit.accounts (id);\n",
+        encoding="utf-8",
+    )
+    (migrations / "V7__drop_index.sql").write_text(drop, encoding="utf-8")
+    assert invoke(root, capsys, "scan")[0] == 0
+    ir = read_ir(root)
+    tables = [node for node in nodes_of(ir, "table") if node["name"] in ("billing.accounts", "audit.accounts")]
+    assert sorted(node["attributes"]["schema"] for node in tables if node["attributes"]["indexes"]) == remaining
+    for node in tables:
+        for index in node["attributes"]["indexes"]:
+            assert index == {"name": "shared", "columns": ["id"], "unique": False}
+    assert any("ambiguous across schemas" in entry["message"] for entry in ir["limitations"]) == ambiguous
+    assert_valid("system-ir-1.0.json", ir)
 
 
 def postgres_project(tmp_path: Path, capsys) -> tuple[Path, Path]:

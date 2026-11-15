@@ -6,6 +6,8 @@ import json
 import shutil
 from pathlib import Path
 
+import pytest
+
 from conftest import copy_fixture, invoke, read_ir
 from test_schemas import assert_valid
 
@@ -173,8 +175,11 @@ def test_entities_repositories_and_dependencies(tmp_path: Path, capsys) -> None:
     assert ("backend", "Spring Boot", {"framework": "Spring Boot"}) in depends_on
 
 
-def test_runtime_constructs_are_reported_as_limitations(tmp_path: Path, capsys) -> None:
+@pytest.mark.parametrize("newline", ["\n", "\r\n"], ids=["LF", "CRLF"])
+def test_runtime_constructs_are_reported_as_limitations(tmp_path: Path, capsys, newline: str) -> None:
     root, repository = spring_project(tmp_path, capsys)
+    plugin = repository / "src/main/java/com/smartcart/util/PluginLoader.java"
+    plugin.write_bytes(plugin.read_text(encoding="utf-8").replace("\n", newline).encode("utf-8"))
     assert invoke(root, capsys, "scan")[0] == 0
     ir = read_ir(root)
 
@@ -205,10 +210,18 @@ def test_runtime_constructs_are_reported_as_limitations(tmp_path: Path, capsys) 
     ]
 
     evidence = {item["id"]: item for item in ir["evidence"]}
-    reflection = next(item for item in ir["limitations"] if item["kind"] == "reflection")
-    span = evidence[reflection["evidence_ids"][0]]
-    assert span["path"] == "src/main/java/com/smartcart/util/PluginLoader.java"
-    assert span["line_start"] == line_of(repository, span["path"], "Class<?> type = Class.forName(className);")
+    # IR ordering is by content-derived ID, not source order. Both reflection
+    # sites must have correct evidence, regardless of which ID sorts first.
+    spans = [
+        evidence[item["evidence_ids"][0]]
+        for item in ir["limitations"] if item["kind"] == "reflection"
+    ]
+    path = "src/main/java/com/smartcart/util/PluginLoader.java"
+    assert all(span["path"] == path for span in spans)
+    assert {span["line_start"] for span in spans} == {
+        line_of(repository, path, "Class<?> type = Class.forName(className);"),
+        line_of(repository, path, "return type.getDeclaredConstructor().newInstance();"),
+    }
 
 
 def test_configuration_records_keys_but_never_values(tmp_path: Path, capsys) -> None:
