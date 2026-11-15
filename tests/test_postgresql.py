@@ -11,6 +11,7 @@ from test_schemas import assert_valid
 
 
 POSTGRES_FIXTURE = Path(__file__).parent / "fixtures" / "postgres-repo"
+MIGRATION_FIXTURE = Path(__file__).parent / "fixtures" / "postgres-migration-repo"
 ORM_FIXTURE = Path(__file__).parent / "fixtures" / "postgres-orm-repo"
 
 
@@ -20,6 +21,16 @@ def postgres_project(tmp_path: Path, capsys) -> tuple[Path, Path]:
     repository = root / "database"
     shutil.copytree(POSTGRES_FIXTURE, repository)
     assert invoke(root, capsys, "init", "SmartCart")[0] == 0
+    assert invoke(root, capsys, "add", "database", "--id", "database", "--destination")[0] == 0
+    return root, repository
+
+
+def migration_project(tmp_path: Path, capsys) -> tuple[Path, Path]:
+    root = tmp_path / "project"
+    root.mkdir()
+    repository = root / "database"
+    shutil.copytree(MIGRATION_FIXTURE, repository)
+    assert invoke(root, capsys, "init", "Migrations")[0] == 0
     assert invoke(root, capsys, "add", "database", "--id", "database", "--destination")[0] == 0
     return root, repository
 
@@ -282,7 +293,67 @@ def test_scan_is_deterministic_schema_valid_and_renders(tmp_path: Path, capsys) 
     assert "database database (PostgreSQL): 7 tables, flyway" in mermaid
 
 
-def test_repository_without_sql_runs_no_adapter(tmp_path: Path, capsys) -> None:
+def test_repeated_table_definition_does_not_erase_the_schema(tmp_path: Path, capsys) -> None:
+    """A later `CREATE TABLE IF NOT EXISTS` must not drop what was already extracted."""
+
+    root, _ = migration_project(tmp_path, capsys)
+    assert invoke(root, capsys, "scan")[0] == 0
+    ir = read_ir(root)
+
+    orders = table_of(ir, "orders")
+    assert [column["name"] for column in orders["attributes"]["columns"]] == ["id", "customer"]
+    assert orders["attributes"]["primary_key"] == ["id"]
+    assert [index["name"] for index in orders["attributes"]["indexes"]] == ["idx_orders_customer"]
+    messages = [item["message"] for item in ir["limitations"]]
+    assert any("table orders is defined more than once" in message for message in messages)
+    assert any("PostgreSQL keeps the existing definition" in message for message in messages)
+
+
+def test_column_migrations_keep_the_rest_of_the_schema_consistent(tmp_path: Path, capsys) -> None:
+    """Renaming or dropping a column updates every key, index, and reference."""
+
+    root, _ = migration_project(tmp_path, capsys)
+    assert invoke(root, capsys, "scan")[0] == 0
+    ir = read_ir(root)
+
+    customers = table_of(ir, "customers")
+    assert [column["name"] for column in customers["attributes"]["columns"]] == [
+        "id",
+        "email_address",
+        "tenant_id",
+    ]
+    columns = {column["name"]: column for column in customers["attributes"]["columns"]}
+    # A column-level unique constraint follows the renamed column.
+    assert columns["email_address"]["unique"] is True
+    # A table-level unique constraint follows the renamed column, and the one on
+    # the dropped column is gone with it.
+    assert customers["attributes"]["unique_constraints"] == [
+        {"name": "customers_tenant_uq", "columns": ["tenant_id"]}
+    ]
+
+    orders = table_of(ir, "orders")
+    assert [column["name"] for column in orders["attributes"]["columns"]] == ["id", "customer"]
+    (foreign_key,) = orders["attributes"]["foreign_keys"]
+    assert foreign_key["columns"] == ["customer"]
+    assert foreign_key["references_table"] == "customers"
+    assert foreign_key["references_columns"] == ["id"]
+    # The index on the dropped column is gone with it.
+    assert [index["name"] for index in orders["attributes"]["indexes"]] == ["idx_orders_customer"]
+    assert all("reference" not in index["columns"] for index in orders["attributes"]["indexes"])
+
+
+def test_commented_out_tables_stay_commented_out(tmp_path: Path, capsys) -> None:
+    """PostgreSQL block comments nest, so a hidden table is not extracted."""
+
+    root, _ = migration_project(tmp_path, capsys)
+    assert invoke(root, capsys, "scan")[0] == 0
+    ir = read_ir(root)
+
+    assert "commented_out" not in {node["name"] for node in nodes_of(ir, "table")}
+    assert sorted(node["name"] for node in nodes_of(ir, "table")) == ["customers", "orders"]
+
+
+def test_portable_sql_without_postgres_evidence_is_not_analyzed(tmp_path: Path, capsys) -> None:
     root = tmp_path / "project"
     root.mkdir()
     copy_fixture(root / "backend")
@@ -292,12 +363,37 @@ def test_repository_without_sql_runs_no_adapter(tmp_path: Path, capsys) -> None:
     assert code == 0
     ir = read_ir(root)
     analyzers = {item["name"]: item for item in payload["data"]["analyzers"]}
-    assert analyzers["postgresql"]["repositories"] == ["backend"]
-    assert nodes_of(ir, "database") != []
+    assert analyzers["postgresql"]["repositories"] == []
+    assert nodes_of(ir, "database") == []
+    assert nodes_of(ir, "table") == []
+    assert ir["limitations"] == []
+
+
+def test_postgres_driver_dependency_detects_postgresql(tmp_path: Path, capsys) -> None:
+    """A declared PostgreSQL driver is enough to treat portable SQL as PostgreSQL."""
+
+    root = tmp_path / "project"
+    root.mkdir()
+    repository = root / "service"
+    repository.mkdir()
+    (repository / "package.json").write_text(
+        json.dumps({"name": "store", "dependencies": {"pg": "^8.11.0"}}), encoding="utf-8"
+    )
+    (repository / "schema.sql").write_text(
+        "CREATE TABLE orders (\n    id INTEGER PRIMARY KEY\n);\n", encoding="utf-8"
+    )
+    assert invoke(root, capsys, "init", "Driver")[0] == 0
+    assert invoke(root, capsys, "add", "service", "--id", "service", "--destination")[0] == 0
+    code, payload = invoke(root, capsys, "scan")
+    assert code == 0
+    ir = read_ir(root)
+    analyzers = {item["name"]: item for item in payload["data"]["analyzers"]}
+    assert analyzers["postgresql"]["repositories"] == ["service"]
+    (database,) = nodes_of(ir, "database")
+    assert database["attributes"]["driver"] == {"manifest": "package.json", "dependency": "pg"}
     (table,) = nodes_of(ir, "table")
     assert table["name"] == "orders"
     assert table["attributes"]["primary_key"] == ["id"]
-    assert json.dumps(ir["limitations"]) == "[]"
 
 
 def test_unreadable_sql_file_is_reported(tmp_path: Path, capsys) -> None:

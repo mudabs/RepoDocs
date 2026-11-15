@@ -2,9 +2,10 @@
 
 Comments are masked, string literals (including dollar-quoted bodies), quoted
 identifiers, numbers, words, and punctuation become tokens with offsets, and
-statements are split on top-level semicolons. This is not a SQL parser; the
-PostgreSQL adapter walks the tokens of the statement forms it supports and
-reports every other statement as a limitation.
+statements are split on top-level semicolons. Block comments nest, as they do
+in PostgreSQL, so a commented-out statement stays commented out. This is not a
+SQL parser; the PostgreSQL adapter walks the tokens of the statement forms it
+supports and reports every other statement as a limitation.
 """
 
 from __future__ import annotations
@@ -74,8 +75,7 @@ def mask_comments(text: str) -> str:
             out.append(" " * (end - i))
             i = end
         elif c == "/" and text.startswith("/*", i):
-            end = text.find("*/", i + 2)
-            end = n if end == -1 else end + 2
+            end = _skip_block_comment(text, i)
             out.append("".join("\n" if ch == "\n" else " " for ch in text[i:end]))
             i = end
         elif c == "'":
@@ -100,6 +100,29 @@ def mask_comments(text: str) -> str:
             out.append(c)
             i += 1
     return "".join(out)
+
+
+def _skip_block_comment(text: str, i: int) -> int:
+    """The index after a block comment that starts at ``i``.
+
+    PostgreSQL block comments nest, so ``/* a /* b */ c */`` is one comment and
+    everything up to the matching close is masked. An unterminated comment masks
+    the rest of the file.
+    """
+
+    depth = 1
+    j = i + 2
+    n = len(text)
+    while j < n and depth:
+        if text.startswith("/*", j):
+            depth += 1
+            j += 2
+        elif text.startswith("*/", j):
+            depth -= 1
+            j += 2
+        else:
+            j += 1
+    return j
 
 
 def _skip_single_quoted(text: str, i: int) -> int:

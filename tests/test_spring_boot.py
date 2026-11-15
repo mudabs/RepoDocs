@@ -290,15 +290,13 @@ def test_repository_without_spring_boot_runs_no_adapter(tmp_path: Path, capsys) 
     assert {item["name"]: item["repositories"] for item in ir["provenance"]["analyzers"]} == {
         "basic-manifest": ["backend"],
         "orm-metadata": [],
-        "postgresql": ["backend"],
+        "postgresql": [],
         "react": [],
         "spring-boot": [],
     }
     assert nodes_of(ir, "service") == [] and nodes_of(ir, "framework") == []
-    # Only the PostgreSQL adapter added evidence, and only for the SQL it read.
-    spans = [item for item in ir["evidence"] if item["kind"] == "span"]
-    assert [(item["analyzer"], item["path"]) for item in spans] == [("postgresql", "schema.sql")]
-    assert all(item["analyzer"] == "basic-manifest" for item in ir["evidence"] if item["kind"] == "file")
+    # The fixture only holds portable SQL, so the PostgreSQL adapter does not run.
+    assert all(item["analyzer"] == "basic-manifest" and item["kind"] == "file" for item in ir["evidence"])
     assert_valid("system-ir-1.0.json", ir)
 
 

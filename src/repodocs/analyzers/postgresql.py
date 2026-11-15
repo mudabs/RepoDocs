@@ -13,7 +13,9 @@ No database is contacted and no SQL is executed.
 
 from __future__ import annotations
 
+import json
 import re
+import tomllib
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -75,6 +77,10 @@ IGNORED_HEADS = (
 )
 DATA_HEADS = {"INSERT", "UPDATE", "DELETE", "SELECT", "TRUNCATE"}
 CREATE_MODIFIERS = ("OR", "REPLACE", "UNLOGGED", "TEMP", "TEMPORARY", "GLOBAL", "LOCAL", "UNIQUE", "MATERIALIZED")
+# Driver names that show a project talks to PostgreSQL.
+NODE_POSTGRES_DRIVERS = {"pg", "pg-native", "pg-promise", "postgres", "postgresql"}
+JAVA_POSTGRES_DRIVER = "org.postgresql"
+PYTHON_POSTGRES_DRIVERS = ("psycopg", "psycopg2", "asyncpg")
 FLYWAY_VERSIONED = re.compile(r"^V(?P<version>[0-9][0-9_.]*?)__(?P<description>.+)\.sql$", re.IGNORECASE)
 FLYWAY_REPEATABLE = re.compile(r"^R__.+\.sql$", re.IGNORECASE)
 FLYWAY_UNDO = re.compile(r"^U[0-9][0-9_.]*__.+\.sql$", re.IGNORECASE)
@@ -128,6 +134,12 @@ class Table:
     def qualified(self) -> str:
         return f"{self.schema}.{self.name}" if self.schema and self.schema != "public" else self.name
 
+    @property
+    def key(self) -> str:
+        """The key this table is stored under, as other tables reference it."""
+
+        return f"{self.schema}.{self.name}" if self.schema else self.name
+
     def column(self, name: str) -> Column | None:
         return next((item for item in self.columns if item.name == name), None)
 
@@ -145,16 +157,47 @@ class PostgreSqlAnalyzer:
 
     # ----------------------------------------------------------------- detection
     def detect(self, context: RepositoryContext) -> bool:
-        if any(LIQUIBASE_FILE.search(source.path) for source in context.files):
-            return True
+        """True when the repository shows PostgreSQL usage.
+
+        A repository that only contains portable SQL is not treated as
+        PostgreSQL: the adapter would be guessing the dialect. It applies when a
+        manifest declares a PostgreSQL driver, when a table definition uses a
+        PostgreSQL-only type, or when the only SQL there is cannot be read.
+        """
+
+        driver = self._postgres_driver(context)
+        readable_schema = False
+        unreadable = False
         for source in self._sql_files(context):
             parsed = self._parsed(context, source)
             if parsed is None:
-                # The file may hold a schema the adapter cannot read; report it.
+                unreadable = True
+                continue
+            if not any(_creates_table(statement) for statement in parsed.statements):
+                continue
+            readable_schema = True
+            if driver is not None or _postgresql_types(parsed):
                 return True
-            if any(_creates_table(statement) for statement in parsed.statements):
-                return True
-        return False
+        return unreadable and not readable_schema
+
+    def _postgres_driver(self, context: RepositoryContext) -> dict[str, str] | None:
+        """The manifest that declares a PostgreSQL driver, when one does."""
+
+        for source in context.files:
+            name = source.path.rsplit("/", 1)[-1].lower()
+            if name == "package.json":
+                dependency = _node_postgres_dependency(context.text(source.path))
+            elif name in ("pom.xml", "build.gradle", "build.gradle.kts"):
+                dependency = _java_postgres_dependency(context.text(source.path))
+            elif name == "requirements.txt":
+                dependency = _python_postgres_dependency(context.text(source.path))
+            elif name == "pyproject.toml":
+                dependency = _python_postgres_dependency(context.text(source.path), project=True)
+            else:
+                continue
+            if dependency is not None:
+                return {"manifest": source.path, "dependency": dependency}
+        return None
 
     @staticmethod
     def _sql_files(context: RepositoryContext) -> list[SourceFile]:
@@ -260,6 +303,7 @@ class PostgreSqlAnalyzer:
 
         database_node = node_id("database", repository, "postgresql")
         migration_tool = "flyway" if any(FLYWAY_VERSIONED.match(s.path.rsplit("/", 1)[-1]) for s in schema_files) else "sql-files"
+        driver = self._postgres_driver(context)
         result.nodes.append(
             {
                 "id": database_node,
@@ -270,6 +314,7 @@ class PostgreSqlAnalyzer:
                     "engine": "postgresql",
                     "dialect": "postgresql",
                     "dialect_markers": sorted(dialect_markers),
+                    "driver": driver,
                     "migration_tool": migration_tool,
                     "sql_files": [source.path for source in schema_files],
                     "schemas": sorted(schemas),
@@ -512,13 +557,31 @@ class PostgreSqlAnalyzer:
         dialect_markers: set[str],
         result: AnalysisResult,
     ) -> None:
-        index = _skip_if_not_exists(tokens, index)
-        key, index = _qualified_name(tokens, index)
+        key, index, if_not_exists = _table_name(tokens, index)
         schema, _, name = key.rpartition(".")
         table = Table(schema=schema or None, name=name)
         table.created_line = parsed.line(tokens[0].offset)
         table.created_path = parsed.path
         result.evidence.append(span)
+        existing = tables.get(key)
+        if existing is not None:
+            # PostgreSQL keeps the existing table for `IF NOT EXISTS` and rejects a
+            # second definition without it. Either way the first definition stands.
+            existing.evidence_ids.append(span["id"])
+            existing.defined_in.append(parsed.path)
+            result.limitations.append(
+                context.limitation(
+                    LIMITATION_UNSUPPORTED_CONSTRUCT,
+                    f"{parsed.path} line {table.created_line}: table {key} is defined more than once; "
+                    + (
+                        "PostgreSQL keeps the existing definition, so this statement was not applied."
+                        if if_not_exists
+                        else "PostgreSQL rejects that, so the first definition was kept."
+                    ),
+                    [span["id"]],
+                )
+            )
+            return
         table.evidence_ids.append(span["id"])
         table.defined_in.append(parsed.path)
         if index < len(tokens) and tokens[index].is_word("PARTITION") and index + 1 < len(tokens) and tokens[index + 1].is_word("OF"):
@@ -596,7 +659,7 @@ class PostgreSqlAnalyzer:
         if type_end == index:
             raise StatementError(f"column {column.name} has no data type")
         column.type = parsed.slice(item[index], item[type_end - 1])
-        _record_type(column.type, dialect_markers)
+        dialect_markers.update(_type_markers(column.type))
         index = type_end
         while index < len(item):
             token = item[index]
@@ -824,11 +887,15 @@ class PostgreSqlAnalyzer:
                     continue
                 if i < len(action) and action[i].is_word("COLUMN"):
                     i += 1
+                start = i
                 i = _skip_if_exists(action, i)
+                if_exists = i > start
                 name = identifier_name(action[i])
-                table.columns = [column for column in table.columns if column.name != name]
-                table.primary_key = [column for column in table.primary_key if column != name]
-                table.foreign_keys = [fk for fk in table.foreign_keys if name not in fk.columns]
+                if table.column(name) is None:
+                    if if_exists:
+                        continue
+                    raise StatementError(f"ALTER TABLE {key}: column {name} is not defined")
+                _drop_column(tables, table, name)
                 continue
             if word == "RENAME":
                 i = 1
@@ -857,12 +924,9 @@ class PostgreSqlAnalyzer:
                     continue
                 old = identifier_name(action[i])
                 new = identifier_name(action[i + 2])
-                column = table.column(old)
-                if column is not None:
-                    column.name = new
-                table.primary_key = [new if name == old else name for name in table.primary_key]
-                for fk in table.foreign_keys:
-                    fk.columns = [new if name == old else name for name in fk.columns]
+                if table.column(old) is None:
+                    raise StatementError(f"ALTER TABLE {key}: column {old} is not defined")
+                _rename_column(tables, table, old, new)
                 continue
             if word == "ALTER":
                 i = 1
@@ -928,18 +992,192 @@ def _creates_table(statement: Statement) -> bool:
     return False
 
 
-def _record_type(declared: str, dialect_markers: set[str]) -> None:
-    """Record PostgreSQL-only type names a column was declared with."""
+def _table_name(tokens: list[Token], index: int) -> tuple[str, int, bool]:
+    """The qualified table name, the index after it, and whether IF NOT EXISTS was used."""
+
+    start = index
+    index = _skip_if_not_exists(tokens, index)
+    if_not_exists = index > start
+    key, index = _qualified_name(tokens, index)
+    return key, index, if_not_exists
+
+
+def _column_list(tokens: list[Token], index: int) -> list[list[Token]] | None:
+    """The items of a table's column list, or None when the statement declares none."""
+
+    if index >= len(tokens) or not (tokens[index].kind == "punct" and tokens[index].text == "("):
+        return None
+    items, _ = paren_group(tokens, index)
+    return split_items(items)
+
+
+def _rename_column(tables: dict[str, Table], table: Table, old: str, new: str) -> None:
+    """Apply a column rename to every piece of schema state that names the column."""
+
+    for column in table.columns:
+        if column.name == old:
+            column.name = new
+    table.primary_key = [new if name == old else name for name in table.primary_key]
+    for constraint in table.unique_constraints:
+        constraint["columns"] = [new if name == old else name for name in constraint["columns"]]
+    for foreign_key in table.foreign_keys:
+        foreign_key.columns = [new if name == old else name for name in foreign_key.columns]
+    for index in table.indexes:
+        index["columns"] = [_rename_index_column(expression, old, new) for expression in index["columns"]]
+    for other in tables.values():
+        for foreign_key in other.foreign_keys:
+            if foreign_key.references_table == table.key:
+                foreign_key.references_columns = [
+                    new if name == old else name for name in foreign_key.references_columns
+                ]
+
+
+def _drop_column(tables: dict[str, Table], table: Table, name: str) -> None:
+    """Apply a column drop to every piece of schema state that depends on the column.
+
+    PostgreSQL drops the constraints and indexes that depend on a dropped column,
+    so they are removed instead of left naming a column that no longer exists.
+    """
+
+    table.columns = [column for column in table.columns if column.name != name]
+    if name in table.primary_key:
+        table.primary_key = []
+        table.primary_key_name = None
+    table.unique_constraints = [item for item in table.unique_constraints if name not in item["columns"]]
+    table.indexes = [
+        index for index in table.indexes if not any(_uses_column(expression, name) for expression in index["columns"])
+    ]
+    table.foreign_keys = [item for item in table.foreign_keys if name not in item.columns]
+    for other in tables.values():
+        other.foreign_keys = [
+            item
+            for item in other.foreign_keys
+            if not (item.references_table == table.key and name in item.references_columns)
+        ]
+
+
+def _uses_column(expression: str, column: str) -> bool:
+    """True when an index expression names the column."""
+
+    return re.search(rf"(?<![A-Za-z0-9_$]){re.escape(column)}(?![A-Za-z0-9_$])", expression, re.IGNORECASE) is not None
+
+
+def _rename_index_column(expression: str, old: str, new: str) -> str:
+    """An index expression with the renamed column."""
+
+    return re.sub(
+        rf"(?<![A-Za-z0-9_$]){re.escape(old)}(?![A-Za-z0-9_$])",
+        lambda match: new,
+        expression,
+        flags=re.IGNORECASE,
+    )
+
+
+def _type_markers(declared: str) -> set[str]:
+    """The PostgreSQL markers of a declared type name."""
 
     name = declared.strip().lower()
     array = name.endswith("[]")
     if array:
         name = name[:-2].strip()
     base = name.split("(")[0].strip()
+    markers: set[str] = set()
     if base in POSTGRESQL_TYPES:
-        dialect_markers.add(base)
+        markers.add(base)
     if array:
-        dialect_markers.add("array")
+        markers.add("array")
+    return markers
+
+
+def _postgresql_types(parsed: SqlFile) -> set[str]:
+    """PostgreSQL-only column types declared in a parsed SQL file."""
+
+    found: set[str] = set()
+    for statement in parsed.statements:
+        if not _creates_table(statement):
+            continue
+        tokens = statement.tokens
+        index = 1
+        while index < len(tokens) and tokens[index].is_word(*CREATE_MODIFIERS):
+            index += 1
+        index += 1  # the TABLE keyword
+        try:
+            _, index, _ = _table_name(tokens, index)
+        except StatementError:
+            continue
+        items = _column_list(tokens, index)
+        if items is None:
+            continue
+        for item in items:
+            if not item or item[0].kind not in ("word", "ident"):
+                continue
+            if item[0].kind == "word" and item[0].upper in TABLE_CONSTRAINT_WORDS:
+                continue
+            if len(item) > 1 and item[1].kind == "word":
+                found.update(_type_markers(item[1].upper))
+    return found
+
+
+def _node_postgres_dependency(text: str | None) -> str | None:
+    """The PostgreSQL driver a package.json declares."""
+
+    if text is None:
+        return None
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    for section in ("dependencies", "devDependencies", "peerDependencies", "optionalDependencies"):
+        dependencies = data.get(section)
+        if not isinstance(dependencies, dict):
+            continue
+        for name in dependencies:
+            if str(name).lower() in NODE_POSTGRES_DRIVERS:
+                return str(name)
+    return None
+
+
+def _java_postgres_dependency(text: str | None) -> str | None:
+    """The PostgreSQL driver a Maven or Gradle manifest declares."""
+
+    if text is None or JAVA_POSTGRES_DRIVER not in text:
+        return None
+    return JAVA_POSTGRES_DRIVER
+
+
+def _python_postgres_dependency(text: str | None, project: bool = False) -> str | None:
+    """The PostgreSQL driver a Python manifest declares."""
+
+    if text is None:
+        return None
+    if project:
+        try:
+            data = tomllib.loads(text)
+        except tomllib.TOMLDecodeError:
+            return None
+        names: list[str] = []
+        section = data.get("project")
+        if isinstance(section, dict):
+            names.extend(str(item) for item in section.get("dependencies", []))
+        tool = data.get("tool")
+        if isinstance(tool, dict) and isinstance(tool.get("poetry"), dict):
+            names.extend(str(item) for item in tool["poetry"].get("dependencies", {}))
+    else:
+        names = []
+        for line in text.splitlines():
+            requirement = line.split("#", 1)[0].strip()
+            if requirement:
+                names.append(requirement)
+    for name in names:
+        lowered = name.lower()
+        for driver in PYTHON_POSTGRES_DRIVERS:
+            if driver in lowered:
+                return name
+        if project and "postgresql" in lowered:
+            return name
+    return None
 
 
 def _skip_if_not_exists(tokens: list[Token], index: int) -> int:
