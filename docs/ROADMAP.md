@@ -19,7 +19,7 @@
 - Tests cover reproducibility, deletions, no-op detection, provenance, manual-file safety, snapshot modes, destination ownership, and schema conformance.
 
 ## Phase 2: framework and multi-repository analysis
-- Analyzer contract with span evidence and reported limitations (ADR-015) and the Spring Boot adapter are implemented; the React adapter follows on the same contract.
+- Analyzer contract with span evidence and reported limitations (ADR-015), the Spring Boot adapter, and the React adapter (ADR-016) are implemented.
 - Add supported PostgreSQL static schema extraction.
 - Add the React repository and cross-repo candidate matching for the SmartCart system.
 - Persist confirmation overrides and add Mermaid ERD generation when evidence supports it.

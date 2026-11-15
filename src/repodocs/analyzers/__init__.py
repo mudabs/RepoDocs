@@ -236,6 +236,7 @@ def run_analyzers(
 def builtin_analyzers() -> tuple[Analyzer, ...]:
     """The trusted analyzers shipped with RepoDocs, in a stable order."""
 
+    from .react import ReactAnalyzer
     from .spring_boot import SpringBootAnalyzer
 
-    return (SpringBootAnalyzer(),)
+    return (ReactAnalyzer(), SpringBootAnalyzer())

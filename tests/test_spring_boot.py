@@ -249,6 +249,7 @@ def test_scan_is_deterministic_schema_valid_and_renders(tmp_path: Path, capsys) 
     assert_valid("system-ir-1.0.json", first)
     assert first["provenance"]["analyzers"] == [
         {"name": "basic-manifest", "repositories": ["backend"], "version": "1.0"},
+        {"name": "react", "repositories": [], "version": "1.0"},
         {"name": "spring-boot", "repositories": ["backend"], "version": "1.0"},
     ]
 
@@ -260,7 +261,10 @@ def test_scan_is_deterministic_schema_valid_and_renders(tmp_path: Path, capsys) 
 
     markdown = (repository / "docs" / "generated" / "architecture.md").read_text(encoding="utf-8")
     assert "## Analysis coverage" in markdown and "`spring-boot` 1.0: backend" in markdown
-    assert "| smartcart-backend | backend | Spring Boot 3.2.5 | `com.smartcart.SmartCartApplication` | 2 | 7 | 3 |" in markdown
+    assert (
+        "| smartcart-backend | backend | Spring Boot 3.2.5 | `com.smartcart.SmartCartApplication` | "
+        "2 controllers, 7 endpoints, 3 entities |"
+    ) in markdown
     assert "| GET | `/api/orders/{id}` | `com.smartcart.order.OrderController` | get | backend |" in markdown
     assert "| `com.smartcart.order.Order` | orders | 5 | 2 | backend |" in markdown
     assert "## Reported limitations" in markdown
@@ -283,6 +287,7 @@ def test_repository_without_spring_boot_runs_no_adapter(tmp_path: Path, capsys) 
     assert ir["limitations"] == []
     assert {item["name"]: item["repositories"] for item in ir["provenance"]["analyzers"]} == {
         "basic-manifest": ["backend"],
+        "react": [],
         "spring-boot": [],
     }
     assert nodes_of(ir, "service") == [] and nodes_of(ir, "framework") == []

@@ -147,39 +147,21 @@ def _render_analysis_sections(
     for analyzer in ir["provenance"].get("analyzers", []):
         repositories = ", ".join(analyzer.get("repositories", [])) or "no repository detected"
         lines.append(f"- `{analyzer['name']}` {analyzer['version']}: {repositories}")
-    relationships = ir["relationships"]
-    contains: dict[str, list[str]] = {}
-    exposes: dict[str, list[str]] = {}
-    references: dict[str, int] = {}
-    for relationship in relationships:
-        if relationship["type"] == "contains":
-            contains.setdefault(relationship["source"], []).append(relationship["target"])
-        elif relationship["type"] == "exposes":
-            exposes.setdefault(relationship["source"], []).append(relationship["target"])
-        elif relationship["type"] == "references":
-            references[relationship["source"]] = references.get(relationship["source"], 0) + 1
+    contains, exposes, references, requests = _relationship_index(ir)
 
     services = sorted((node for node in nodes.values() if node["type"] == "service"), key=lambda item: (item["attributes"].get("repository_id", ""), item["name"]))
     lines.extend(["", "## Services", ""])
     if services:
-        lines.extend(
-            [
-                "| Service | Repository | Framework | Application class | Controllers | Endpoints | Entities |",
-                "|---|---|---|---|---:|---:|---:|",
-            ]
-        )
+        lines.extend(["| Service | Repository | Framework | Entry | Extracted |", "|---|---|---|---|---|"])
         for service in services:
             attributes = service["attributes"]
-            members = [nodes[target] for target in contains.get(service["id"], []) if target in nodes]
-            controllers = [item for item in members if item["attributes"].get("stereotype") == "controller"]
-            entities = [item for item in members if item["attributes"].get("stereotype") == "entity"]
-            endpoint_count = sum(len(exposes.get(item["id"], [])) for item in controllers)
             framework = attributes.get("framework", "")
             if attributes.get("framework_version"):
                 framework += f" {attributes['framework_version']}"
+            entry = attributes.get("application_class") or attributes.get("package_path") or ""
             lines.append(
                 f"| {_cell(service['name'])} | {attributes.get('repository_id', '')} | {_cell(framework)} | "
-                f"`{_cell(attributes.get('application_class', ''))}` | {len(controllers)} | {endpoint_count} | {len(entities)} |"
+                f"`{_cell(entry)}` | {_service_summary(service['id'], nodes, contains, exposes, requests)} |"
             )
     else:
         lines.append("No framework-aware services were detected.")
@@ -220,7 +202,121 @@ def _render_analysis_sections(
         lines.append("Table names are listed only when declared with @Table; default naming strategies are not applied.")
     else:
         lines.append("No persistence entities were extracted.")
+
+    routes = sorted(
+        (node for node in nodes.values() if node["type"] == "route"),
+        key=lambda item: (item["attributes"].get("repository_id", ""), item["attributes"].get("path", ""), item["attributes"].get("module", ""), item["attributes"].get("line", 0)),
+    )
+    lines.extend(["", "## Routes", ""])
+    if routes:
+        lines.extend(["| Path | Router | Component | Module | Repository | Evidence |", "|---|---|---|---|---|---|"])
+        for route in routes:
+            attributes = route["attributes"]
+            refs = ", ".join(_evidence_ref(evidence, evidence_id) for evidence_id in route["evidence_ids"])
+            path = f"`{_cell(attributes.get('path', ''))}`" + (" (index)" if attributes.get("index") else "")
+            lines.append(
+                f"| {path} | {_cell(attributes.get('router', ''))} | {_cell(attributes.get('component') or 'not literal')} | "
+                f"`{_cell(attributes.get('module', ''))}` | {attributes.get('repository_id', '')} | {refs} |"
+            )
+    else:
+        lines.append("No client-side routes with literal paths were extracted.")
+
+    request_nodes = sorted(
+        (node for node in nodes.values() if node["type"] == "http_request"),
+        key=lambda item: (item["attributes"].get("repository_id", ""), item["attributes"].get("url", ""), item["attributes"].get("http_method", ""), item["attributes"].get("module", "")),
+    )
+    lines.extend(["", "## Outgoing HTTP requests", ""])
+    if request_nodes:
+        lines.append(
+            "Request sites whose URL is a string or template literal. Template holes are shown in braces; a base URL"
+            " is listed when the client instance declares one literally. These are declared targets, not observed traffic."
+        )
+        lines.append("")
+        lines.extend(["| Method | URL | Client | Base URL | Module | Repository | Evidence |", "|---|---|---|---|---|---|---|"])
+        for request in request_nodes:
+            attributes = request["attributes"]
+            refs = ", ".join(_evidence_ref(evidence, evidence_id) for evidence_id in request["evidence_ids"])
+            lines.append(
+                f"| {attributes.get('http_method', '')} | `{_cell(attributes.get('url', ''))}` | {_cell(attributes.get('client', ''))} | "
+                f"{_cell(attributes.get('base_url') or '')} | `{_cell(attributes.get('module', ''))}` | {attributes.get('repository_id', '')} | {refs} |"
+            )
+    else:
+        lines.append("No HTTP request sites with literal URLs were extracted.")
+
+    components = sorted(
+        (node for node in nodes.values() if node["type"] == "component"),
+        key=lambda item: (item["attributes"].get("repository_id", ""), item["attributes"].get("module", ""), item["name"]),
+    )
+    lines.extend(["", "## Components", ""])
+    if components:
+        lines.extend(["| Component | Kind | Module | Exported | References | Repository |", "|---|---|---|---|---:|---|"])
+        for component in components:
+            attributes = component["attributes"]
+            exported = "default" if attributes.get("default_export") else ("named" if attributes.get("exported") else "no")
+            lines.append(
+                f"| {_cell(component['name'])} | {_cell(attributes.get('kind', ''))} | `{_cell(attributes.get('module', ''))}` | "
+                f"{exported} | {references.get(component['id'], 0)} | {attributes.get('repository_id', '')} |"
+            )
+        lines.append("")
+        lines.append("References count JSX elements that resolve to components defined in the same repository.")
+    else:
+        lines.append("No UI components were extracted.")
     return lines
+
+
+def _relationship_index(
+    ir: dict[str, Any],
+) -> tuple[dict[str, list[str]], dict[str, list[str]], dict[str, int], dict[str, list[str]]]:
+    contains: dict[str, list[str]] = {}
+    exposes: dict[str, list[str]] = {}
+    references: dict[str, int] = {}
+    requests: dict[str, list[str]] = {}
+    for relationship in ir["relationships"]:
+        if relationship["type"] == "contains":
+            contains.setdefault(relationship["source"], []).append(relationship["target"])
+        elif relationship["type"] == "exposes":
+            exposes.setdefault(relationship["source"], []).append(relationship["target"])
+        elif relationship["type"] == "references":
+            references[relationship["source"]] = references.get(relationship["source"], 0) + 1
+        elif relationship["type"] == "requests":
+            requests.setdefault(relationship["source"], []).append(relationship["target"])
+    return contains, exposes, references, requests
+
+
+def _descendants(node_key: str, nodes: dict[str, dict[str, Any]], contains: dict[str, list[str]], depth: int = 3) -> list[dict[str, Any]]:
+    found: list[dict[str, Any]] = []
+    frontier = [node_key]
+    for _ in range(depth):
+        next_frontier: list[str] = []
+        for key in frontier:
+            for target in contains.get(key, []):
+                if target in nodes:
+                    found.append(nodes[target])
+                    next_frontier.append(target)
+        frontier = next_frontier
+    return found
+
+
+def _service_summary(
+    service_key: str,
+    nodes: dict[str, dict[str, Any]],
+    contains: dict[str, list[str]],
+    exposes: dict[str, list[str]],
+    requests: dict[str, list[str]],
+) -> str:
+    """Counts of what was extracted under a service, in a fixed order, listing only non-zero kinds."""
+
+    members = _descendants(service_key, nodes, contains)
+    counts = [
+        ("controllers", sum(1 for item in members if item["type"] == "class" and item["attributes"].get("stereotype") == "controller")),
+        ("endpoints", sum(len(exposes.get(item["id"], [])) for item in members)),
+        ("entities", sum(1 for item in members if item["type"] == "class" and item["attributes"].get("stereotype") == "entity")),
+        ("modules", sum(1 for item in members if item["type"] == "module")),
+        ("components", sum(1 for item in members if item["type"] == "component")),
+        ("routes", sum(1 for item in members if item["type"] == "route")),
+        ("requests", sum(len(requests.get(item["id"], [])) for item in members)),
+    ]
+    return ", ".join(f"{count} {label}" for label, count in counts if count) or "no framework facts"
 
 
 def render_mermaid(ir: dict[str, Any]) -> str:
@@ -230,13 +326,7 @@ def render_mermaid(ir: dict[str, Any]) -> str:
     project_key = "project"
     lines.append(f'    {project_key}["{_escape_label(project["name"])}"]')
     nodes = {node["id"]: node for node in ir["nodes"]}
-    exposes: dict[str, int] = {}
-    contains: dict[str, list[str]] = {}
-    for relationship in ir["relationships"]:
-        if relationship["type"] == "exposes":
-            exposes[relationship["source"]] = exposes.get(relationship["source"], 0) + 1
-        elif relationship["type"] == "contains":
-            contains.setdefault(relationship["source"], []).append(relationship["target"])
+    contains, exposes, _, requests = _relationship_index(ir)
     for snapshot in snapshots:
         repo_id = snapshot["repository_id"]
         repo_key = "repo_" + sha256_text(repo_id)[:10]
@@ -252,13 +342,9 @@ def render_mermaid(ir: dict[str, Any]) -> str:
             key=lambda item: item["id"],
         )
         for service in services:
-            members = [nodes[target] for target in contains.get(service["id"], []) if target in nodes]
-            controllers = [item for item in members if item["attributes"].get("stereotype") == "controller"]
-            endpoint_count = sum(exposes.get(item["id"], 0) for item in controllers)
-            entity_count = sum(1 for item in members if item["attributes"].get("stereotype") == "entity")
             label = (
                 f"{service['name']} ({service['attributes'].get('framework', 'service')}): "
-                f"{len(controllers)} controllers, {endpoint_count} endpoints, {entity_count} entities"
+                + _service_summary(service["id"], nodes, contains, exposes, requests)
             )
             service_key = "svc_" + sha256_text(service["id"])[:10]
             lines.append(f'    {service_key}["{_escape_label(label)}"]')
