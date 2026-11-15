@@ -52,7 +52,7 @@ from .generator import generate_docs
 from .ir import write_ir
 from .scanner import scan_project
 from .snapshot import SNAPSHOT_MODE_LOCAL, SNAPSHOT_MODES
-from .validation import load_ir, validate_ir, validate_project
+from .validation import load_ir, validate_candidate_states, validate_ir, validate_project
 
 
 OUTPUT_SCHEMA_VERSION = "1.0"
@@ -205,8 +205,9 @@ def _cmd_scan(args: argparse.Namespace) -> int:
 
 def _cmd_generate(args: argparse.Namespace) -> int:
     config = ProjectConfig.load(_root(args))
-    ir = load_ir(config.internal_path / "ir.json")
-    validate_ir(ir)
+    ir = _load_scanned_ir(config)
+    # Never render a decision the confirmations file no longer records.
+    validate_candidate_states(config, ir)
     result = generate_docs(config, ir)
     _emit(
         "generate",
@@ -274,6 +275,7 @@ def _load_scanned_ir(config: ProjectConfig) -> dict[str, Any]:
 def _cmd_candidates(args: argparse.Namespace) -> int:
     config = ProjectConfig.load(_root(args))
     ir = _load_scanned_ir(config)
+    validate_candidate_states(config, ir)
     wanted = UNRESOLVED_STATUSES if args.status == "unresolved" else STATUSES if args.status == "all" else (args.status,)
     nodes = {node["id"]: node for node in ir["nodes"]}
     _emit(
@@ -295,6 +297,8 @@ def _cmd_decide(args: argparse.Namespace) -> int:
     config = ProjectConfig.load(_root(args))
     ir = _load_scanned_ir(config)
     decisions = load_decisions(config.root)
+    # Start from the states the current file produces, in case it was edited since the scan.
+    apply_decisions(ir, decisions)
     decision = DECISION_CONFIRMED if args.command == "confirm" else DECISION_REJECTED
     for candidate_id in args.candidate_ids:
         record_decision(ir, decisions, candidate_id, decision, args.note)

@@ -238,6 +238,90 @@ def test_hand_edited_candidate_state_is_detected(tmp_path, capsys) -> None:
     assert "do not match the recorded decisions" in response["errors"][0]
 
 
+def test_edited_or_deleted_decisions_never_reach_listing_or_generated_docs(tmp_path, capsys) -> None:
+    root, ids = scanned(tmp_path, capsys)
+    assert invoke(root, capsys, "confirm", *ids)[0] == 0
+    assert invoke(root, capsys, "generate")[0] == 0
+    path = root / "repodocs.confirmations.json"
+    markdown_path = root / "docs" / "docs" / "generated" / "architecture.md"
+    generated = markdown_path.read_text(encoding="utf-8")
+    original = path.read_text(encoding="utf-8")
+
+    stored = json.loads(original)
+    stored["decisions"][0]["decision"] = "rejected"
+    for content in (None, json.dumps(stored)):
+        if content is None:
+            path.unlink()
+        else:
+            path.write_text(content, encoding="utf-8")
+        for command in ("candidates", "generate"):
+            code, response = invoke(root, capsys, command)
+            assert code == 3, (command, response)
+            assert "do not match the recorded decisions" in response["errors"][0]
+        assert markdown_path.read_text(encoding="utf-8") == generated
+
+    # A rescan applies the current file; the outdated confirmations are gone from the docs.
+    assert invoke(root, capsys, "scan")[0] == 0
+    code, response = invoke(root, capsys, "generate")
+    assert code == 0 and response["data"]["changed"] is True
+    assert f"`{stored['decisions'][0]['candidate_id']}` (rejected)" in markdown_path.read_text(encoding="utf-8")
+
+    # confirm and reject start from the current file, so they work without a rescan.
+    path.unlink()
+    assert invoke(root, capsys, "reject", ids[0])[0] == 0
+    states = {item["id"]: item["status"] for item in read_ir(root)["candidates"]}
+    assert states[ids[0]] == "rejected"
+    assert all(status == "candidate" for key, status in states.items() if key != ids[0])
+
+
+def test_decision_is_bound_to_its_source_target_and_repositories(tmp_path, capsys) -> None:
+    root, ids = scanned(tmp_path, capsys)
+    assert invoke(root, capsys, "confirm", *ids)[0] == 0
+    path = root / "repodocs.confirmations.json"
+    original = json.loads(path.read_text(encoding="utf-8"))
+
+    def status_after(mutate) -> str:
+        stored = json.loads(json.dumps(original))
+        mutate(stored["decisions"][0])
+        path.write_text(json.dumps(stored), encoding="utf-8")
+        code, response = invoke(root, capsys, "scan")
+        assert code == 0, response
+        target_id = stored["decisions"][0]["candidate_id"]
+        return next(item["status"] for item in read_ir(root)["candidates"] if item["id"] == target_id)
+
+    other = original["decisions"][1]
+    assert status_after(lambda record: None) == "confirmed"
+    assert status_after(lambda record: record.update(source=other["source"])) == "stale"
+    assert status_after(lambda record: record.update(target="node:elsewhere")) == "stale"
+
+    def move_repository(record: dict) -> None:
+        name = sorted(record["snapshots"])[0]
+        record["snapshots"]["unrelated"] = record["snapshots"].pop(name)
+
+    assert status_after(move_repository) == "stale"
+
+
+def test_invalid_revision_binding_is_rejected(tmp_path, capsys) -> None:
+    root, ids = scanned(tmp_path, capsys)
+    assert invoke(root, capsys, "confirm", ids[0])[0] == 0
+    path = root / "repodocs.confirmations.json"
+    original = json.loads(path.read_text(encoding="utf-8"))
+
+    def broken(mutate) -> None:
+        stored = json.loads(json.dumps(original))
+        mutate(stored["decisions"][0])
+        path.write_text(json.dumps(stored), encoding="utf-8")
+        code, response = invoke(root, capsys, "scan")
+        assert code == 2, response
+        assert "Invalid decision record" in response["errors"][0]
+
+    repo = sorted(original["decisions"][0]["snapshots"])[0]
+    broken(lambda record: record["snapshots"][repo].update(revision_kind="branch"))
+    broken(lambda record: record["snapshots"][repo].update(revision=""))
+    broken(lambda record: record.update(snapshots={}))
+    broken(lambda record: record["evidence_ids"].append(record["evidence_ids"][0]))
+
+
 def test_invalid_confirmations_file_fails_with_json_error(tmp_path, capsys) -> None:
     root, _ = scanned(tmp_path, capsys)
     path = root / "repodocs.confirmations.json"

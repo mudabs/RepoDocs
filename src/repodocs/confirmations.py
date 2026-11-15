@@ -14,6 +14,9 @@ from typing import Any
 
 from .common import write_json
 from .errors import ConfigError
+from .snapshot import REVISION_KIND_COMMIT, REVISION_KIND_CONTENT
+
+REVISION_KINDS = (REVISION_KIND_COMMIT, REVISION_KIND_CONTENT)
 
 
 CONFIRMATIONS_FILENAME = "repodocs.confirmations.json"
@@ -38,7 +41,8 @@ def _valid_snapshots(value: Any) -> bool:
         isinstance(repo, str)
         and isinstance(item, dict)
         and isinstance(item.get("revision"), str)
-        and isinstance(item.get("revision_kind"), str)
+        and bool(item["revision"])
+        and item.get("revision_kind") in REVISION_KINDS
         for repo, item in value.items()
     )
 
@@ -68,6 +72,7 @@ def load_decisions(root: Path) -> dict[str, dict[str, Any]]:
             or not isinstance(record.get("target"), str)
             or not isinstance(record.get("evidence_ids"), list)
             or any(not isinstance(item, str) for item in record["evidence_ids"])
+            or len(set(record["evidence_ids"])) != len(record["evidence_ids"])
             or not _valid_snapshots(record.get("snapshots"))
             or not isinstance(record.get("note", ""), str)
         ):
@@ -112,9 +117,9 @@ def record_decision(
 def apply_decisions(ir: dict[str, Any], decisions: dict[str, dict[str, Any]]) -> None:
     """Set each candidate's status from the recorded decisions.
 
-    A decision holds only while the candidate still rests on the evidence it was made
-    against. Any change to that evidence makes the candidate stale, never silently
-    confirmed or rejected.
+    A decision holds only while it is bound to this candidate: the same source and target
+    nodes, the same participating repositories, and the evidence it was made against.
+    Anything else makes the candidate stale, never silently confirmed or rejected.
     """
 
     for candidate in ir["candidates"]:
@@ -123,7 +128,12 @@ def apply_decisions(ir: dict[str, Any], decisions: dict[str, dict[str, Any]]) ->
         record = decisions.get(candidate["id"])
         if record is None:
             continue
-        fresh = sorted(record["evidence_ids"]) == sorted(candidate["evidence_ids"])
+        fresh = (
+            record["source"] == candidate["source"]
+            and record["target"] == candidate["target"]
+            and set(record["snapshots"]) == set(candidate["snapshots"])
+            and sorted(record["evidence_ids"]) == sorted(candidate["evidence_ids"])
+        )
         candidate["status"] = record["decision"] if fresh else STATUS_STALE
         confirmation: dict[str, Any] = {"decision": record["decision"], "snapshots": record["snapshots"]}
         if record.get("note"):

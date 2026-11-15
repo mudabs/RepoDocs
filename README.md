@@ -137,6 +137,7 @@ repodocs validate
 - Each decision records the candidate's evidence and both repository revisions. When a participating source file changes, the decision becomes `stale` and the candidate must be decided again.
 - `repodocs validate` exits with code 5 while any candidate is unresolved or stale. Use `--allow-unresolved` for local drafts only.
 - A decision changes the IR, so run `generate` again before `validate`. See ADR-019.
+- If `repodocs.confirmations.json` is edited or deleted by hand, `candidates`, `generate`, and `validate` fail until `scan` reapplies it, so an outdated decision is never shown as in force.
 
 ### Exit codes
 | Code | Meaning |
