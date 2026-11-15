@@ -90,10 +90,30 @@ def render_markdown(ir: dict[str, Any]) -> str:
             lines.append(f"| {relationship['type']} | {_cell(source)} | {_cell(target)} |")
     else:
         lines.append("No observed relationships were extracted.")
+    lines.extend(["", "## Inferred relationships", ""])
+    inferred_relationships = [item for item in relationships if item.get("classification") == "inferred"]
+    if inferred_relationships:
+        lines.append(
+            "Relationships inferred from matching names rather than read from source. They are not facts: each one"
+            " names the basis it was inferred from and cites the evidence of both sides."
+        )
+        lines.append("")
+        lines.extend(["| Type | Source | Target | Basis | Confidence | Evidence |", "|---|---|---|---|---:|---|"])
+        for relationship in inferred_relationships:
+            source = nodes.get(relationship["source"], {}).get("name", relationship["source"])
+            target = nodes.get(relationship["target"], {}).get("name", relationship["target"])
+            attributes = relationship.get("attributes", {})
+            refs = ", ".join(_evidence_ref(evidence, evidence_id) for evidence_id in relationship["evidence_ids"])
+            lines.append(
+                f"| {relationship['type']} | {_cell(source)} | {_cell(target)} | {_cell(attributes.get('basis', 'name match'))} | "
+                f"{relationship.get('confidence', '')} | {refs} |"
+            )
+    else:
+        lines.append("No relationships were inferred.")
     lines.extend(["", "## Evidence-backed claims", ""])
     for claim in claims:
         evidence_text = ", ".join(_evidence_ref(evidence, evidence_id) for evidence_id in claim["evidence_ids"])
-        lines.append(f"- {_cell(claim['text'])} Evidence: {evidence_text or 'none'}.")
+        lines.append(f"- **{claim['classification']}** {_cell(claim['text'])} Evidence: {evidence_text or 'none'}.")
     lines.extend(["", "## Reported limitations", ""])
     limitations = ir.get("limitations", [])
     if limitations:
@@ -203,6 +223,8 @@ def _render_analysis_sections(
     else:
         lines.append("No persistence entities were extracted.")
 
+    lines.extend(_render_database_section(ir, nodes))
+
     routes = sorted(
         (node for node in nodes.values() if node["type"] == "route"),
         key=lambda item: (item["attributes"].get("repository_id", ""), item["attributes"].get("path", ""), item["attributes"].get("module", ""), item["attributes"].get("line", 0)),
@@ -262,6 +284,78 @@ def _render_analysis_sections(
     else:
         lines.append("No UI components were extracted.")
     return lines
+
+
+def _render_database_section(ir: dict[str, Any], nodes: dict[str, dict[str, Any]]) -> list[str]:
+    """Database and table facts extracted from SQL migrations and schema files."""
+
+    databases = sorted(
+        (node for node in nodes.values() if node["type"] == "database"),
+        key=lambda item: (item["attributes"].get("repository_id", ""), item["name"]),
+    )
+    tables = sorted(
+        (node for node in nodes.values() if node["type"] == "table"),
+        key=lambda item: (item["attributes"].get("repository_id", ""), item["name"]),
+    )
+    lines = ["", "## Database schema", ""]
+    if not databases:
+        lines.append("No database schema was extracted.")
+        return lines
+    owner = _database_owner(nodes, ir)
+    lines.append(
+        "Tables extracted from SQL migrations and schema files. Columns, keys, and constraints are read from the"
+        " statements that defined them; data statements are not analyzed, and a foreign key to a table that is not"
+        " defined in the same repository is reported as a limitation instead of an edge. The schema is listed only"
+        " when the source qualified the table name; an unqualified table uses the search path of the connection."
+    )
+    lines.append("")
+    lines.extend(["| Database | Table | Schema | Columns | Primary key | Foreign keys | Repository |", "|---|---|---|---:|---|---|---|"])
+    for table in tables:
+        attributes = table["attributes"]
+        foreign_keys = attributes.get("foreign_keys", [])
+        targets = ", ".join(
+            f"{item.get('references_table', '')} ({', '.join(item.get('columns', []))})" for item in foreign_keys
+        )
+        lines.append(
+            f"| {_cell(owner.get(table['id'], attributes.get('repository_id', '')))} | `{_cell(table['name'])}` | "
+            f"{_cell(attributes.get('schema') or 'not qualified')} | {len(attributes.get('columns', []))} | "
+            f"{_cell(', '.join(attributes.get('primary_key', [])) or 'none')} | {_cell(targets or 'none')} | "
+            f"{attributes.get('repository_id', '')} |"
+        )
+    lines.append("")
+    lines.extend(["### Table columns", "", "| Table | Column | Type | Nullable | Default | Key | Repository |", "|---|---|---|---|---|---|---|"])
+    for table in tables:
+        attributes = table["attributes"]
+        unique_columns = {column for constraint in attributes.get("unique_constraints", []) for column in constraint.get("columns", [])}
+        for column in attributes.get("columns", []):
+            if column.get("primary_key"):
+                key = "primary key"
+            elif column.get("unique") or column.get("name") in unique_columns:
+                key = "unique"
+            elif column.get("identity"):
+                key = "identity"
+            else:
+                key = ""
+            lines.append(
+                f"| `{_cell(table['name'])}` | `{_cell(column.get('name', ''))}` | `{_cell(column.get('type', ''))}` | "
+                f"{'yes' if column.get('nullable', True) else 'no'} | {_cell(column.get('default') or '-')} | "
+                f"{key} | {attributes.get('repository_id', '')} |"
+            )
+    return lines
+
+
+def _database_owner(nodes: dict[str, dict[str, Any]], ir: dict[str, Any]) -> dict[str, str]:
+    """Map every table to the database node that contains it."""
+
+    owner: dict[str, str] = {}
+    for relationship in ir.get("relationships", []):
+        if relationship["type"] != "contains":
+            continue
+        database = nodes.get(relationship["source"])
+        table = nodes.get(relationship["target"])
+        if database and table and database["type"] == "database" and table["type"] == "table":
+            owner[table["id"]] = database["name"]
+    return owner
 
 
 def _relationship_index(
@@ -349,6 +443,23 @@ def render_mermaid(ir: dict[str, Any]) -> str:
             service_key = "svc_" + sha256_text(service["id"])[:10]
             lines.append(f'    {service_key}["{_escape_label(label)}"]')
             lines.append(f"    {repo_key} --> {service_key}")
+        databases = sorted(
+            (
+                node
+                for node in nodes.values()
+                if node["type"] == "database" and node["attributes"].get("repository_id") == repo_id
+            ),
+            key=lambda item: item["id"],
+        )
+        for database in databases:
+            attributes = database["attributes"]
+            label = (
+                f"{database['name']} (PostgreSQL): {attributes.get('table_count', 0)} tables, "
+                f"{attributes.get('migration_tool', 'sql files')}"
+            )
+            database_key = "db_" + sha256_text(database["id"])[:10]
+            lines.append(f'    {database_key}["{_escape_label(label)}"]')
+            lines.append(f"    {repo_key} --> {database_key}")
     return "\n".join(lines) + "\n"
 
 

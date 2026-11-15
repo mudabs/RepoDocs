@@ -38,7 +38,7 @@ For a single repository that documents itself, mark it as both source and destin
 repodocs add . --id app --destination
 ```
 
-The CLI writes versioned JSON responses to standard output. Scan state and the artifact manifest are stored under `.repodocs/` next to `repodocs.json`; generated artifacts are written to the destination repository under the configured dedicated output directory, which defaults to `docs/generated/`. Every scan reports languages, manifests, and dependencies; the Spring Boot and React adapters add framework-aware facts for repositories where they detect their framework (see Framework-aware analysis below). PostgreSQL schema analysis follows in Milestone 2.
+The CLI writes versioned JSON responses to standard output. Scan state and the artifact manifest are stored under `.repodocs/` next to `repodocs.json`; generated artifacts are written to the destination repository under the configured dedicated output directory, which defaults to `docs/generated/`. Every scan reports languages, manifests, and dependencies; the Spring Boot, React, and PostgreSQL adapters add framework-aware facts for repositories where they detect their framework (see Framework-aware analysis below).
 
 ## CLI contract
 
@@ -76,6 +76,21 @@ The React adapter (`react`, ADR-016) detects React from a `package.json` that de
 - `http_request` nodes for `fetch`, `axios`, `ky`, and `axios.create`/`ky.create` instances (including instances imported from another module) whose URL is a string or template literal. Template holes are kept as `{expression}`; nothing is substituted, and sites on different client instances or base URLs stay distinct. These are declared targets, not observed traffic.
 
 Reported rather than extracted: `import()` loads (the edge is kept, the timing is not), non-literal route paths and request URLs, import specifiers that match neither a file nor a declared dependency (path aliases are not applied), and `eval` or `new Function`. Function calls, hooks, and props never become relationships, and regex literals are not recognized by the scanner.
+
+The PostgreSQL adapter (`postgresql`, ADR-017) reads SQL schema and migration files as text. No database is contacted and no SQL is executed. The adapter masks comments, string literals, dollar-quoted bodies, and quoted identifiers, splits statements on top-level semicolons, and applies the statements it supports in migration order: Flyway versioned files by version, then repeatable files, then other SQL files by path. Block comments nest, as they do in PostgreSQL, so a commented-out table stays commented out. It extracts:
+- a `database` node per repository, with the PostgreSQL-only constructs that were found (`bigserial`, `jsonb`, `timestamptz`, `uuid`, `CREATE EXTENSION`, `INHERITS`, `TABLESPACE`, procedural bodies), the declared driver, the migration tool inferred from the file names, the schema names, the extensions, the enum types, the table count, and the number of skipped data statements;
+- a `table` node per table, with the qualified name, the schema when the source qualified it, the columns (type, nullability, default, identity, generated, unique), the primary key, the unique constraints, the foreign keys, the check constraint count, the indexes, the partition parent, and the files that defined or changed it;
+- `references` edges between the tables of the same repository, with the constraint name, the local and referenced columns, and the referential actions. Every edge is `observed` and cites the span of the statement that declared it.
+
+The adapter applies to a repository that shows PostgreSQL usage: a manifest that declares a PostgreSQL driver, or a table definition that uses a PostgreSQL-only type. A repository that only holds portable SQL is not treated as PostgreSQL, because the dialect would be a guess.
+
+`CREATE TABLE`, `CREATE INDEX`, `ALTER TABLE`, and `DROP TABLE` are applied. A table that is defined twice keeps its first definition, which is what PostgreSQL does, and the repeated statement is reported. Renaming a column updates everything that names it (primary key, unique constraints, foreign keys, indexes, and the columns other tables reference); dropping a column removes the constraints and indexes that depend on it, as PostgreSQL does. Reported rather than extracted: views, materialized views, functions, procedures, triggers, rules, policies, domains, `DO` blocks, psql meta-commands, `CREATE TABLE ... AS query`, `LIKE`, `INHERITS`, `EXCLUDE` constraints, partitioned parents, unsupported `ALTER TABLE` actions, data statements, Liquibase changelogs, and Flyway undo migrations. A foreign key to a table that is not defined in the scanned SQL is an `ambiguous-reference` limitation, not an edge: no relationship is created without source evidence.
+
+The ORM metadata step (`orm-metadata`) connects a persistence entity to the table it declares with `@Table` when the declared name matches exactly one extracted table of the same repository. Nothing in the sources states that the entity and the table describe the same rows, so the `maps_to` edge is `inferred` with confidence 0.8, names its basis, and cites the evidence of both sides. The generated documentation lists inferred relationships in their own section. An entity without a declared table name, and a table without an entity, stay unlinked.
+
+Standalone index, table-drop, schema, extension, and enum-type migrations are included in migration order. Repeated column and named-index definitions preserve existing state rather than duplicating it. Implicit foreign keys are removed when a referenced primary-key column is dropped. A recorded driver declaration cites its manifest in the database node's evidence.
+
+Standalone unsupported DDL and procedural migrations are reported with evidence too. Index names are scoped to the owning table's schema; qualified index drops target that schema, while ambiguous unqualified drops are reported without changing state. Runtime search paths are not guessed.
 
 ### Exit codes
 | Code | Meaning |

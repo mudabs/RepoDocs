@@ -29,7 +29,13 @@ def test_detects_react_package_and_lists_modules(tmp_path: Path, capsys) -> None
     code, payload = invoke(root, capsys, "scan")
     assert code == 0
     analyzers = {item["name"]: item["repositories"] for item in payload["data"]["analyzers"]}
-    assert analyzers == {"basic-manifest": ["frontend"], "react": ["frontend"], "spring-boot": []}
+    assert analyzers == {
+        "basic-manifest": ["frontend"],
+        "orm-metadata": [],
+        "postgresql": [],
+        "react": ["frontend"],
+        "spring-boot": [],
+    }
 
     ir = read_ir(root)
     (framework,) = nodes_of(ir, "framework")

@@ -230,13 +230,18 @@ def run_analyzers(
             entry["limitations"] = len({item["id"] for item in result.limitations})
         report.append(entry)
     context.analyzer_name = BASIC_ANALYZER_NAME
+    # Imported here because the linking step builds on the contract types above.
+    from .orm import link_orm_metadata
+
+    report.append(link_orm_metadata(context, merged))
     return merged, report
 
 
 def builtin_analyzers() -> tuple[Analyzer, ...]:
     """The trusted analyzers shipped with RepoDocs, in a stable order."""
 
+    from .postgresql import PostgreSqlAnalyzer
     from .react import ReactAnalyzer
     from .spring_boot import SpringBootAnalyzer
 
-    return (ReactAnalyzer(), SpringBootAnalyzer())
+    return (PostgreSqlAnalyzer(), ReactAnalyzer(), SpringBootAnalyzer())
