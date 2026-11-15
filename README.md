@@ -38,7 +38,7 @@ For a single repository that documents itself, mark it as both source and destin
 repodocs add . --id app --destination
 ```
 
-The CLI writes versioned JSON responses to standard output. Scan state and the artifact manifest are stored under `.repodocs/` next to `repodocs.json`; generated artifacts are written to the destination repository under the configured dedicated output directory, which defaults to `docs/generated/`. Every scan reports languages, manifests, and dependencies; the Spring Boot adapter adds framework-aware facts for repositories where it detects Spring Boot (see Framework-aware analysis below). React and PostgreSQL analysis follow in Milestone 2.
+The CLI writes versioned JSON responses to standard output. Scan state and the artifact manifest are stored under `.repodocs/` next to `repodocs.json`; generated artifacts are written to the destination repository under the configured dedicated output directory, which defaults to `docs/generated/`. Every scan reports languages, manifests, and dependencies; the Spring Boot and React adapters add framework-aware facts for repositories where they detect their framework (see Framework-aware analysis below). PostgreSQL schema analysis follows in Milestone 2.
 
 ## CLI contract
 
@@ -67,6 +67,15 @@ The Spring Boot adapter (`spring-boot`) detects Spring Boot from `pom.xml`, `bui
 - `configuration` nodes for `application*.properties|yml` files containing property keys only. Values are never recorded.
 
 Anything the adapter sees but cannot support statically is listed in the IR `limitations` array and in the generated Markdown, each with evidence: non-literal mapping paths, functional routes, property placeholders in routes, reflection, SpEL, `@Profile` and `@ConditionalOn*`, Lombok and `@Generated`, custom `@Query` statements, JPA inheritance and embeddable mappings, Kotlin, Groovy, and Scala sources, ambiguous class names, and classes outside every application base package. Default JPA naming strategies are not applied, method bodies are not analyzed, and runtime call order is never inferred.
+
+The React adapter (`react`, ADR-016) detects React from a `package.json` that declares `react` and owns JavaScript or TypeScript modules, or from `.jsx`/`.tsx` sources, and extracts from modules outside test, story, mock, and `*.config.*` files:
+- a `service` node per React package with the declared version range and the recognized toolchain (Vite, Next.js, react-scripts, and others), router, and HTTP client packages;
+- `module` nodes per source file with `imports` edges to other modules (relative specifiers that resolve to a file) or to declared dependencies, each marked `static`, `dynamic`, `require`, or re-export;
+- `component` nodes for top-level PascalCase function, arrow, `memo`, `forwardRef`, and class declarations containing JSX, with `references` edges only for JSX elements that resolve to components defined in the repository;
+- `route` nodes with full literal paths composed from nested React Router `<Route>` elements and route objects, plus Next.js `pages/` and `app/**/page` files; Next.js `pages/api/` and `app/**/route` files become `endpoint` nodes;
+- `http_request` nodes for `fetch`, `axios`, `ky`, and `axios.create`/`ky.create` instances (including instances imported from another module) whose URL is a string or template literal. Template holes are kept as `{expression}`; nothing is substituted. These are declared targets, not observed traffic.
+
+Reported rather than extracted: `import()` loads (the edge is kept, the timing is not), non-literal route paths and request URLs, import specifiers that match neither a file nor a declared dependency (path aliases are not applied), and `eval` or `new Function`. Function calls, hooks, and props never become relationships, and regex literals are not recognized by the scanner.
 
 ### Exit codes
 | Code | Meaning |

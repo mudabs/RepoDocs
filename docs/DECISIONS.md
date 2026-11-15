@@ -35,6 +35,7 @@
 | D28 | RepoDocs is licensed under Apache 2.0 | Permissive adoption with an explicit patent grant |
 | D29 | Repositories have a `source` or `destination` role with one explicit documentation destination; scans run in `local` or `pinned` snapshot mode, pinned requires an explicit pin, and evidence resolves to a commit or a content fingerprint (ADR-014) | Stable destination and provenance contracts before framework adapters build on the IR |
 | D30 | Built-in analyzers implement a `detect`/`analyze` contract over a read-only, hash-checked repository context; evidence is `file` or `span` with line ranges; literal source facts are `observed` and name matches are `inferred`; unsupported constructs go into a required IR `limitations` list with a closed set of kinds; configuration values are never recorded (ADR-015) | Framework adapters share one boundary, keep evidence precise, and report what they cannot support instead of guessing |
+| D31 | Front-end facts use `module`, `component`, `route`, and `http_request` nodes with `imports`, `references`, and `requests` edges; request sites are recorded only for literal URLs, with template holes preserved as `{expression}`; JSX element references resolve through imports and function calls never become relationships (ADR-016) | Gives correlation declared request targets and routes with evidence while keeping runtime behaviour out of the IR |
 
 ## Remaining open decisions: require validation/approval
 | ID | Question | Key tradeoff |
