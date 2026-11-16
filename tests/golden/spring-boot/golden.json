@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0",
   "name": "spring-boot",
-  "description": "A Spring Boot backend. Expectations were derived from the Java sources, ADR-015, and the fixture README, which lists the constructs that must be reported instead of analyzed. Endpoints, classes, and exposes edges are enumerated completely. A limitation's evidence must contain the text that makes it a limitation. Review notes: the functional route is anchored at the method declaration because ADR-015 says method bodies are not scanned; the SpEL expression (OrderService line 17) and the @Profile annotation (SecurityConfig line 8) are expected on their own lines, and the analyzer currently cites the line after and before them, so those two stay as misses until the analyzer is fixed.",
+  "description": "A Spring Boot backend. Expectations were derived from the Java sources, ADR-015, and the fixture README, which lists the constructs that must be reported instead of analyzed. Endpoints, classes, and exposes edges are enumerated completely. A limitation's evidence must contain the text that makes it a limitation. Review notes: the functional route is anchored at the method declaration because ADR-015 says method bodies are not scanned; the SpEL expression (OrderService line 17) and the @Profile annotation (SecurityConfig line 8) are expected on their own lines. The analyzer first cited the line after and before them, which the harness recorded as two misses; it was fixed afterward and these expectations were not changed.",
   "repositories": [
     {"id": "backend", "path": "../../fixtures/spring-boot-repo"}
   ],
