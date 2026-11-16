@@ -139,6 +139,22 @@ repodocs validate
 - A decision changes the IR, so run `generate` again before `validate`. See ADR-019.
 - If `repodocs.confirmations.json` is edited or deleted by hand, `candidates`, `generate`, and `validate` fail until `scan` reapplies it, so an outdated decision is never shown as in force.
 
+### Optional AI interpretation
+
+AI is off by default, and `scan`, `generate`, and `validate` never need a provider, key, network, or extra dependency.
+
+```powershell
+repodocs ai-bundle
+repodocs ai-configure --provider ollama --model llama3
+repodocs ai-interpret
+```
+
+- `repodocs ai-bundle` writes `.repodocs/evidence-bundle.json` and contacts nothing. The bundle is the only thing a provider receives: analyzed facts and evidence locations, with no source text, file listings, content hashes, or local paths, and with secret-looking strings redacted. Review it before consenting to external use.
+- Providers are `ollama` (local) and `anthropic` (cloud, bring your own key; install with `python -m pip install -e ".[ai]"` and set `ANTHROPIC_API_KEY`). Keys are never written to `repodocs.json`.
+- Anything that would send the bundle off the machine, including an Ollama host that is not a loopback address, is refused until you run `repodocs ai-configure --consent-external`. `--revoke-consent` returns the project to local-only.
+- `repodocs ai-interpret` writes `.repodocs/ai-claims.json` with provider and model provenance. A claim is accepted only when every evidence and subject ID it cites exists in the bundle; others are rejected with a reason. Accepted claims are `inferred` or `proposed`, never `observed`, and a claim about an unconfirmed cross-repository candidate is always `proposed`.
+- Using a cloud provider costs money on your provider account and requires a network connection. See ADR-020.
+
 ### Exit codes
 | Code | Meaning |
 |---:|---|
@@ -148,6 +164,7 @@ repodocs validate
 | 4 | Ownership failure: unowned files or unexpected edits in generated output |
 | 5 | Cross-repository candidates are unresolved or their decisions are stale |
 | 6 | Snapshot rejected: dirty, non-Git, unpinned in pinned mode, stale, or ambiguous revision |
+| 7 | AI provider unavailable or returned unusable output; deterministic commands are unaffected |
 
 ## Setup
 1. Open the repository in Codex Desktop, Claude Code, or another development environment.

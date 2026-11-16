@@ -26,8 +26,8 @@
 - Add Mermaid ERD generation when evidence supports it.
 
 ## Phase 3: AI integration
-- Add evidence-bundle construction and structured claim validation.
-- Add one cloud BYO provider, Ollama, explicit consent, redaction, and deterministic fallback.
+- Evidence-bundle construction, redaction, structured claim validation, the Anthropic and Ollama adapters, recorded consent, and deterministic fallback are implemented (ADR-020).
+- Use validated claims in generated documentation.
 - Measure deterministic-versus-AI output using golden fixtures.
 
 ## Phase 4: GitHub automation

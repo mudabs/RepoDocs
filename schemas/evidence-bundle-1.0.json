@@ -1,0 +1,124 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://repodocs.dev/schemas/evidence-bundle-1.0.json",
+  "title": "RepoDocs AI evidence bundle",
+  "description": "The curated, redacted input a model provider receives. It holds analyzed facts and evidence locations only: no source text, file listings, content hashes, or local paths.",
+  "type": "object",
+  "required": ["bundle_version", "project", "source_ir_hash", "snapshots", "nodes", "relationships", "candidates", "limitations", "evidence", "redaction"],
+  "additionalProperties": false,
+  "properties": {
+    "bundle_version": {"const": "1.0"},
+    "project": {
+      "type": "object",
+      "required": ["id", "name"],
+      "properties": {"id": {"type": "string"}, "name": {"type": "string"}},
+      "additionalProperties": false
+    },
+    "source_ir_hash": {"type": "string", "minLength": 1},
+    "snapshots": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["repository_id", "revision", "revision_kind"],
+        "properties": {
+          "repository_id": {"type": "string"},
+          "revision": {"type": "string"},
+          "revision_kind": {"enum": ["commit", "content"]}
+        },
+        "additionalProperties": false
+      }
+    },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "type", "name", "attributes", "evidence_ids"],
+        "properties": {
+          "id": {"type": "string"},
+          "type": {"type": "string"},
+          "name": {"type": "string"},
+          "attributes": {"type": "object"},
+          "evidence_ids": {"type": "array", "items": {"type": "string"}}
+        },
+        "additionalProperties": false
+      }
+    },
+    "relationships": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "type", "source", "target", "classification", "evidence_ids"],
+        "properties": {
+          "id": {"type": "string"},
+          "type": {"type": "string"},
+          "source": {"type": "string"},
+          "target": {"type": "string"},
+          "classification": {"enum": ["observed", "inferred", "proposed"]},
+          "evidence_ids": {"type": "array", "items": {"type": "string"}}
+        },
+        "additionalProperties": false
+      }
+    },
+    "candidates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "source", "target", "status", "classification", "confidence", "reasons", "evidence_ids"],
+        "properties": {
+          "id": {"type": "string"},
+          "source": {"type": "string"},
+          "target": {"type": "string"},
+          "status": {"enum": ["candidate", "confirmed", "rejected", "stale"]},
+          "classification": {"const": "inferred"},
+          "confidence": {"type": "number"},
+          "reasons": {"type": "array", "items": {"type": "string"}},
+          "evidence_ids": {"type": "array", "items": {"type": "string"}}
+        },
+        "additionalProperties": false
+      }
+    },
+    "limitations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "repository_id", "kind", "message", "evidence_ids"],
+        "properties": {
+          "id": {"type": "string"},
+          "repository_id": {"type": "string"},
+          "kind": {"type": "string"},
+          "message": {"type": "string"},
+          "evidence_ids": {"type": "array", "items": {"type": "string"}}
+        },
+        "additionalProperties": false
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "repository_id", "path", "kind", "revision", "revision_kind"],
+        "properties": {
+          "id": {"type": "string"},
+          "repository_id": {"type": "string"},
+          "path": {"type": "string"},
+          "kind": {"enum": ["file", "span"]},
+          "revision": {"type": "string"},
+          "revision_kind": {"enum": ["commit", "content"]},
+          "line_start": {"type": "integer"},
+          "line_end": {"type": "integer"},
+          "symbol": {"type": "string"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "redaction": {
+      "type": "object",
+      "required": ["rules_version", "replacements"],
+      "properties": {
+        "rules_version": {"type": "string"},
+        "replacements": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    }
+  }
+}

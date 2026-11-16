@@ -8,12 +8,15 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
+from .common import write_json
 from .config import (
+    AI_PROVIDERS,
     CONFIG_FILENAME,
     DEFAULT_OUTPUT_DIRECTORY,
     REPOSITORY_ROLES,
     ROLE_DESTINATION,
     ROLE_SOURCE,
+    AiSettings,
     ProjectConfig,
     RepositorySpec,
     create_project,
@@ -35,6 +38,7 @@ from .confirmations import (
     unresolved_candidates,
 )
 from .errors import (
+    EXIT_AI_PROVIDER,
     EXIT_CONFIRMATION,
     EXIT_OK,
     EXIT_OWNERSHIP,
@@ -44,6 +48,7 @@ from .errors import (
     ConfigError,
     ConfirmationError,
     OwnershipError,
+    ProviderError,
     RepoDocsError,
     SnapshotError,
     ValidationError,
@@ -318,6 +323,84 @@ def _cmd_decide(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _cmd_ai_configure(args: argparse.Namespace) -> int:
+    config = ProjectConfig.load(_root(args))
+    current = config.ai
+    consent = True if args.consent_external else False if args.revoke_consent else current.external_consent
+    config.ai = AiSettings(
+        provider=args.provider or current.provider,
+        model=args.model or (current.model if not args.provider or args.provider == current.provider else None),
+        external_consent=consent,
+        ollama_host=args.ollama_host or current.ollama_host,
+    )
+    config.save()
+    _emit("ai-configure", ok=True, data=config.ai.to_dict())
+    return EXIT_OK
+
+
+def _write_bundle(config: ProjectConfig) -> tuple[dict[str, Any], Path]:
+    from .ai.bundle import build_bundle
+    from .ai.claims import BUNDLE_FILENAME
+
+    ir = _load_scanned_ir(config)
+    validate_candidate_states(config, ir)
+    bundle = build_bundle(ir)
+    path = config.internal_path / BUNDLE_FILENAME
+    write_json(path, bundle)
+    return bundle, path
+
+
+def _bundle_summary(bundle: dict[str, Any], path: Path) -> dict[str, Any]:
+    from .ai.bundle import bundle_hash
+
+    return {
+        "bundle": path.as_posix(),
+        "bundle_version": bundle["bundle_version"],
+        "bundle_hash": bundle_hash(bundle),
+        "source_ir_hash": bundle["source_ir_hash"],
+        "redactions": bundle["redaction"]["replacements"],
+        **{key: len(bundle[key]) for key in ("nodes", "relationships", "candidates", "limitations", "evidence")},
+    }
+
+
+def _cmd_ai_bundle(args: argparse.Namespace) -> int:
+    """Write the evidence bundle for review. Never contacts a provider."""
+
+    config = ProjectConfig.load(_root(args))
+    bundle, path = _write_bundle(config)
+    _emit("ai-bundle", ok=True, data=_bundle_summary(bundle, path))
+    return EXIT_OK
+
+
+def _cmd_ai_interpret(args: argparse.Namespace) -> int:
+    from .ai import providers
+    from .ai.claims import CLAIMS_FILENAME, interpret
+
+    config = ProjectConfig.load(_root(args))
+    # Resolve first: a missing consent or setting must fail before anything is built or sent.
+    provider = providers.resolve_provider(config.ai)
+    if provider is None:
+        _emit("ai-interpret", ok=True, data={"status": "disabled", "provider": "none"})
+        return EXIT_OK
+    bundle, bundle_path = _write_bundle(config)
+    document = interpret(bundle, provider)
+    claims_path = config.internal_path / CLAIMS_FILENAME
+    write_json(claims_path, document)
+    _emit(
+        "ai-interpret",
+        ok=True,
+        data={
+            "status": "completed",
+            "claims": claims_path.as_posix(),
+            "provenance": document["provenance"],
+            "accepted": len(document["accepted"]),
+            "rejected": len(document["rejected"]),
+            "bundle": _bundle_summary(bundle, bundle_path),
+        },
+    )
+    return EXIT_OK
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="repodocs", description="Evidence-backed repository documentation")
     parser.add_argument("--root", default=".", help="Project configuration root (default: current directory)")
@@ -412,6 +495,27 @@ def _build_parser() -> argparse.ArgumentParser:
         decide_parser.add_argument("candidate_ids", nargs="+", metavar="CANDIDATE_ID")
         decide_parser.add_argument("--note", help="Reason recorded with the decision")
         decide_parser.set_defaults(handler=_cmd_decide)
+
+    ai_configure = subparsers.add_parser("ai-configure", help="Choose the optional AI provider and record consent")
+    ai_configure.add_argument("--provider", choices=AI_PROVIDERS)
+    ai_configure.add_argument("--model")
+    ai_configure.add_argument("--ollama-host", help="Ollama server URL (default http://localhost:11434)")
+    consent = ai_configure.add_mutually_exclusive_group()
+    consent.add_argument(
+        "--consent-external",
+        action="store_true",
+        help="Consent to sending the redacted evidence bundle off this machine",
+    )
+    consent.add_argument("--revoke-consent", action="store_true", help="Return the project to local-only")
+    ai_configure.set_defaults(handler=_cmd_ai_configure)
+
+    ai_bundle = subparsers.add_parser("ai-bundle", help="Write the redacted evidence bundle for review; sends nothing")
+    ai_bundle.set_defaults(handler=_cmd_ai_bundle)
+
+    ai_interpret = subparsers.add_parser(
+        "ai-interpret", help="Ask the configured provider for claims and validate them against the evidence"
+    )
+    ai_interpret.set_defaults(handler=_cmd_ai_interpret)
     return parser
 
 
@@ -429,6 +533,9 @@ def main(argv: list[str] | None = None) -> int:
     except ConfirmationError as exc:
         _emit(args.command, ok=False, errors=[str(exc)])
         return EXIT_CONFIRMATION
+    except ProviderError as exc:
+        _emit(args.command, ok=False, errors=[f"{exc}. Deterministic scan, generate, and validate are unaffected"])
+        return EXIT_AI_PROVIDER
     except ValidationError as exc:
         _emit(args.command, ok=False, errors=[str(exc)])
         return EXIT_VALIDATION

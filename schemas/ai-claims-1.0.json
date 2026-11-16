@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://repodocs.dev/schemas/ai-claims-1.0.json",
+  "title": "RepoDocs validated AI claims",
+  "description": "Claims a model returned for one evidence bundle, after validation. Accepted claims cite only evidence and subjects that exist in that bundle and are never observed facts.",
+  "type": "object",
+  "required": ["schema_version", "provenance", "accepted", "rejected"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "provenance": {
+      "type": "object",
+      "required": ["engine", "engine_version", "provider", "model", "requested_model", "external", "bundle_version", "bundle_hash", "source_ir_hash"],
+      "properties": {
+        "engine": {"const": "repodocs"},
+        "engine_version": {"type": "string", "minLength": 1},
+        "provider": {"enum": ["anthropic", "ollama"]},
+        "model": {"type": "string", "minLength": 1, "description": "The model that served the response, as the provider reported it."},
+        "requested_model": {"type": "string", "minLength": 1},
+        "external": {"type": "boolean", "description": "True when the bundle left this machine."},
+        "bundle_version": {"type": "string", "minLength": 1},
+        "bundle_hash": {"type": "string", "minLength": 1},
+        "source_ir_hash": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "accepted": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "text", "classification", "subject_ids", "evidence_ids"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "text": {"type": "string", "minLength": 1, "maxLength": 1000},
+          "classification": {"enum": ["inferred", "proposed"]},
+          "subject_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+          "evidence_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string"}}
+        },
+        "additionalProperties": false
+      }
+    },
+    "rejected": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["text", "reason"],
+        "properties": {
+          "text": {"type": "string"},
+          "reason": {"enum": ["malformed-output", "malformed-claim", "unknown-evidence", "unknown-subject"]}
+        },
+        "additionalProperties": false
+      }
+    }
+  }
+}
