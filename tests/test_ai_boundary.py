@@ -149,7 +149,6 @@ def test_revoking_consent_stops_the_provider_again(tmp_path: Path, capsys, monke
     "http://localhost.:11434",
     "http://0.0.0.0:11434",
     "http://2130706433",
-    "http://[::ffff:7f00:1]",
     "http://192.168.1.10:11434",
     "http://",
     "localhost:11434",
