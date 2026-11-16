@@ -152,6 +152,34 @@ def test_claims_are_accepted_only_with_known_evidence_and_subjects(tmp_path, cap
     ]
 
 
+def test_duplicate_claims_never_lose_uncertainty_whatever_the_order(tmp_path, capsys) -> None:
+    bundle = bundle_for(tmp_path, capsys)
+    candidate = bundle["candidates"][0]
+    request = next(node for node in bundle["nodes"] if node["id"] == candidate["source"])
+    text = "The frontend calls the backend orders API."
+    # Same sentence and evidence: once about the unconfirmed candidate, once about a plain node.
+    about_candidate = {"text": text, "classification": "inferred",
+                       "subject_ids": [candidate["id"]], "evidence_ids": candidate["evidence_ids"]}
+    about_node = {"text": text, "classification": "inferred",
+                  "subject_ids": [request["id"]], "evidence_ids": candidate["evidence_ids"]}
+
+    results = []
+    for order in ([about_candidate, about_node], [about_node, about_candidate]):
+        accepted, rejected = validate_claims({"claims": order}, bundle)
+        assert rejected == []
+        results.append(accepted)
+    assert results[0] == results[1]
+    by_subject = {tuple(item["subject_ids"]): item["classification"] for item in results[0]}
+    assert by_subject == {(candidate["id"],): "proposed", (request["id"],): "inferred"}
+    assert len({item["id"] for item in results[0]}) == 2
+
+    # An exact duplicate with conflicting labels keeps the cautious one in either order.
+    proposed = dict(about_node, classification="proposed")
+    for order in ([about_node, proposed], [proposed, about_node]):
+        accepted, _ = validate_claims({"claims": order}, bundle)
+        assert [item["classification"] for item in accepted] == ["proposed"]
+
+
 def test_confirmed_candidate_can_support_an_inferred_claim(tmp_path, capsys) -> None:
     root = scanned(tmp_path, capsys)
     first = read_ir(root)["candidates"][0]["id"]
@@ -329,6 +357,73 @@ def test_ollama_adapter_speaks_the_chat_api_over_loopback() -> None:
     assert seen["body"]["messages"] == [
         {"role": "system", "content": "system text"}, {"role": "user", "content": "user text"},
     ]
+
+
+@pytest.mark.parametrize("reply", [
+    {"message": None},
+    {"message": []},
+    {"message": "text"},
+    {"message": {"content": None}},
+    {"message": {"content": ["x"]}},
+    {"message": {"content": "not json"}},
+    {"message": {"content": "[1, 2]"}},
+    [],
+    None,
+    "just a string",
+])
+def test_malformed_ollama_responses_are_provider_errors(tmp_path, capsys, reply) -> None:
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            self.rfile.read(int(self.headers["Content-Length"]))
+            body = json.dumps(reply).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args) -> None:
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        host = f"http://127.0.0.1:{server.server_port}"
+        with pytest.raises(ProviderError):
+            OllamaProvider("llama3", host).generate("s", "u", OUTPUT_SCHEMA)
+        # Through the CLI this is the documented JSON error with exit code 7, not a crash.
+        root = scanned(tmp_path, capsys)
+        assert invoke(root, capsys, "ai-configure", "--provider", "ollama", "--model", "llama3", "--ollama-host", host)[0] == 0
+        code, response = invoke(root, capsys, "ai-interpret")
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert code == 7, response
+    assert_valid("cli-response-1.0.json", response)
+    assert "Unexpected error" not in response["errors"][0]
+    assert not (root / ".repodocs" / "ai-claims.json").exists()
+
+
+def test_ollama_model_field_of_the_wrong_type_falls_back_to_the_requested_model() -> None:
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            self.rfile.read(int(self.headers["Content-Length"]))
+            body = json.dumps({"model": {"name": "x"}, "message": {"content": '{"claims": []}'}}).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args) -> None:
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        response = OllamaProvider("llama3", f"http://127.0.0.1:{server.server_port}").generate("s", "u", OUTPUT_SCHEMA)
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert response.model == "llama3"
 
 
 def fake_anthropic(monkeypatch, *, stop_reason="end_turn", text='{"claims": []}', error=None):

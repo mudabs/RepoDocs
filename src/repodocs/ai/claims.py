@@ -102,7 +102,13 @@ def validate_claims(raw: Any, bundle: dict[str, Any]) -> tuple[list[dict[str, An
         if not cited or unconfirmed:
             classification = CLASSIFICATION_PROPOSED
         text = redact_text(text.strip())[0]
-        claim_id = semantic_id("ai-claim", text, *sorted(set(cited)))
+        # Identity covers subjects too, so the same sentence about a different subject is a
+        # different claim. For true duplicates the cautious classification wins, so the order
+        # of a model's output can never promote a proposal.
+        claim_id = semantic_id("ai-claim", text, "subjects", *sorted(set(subjects)), "evidence", *sorted(set(cited)))
+        previous = accepted.get(claim_id)
+        if previous is not None and previous["classification"] == CLASSIFICATION_PROPOSED:
+            classification = CLASSIFICATION_PROPOSED
         accepted[claim_id] = {
             "id": claim_id,
             "text": text,

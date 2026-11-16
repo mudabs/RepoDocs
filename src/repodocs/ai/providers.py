@@ -139,10 +139,12 @@ class OllamaProvider:
             raise ProviderError(f"Ollama error (HTTP {exc.code}); is the model `{self.model}` pulled?") from exc
         except (urllib.error.URLError, OSError, ValueError) as exc:
             raise ProviderError(f"Unable to reach Ollama at {self.host}") from exc
-        content = payload.get("message", {}).get("content") if isinstance(payload, dict) else None
+        message = payload.get("message") if isinstance(payload, dict) else None
+        content = message.get("content") if isinstance(message, dict) else None
         if not isinstance(content, str):
             raise ProviderError("Ollama returned no message content")
-        return ProviderResponse(_parse_object(content, "Ollama"), str(payload.get("model") or self.model))
+        model = payload.get("model")
+        return ProviderResponse(_parse_object(content, "Ollama"), model if isinstance(model, str) and model else self.model)
 
 
 def resolve_provider(settings: AiSettings) -> Provider | None:

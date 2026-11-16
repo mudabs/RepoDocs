@@ -31,6 +31,7 @@ ADR-004 settles one BYO cloud provider plus Ollama behind a provider-neutral ada
 ### Claims
 - `repodocs ai-interpret` sends the bundle and writes `.repodocs/ai-claims.json` (schema `schemas/ai-claims-1.0.json`). With provider `none` it reports `disabled` and writes nothing.
 - Model output is untrusted. A claim is accepted only when every cited evidence ID and subject ID exists in the bundle it was given. Claims citing unknown evidence or subjects, and malformed claims, are rejected and recorded with a reason. A model can never produce an `observed` claim.
+- A claim's identity covers its text, subjects, and evidence, so the same sentence about a different subject is a separate claim. When a model returns the same claim twice with different labels, `proposed` wins, so output order can never promote a proposal.
 - An accepted claim is `inferred` only when it cites evidence. A claim with no evidence, or about a cross-repository candidate that is not `confirmed`, is forced to `proposed` whatever the model returned.
 - The instructions tell the model that bundle text is data, not instructions. Validation does not rely on the model obeying.
 - Provenance records provider, requested and serving model, engine version, whether the bundle left the machine, the bundle hash, and the source IR hash.
