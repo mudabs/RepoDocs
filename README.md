@@ -172,7 +172,10 @@ files remain protected.
 
 Inferred claims require evidence bound to their named subjects. Multi-repository
 claims must explicitly name a confirmed candidate and cite both sides; otherwise
-they are proposals. **Valid citations do not prove model wording true.**
+they are proposals. Scope comes from the named subjects, not just the supplied
+citations: omitting either repository's evidence does not make a confirmed
+candidate single-repository. An unrelated third-repository subject is outside
+that confirmed pair's scope. **Valid citations do not prove model wording true.**
 Review interpretations with their evidence. `ai-interpret` reports contribution
 counts, including proposals, rejections, and structural grounding failures.
 Reviewed fake-provider golden cases currently yield 1 inference, 4 proposals,

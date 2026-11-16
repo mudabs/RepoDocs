@@ -179,6 +179,34 @@ def test_confirmed_candidate_interpretation_does_not_create_a_graph_edge(tmp_pat
     assert ir["relationships"] == read_ir(root)["relationships"]
 
 
+@pytest.mark.parametrize("missing_side", ["source", "target"])
+def test_legacy_single_sided_inference_is_invalid_for_rendering_and_evaluation(
+    tmp_path, capsys, monkeypatch, missing_side
+) -> None:
+    root = scanned(tmp_path, capsys)
+    candidate = read_ir(root)["candidates"][0]
+    assert invoke(root, capsys, "confirm", candidate["id"])[0] == 0
+    ir = read_ir(root)
+    nodes = {node["id"]: node for node in ir["nodes"]}
+    evidence = {item["id"]: item for item in ir["evidence"]}
+    missing_repo = nodes[candidate[missing_side]]["attributes"]["repository_id"]
+    partial = [key for key in candidate["evidence_ids"] if evidence[key]["repository_id"] != missing_repo]
+    document = interpreted(root, capsys, monkeypatch, [{
+        "text": "One-sided evidence must not establish the confirmed pair.",
+        "classification": "inferred", "subject_ids": [candidate["id"]], "evidence_ids": partial,
+    }])
+    assert document["accepted"][0]["classification"] == "proposed"
+    # Simulate an accepted document written by the buggy validator. Claim IDs
+    # exclude classification, so other checks cannot hide this regression.
+    document["accepted"][0]["classification"] = "inferred"
+    assert claims_status(ir, document) == "invalid"
+    assert contribution(ir, document)["unsupported_accepted"] == 1
+    write_json(root / ".repodocs" / "ai-claims.json", document)
+    response = generate(root, capsys)
+    assert response["data"]["ai"] == {"claims": "invalid", "rendered": False}
+    assert not (output(root) / "architecture-ai.md").exists()
+
+
 def test_provider_failure_keeps_existing_deterministic_artifacts_usable(tmp_path, capsys, monkeypatch) -> None:
     from repodocs.errors import ProviderError
 

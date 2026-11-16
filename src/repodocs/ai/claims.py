@@ -69,6 +69,22 @@ def validate_claims(raw: Any, bundle: dict[str, Any]) -> tuple[list[dict[str, An
         for group in ("nodes", "relationships", "candidates") for item in bundle[group]
     }
     evidence_repositories = {item["id"]: item["repository_id"] for item in bundle["evidence"]}
+    # Resolve scope from the full subject definitions, never from whichever
+    # citations the model chose to supply. In particular, a candidate always
+    # spans its source and target repositories even if one side is omitted.
+    subject_repositories = {
+        node["id"]: {
+            evidence_repositories[key] for key in node["evidence_ids"]
+        } | ({node["attributes"]["repository_id"]} if node["attributes"].get("repository_id") else set())
+        for node in bundle["nodes"]
+    }
+    for group in ("relationships", "candidates"):
+        for item in bundle[group]:
+            subject_repositories[item["id"]] = (
+                subject_repositories.get(item["source"], set())
+                | subject_repositories.get(item["target"], set())
+                | {evidence_repositories[key] for key in item["evidence_ids"]}
+            )
     confirmed = {item["id"]: item for item in bundle["candidates"] if item["status"] == "confirmed"}
     accepted: dict[str, dict[str, Any]] = {}
     rejected: list[dict[str, str]] = []
@@ -107,15 +123,24 @@ def validate_claims(raw: Any, bundle: dict[str, Any]) -> tuple[list[dict[str, An
         # Citations must belong to the subjects being interpreted, not merely
         # exist somewhere in the bundle. This is structural grounding, not a
         # semantic proof of arbitrary model wording.
-        grounded = bool(subjects and cited) and all(subject_evidence[item] & set(cited) for item in subjects)
+        cited_set = set(cited)
+        grounded = bool(subjects and cited) and all(subject_evidence[item] & cited_set for item in subjects)
         allowed_evidence = set().union(*(subject_evidence[item] for item in subjects))
-        grounded = grounded and set(cited) <= allowed_evidence
-        repositories = {evidence_repositories[item] for item in cited}
+        grounded = grounded and cited_set <= allowed_evidence
+        grounded = grounded and all(
+            subject_repositories[item] <= {
+                evidence_repositories[key] for key in subject_evidence[item] & cited_set
+            }
+            for item in subjects
+        )
+        repositories = set().union(*(subject_repositories[item] for item in subjects))
         # Naming two endpoints (or only a frontend node) must not bypass a
         # candidate's unconfirmed state. Multi-repo interpretations require a
         # cited, confirmed candidate with evidence from both sides.
         cross_repo_supported = len(repositories) <= 1 or any(
-            key in confirmed and set(confirmed[key]["evidence_ids"]) <= set(cited)
+            key in confirmed
+            and subject_repositories[key] == repositories
+            and set(confirmed[key]["evidence_ids"]) <= cited_set
             for key in subjects
         )
         if not grounded or unconfirmed or not cross_repo_supported:

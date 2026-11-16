@@ -182,7 +182,8 @@ def test_duplicate_claims_never_lose_uncertainty_whatever_the_order(tmp_path, ca
         assert [item["classification"] for item in accepted] == ["proposed"]
 
 
-def test_confirmed_candidate_can_support_an_inferred_claim(tmp_path, capsys) -> None:
+@pytest.mark.parametrize("include_endpoints", [False, True])
+def test_confirmed_candidate_can_support_an_inferred_claim(tmp_path, capsys, include_endpoints) -> None:
     root = scanned(tmp_path, capsys)
     first = read_ir(root)["candidates"][0]["id"]
     assert invoke(root, capsys, "confirm", first)[0] == 0
@@ -192,9 +193,72 @@ def test_confirmed_candidate_can_support_an_inferred_claim(tmp_path, capsys) -> 
 
     accepted, _ = validate_claims({"claims": [{
         "text": "The frontend calls the backend orders API.", "classification": "inferred",
-        "subject_ids": [first], "evidence_ids": candidate["evidence_ids"],
+        "subject_ids": [first, candidate["source"], candidate["target"]] if include_endpoints else [first],
+        "evidence_ids": candidate["evidence_ids"],
     }]}, bundle)
     assert accepted[0]["classification"] == "inferred"
+
+
+@pytest.mark.parametrize("missing_side", ["frontend", "backend"])
+@pytest.mark.parametrize("also_name_endpoint", [False, True])
+def test_confirmed_candidate_requires_both_evidence_sides(
+    tmp_path, capsys, missing_side, also_name_endpoint
+) -> None:
+    root = scanned(tmp_path, capsys)
+    candidate_id = read_ir(root)["candidates"][0]["id"]
+    assert invoke(root, capsys, "confirm", candidate_id)[0] == 0
+    bundle = build_bundle(read_ir(root))
+    candidate = next(item for item in bundle["candidates"] if item["id"] == candidate_id)
+    nodes = {node["id"]: node for node in bundle["nodes"]}
+    evidence = {item["id"]: item for item in bundle["evidence"]}
+    missing_node = nodes[candidate["source" if missing_side == "frontend" else "target"]]
+    missing_repo = missing_node["attributes"]["repository_id"]
+    remaining = [key for key in candidate["evidence_ids"] if evidence[key]["repository_id"] != missing_repo]
+    assert remaining and len(remaining) < len(candidate["evidence_ids"])
+    subjects = [candidate_id]
+    if also_name_endpoint:
+        subjects.append(candidate["target" if missing_side == "frontend" else "source"])
+    accepted, rejected = validate_claims({"claims": [{
+        "text": "The confirmed match links these repositories.", "classification": "inferred",
+        "subject_ids": subjects, "evidence_ids": remaining,
+    }]}, bundle)
+    assert rejected == []
+    assert accepted[0]["classification"] == "proposed"
+
+
+@pytest.mark.parametrize("subject_kind", ["node", "relationship"])
+@pytest.mark.parametrize("cite_third_repo", [False, True])
+def test_confirmed_pair_does_not_authorize_unrelated_third_repository_subjects(
+    tmp_path, capsys, subject_kind, cite_third_repo
+) -> None:
+    root = scanned(tmp_path, capsys)
+    candidate_id = read_ir(root)["candidates"][0]["id"]
+    assert invoke(root, capsys, "confirm", candidate_id)[0] == 0
+    bundle = build_bundle(read_ir(root))
+    candidate = next(item for item in bundle["candidates"] if item["id"] == candidate_id)
+    nodes = {node["id"]: node for node in bundle["nodes"]}
+    participants = {
+        nodes[candidate["source"]]["attributes"]["repository_id"],
+        nodes[candidate["target"]]["attributes"]["repository_id"],
+    }
+    third_node = next(node for node in bundle["nodes"]
+                      if node["type"] == "service" and node["attributes"].get("repository_id")
+                      and node["attributes"]["repository_id"] not in participants
+                      and node["evidence_ids"])
+    subject = third_node if subject_kind == "node" else next(
+        edge for edge in bundle["relationships"]
+        if edge["source"] == third_node["id"] and edge["evidence_ids"]
+    )
+    citations = set(candidate["evidence_ids"])
+    if cite_third_repo:
+        citations.update(subject["evidence_ids"])
+    accepted, rejected = validate_claims({"claims": [{
+        "text": "The confirmed pair also establishes this third service relationship.",
+        "classification": "inferred", "subject_ids": [candidate_id, subject["id"]],
+        "evidence_ids": sorted(citations),
+    }]}, bundle)
+    assert rejected == []
+    assert accepted[0]["classification"] == "proposed"
 
 
 def test_malformed_output_and_secret_text_are_handled(tmp_path, capsys) -> None:

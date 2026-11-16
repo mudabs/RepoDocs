@@ -43,6 +43,12 @@ factual accuracy.
   multiple repositories requires an explicitly named confirmed candidate with
   evidence from both sides. Otherwise it is only a proposal. Naming a plain
   frontend node or two endpoints cannot bypass an unconfirmed candidate.
+- Repository scope is resolved from the subjects' complete definitions,
+  including relationship/candidate endpoints, not from the model's selected
+  citations. Each subject needs bound evidence from every repository in its
+  scope. A multi-repository inference must stay within one explicitly named,
+  fully cited confirmed candidate's repository pair; it cannot add unrelated
+  third-repository subjects, even when those subjects also have valid citations.
 - These are structural grounding checks. Valid IDs and subject bindings do
   **not** prove arbitrary model wording. Interpretations remain labeled as
   model inference, not observed facts; source reviewers must check wording.
