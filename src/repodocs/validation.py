@@ -15,6 +15,8 @@ from .confirmations import DECISIONS, STATUS_CANDIDATE, STATUS_STALE, STATUSES, 
 from .correlation import discover_candidates
 from .errors import OwnershipError, ValidationError
 from .generator import (
+    AI_ARTIFACT,
+    AI_GENERATOR_NAME,
     MANIFEST_SCHEMA_VERSION,
     _all_files,
     _read_manifest,
@@ -248,11 +250,28 @@ def validate_artifacts(config: ProjectConfig, ir: dict[str, Any]) -> list[str]:
         content = path.read_text(encoding="utf-8")
         if sha256_text(content) != item.get("content_hash"):
             raise OwnershipError(f"Generated file was edited unexpectedly: {path}")
-        if path.suffix == ".mmd":
+        if relative_path == AI_ARTIFACT or item.get("generator") == AI_GENERATOR_NAME:
+            validate_ai_artifact(config, ir, item, content)
+        elif path.suffix == ".mmd":
             validate_mermaid(content)
         elif path.suffix == ".md":
             validate_markdown(content, ir)
     return sorted(expected)
+
+
+def validate_ai_artifact(config: ProjectConfig, ir: dict[str, Any], item: dict[str, Any], content: str) -> None:
+    """The AI document must be exactly what the current, still-valid claims produce."""
+
+    from .ai.docs import ai_artifact
+
+    if item.get("path") != AI_ARTIFACT or item.get("generator") != AI_GENERATOR_NAME:
+        raise ValidationError("Artifact manifest mislabels the AI documentation artifact")
+    status, optional = ai_artifact(config.internal_path, ir)
+    if optional.get(AI_ARTIFACT) != content:
+        raise ValidationError(
+            f"AI documentation does not match the validated claims for the current System IR (claims are {status}); "
+            "run generate again, or ai-interpret first to refresh the claims"
+        )
 
 
 def validate_mermaid(content: str) -> None:

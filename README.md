@@ -155,6 +155,33 @@ repodocs ai-interpret
 - `repodocs ai-interpret` writes `.repodocs/ai-claims.json` with provider and model provenance. A claim is accepted only when every evidence and subject ID it cites exists in the bundle; others are rejected with a reason. Accepted claims are `inferred` or `proposed`, never `observed`, and a claim about an unconfirmed cross-repository candidate is always `proposed`.
 - Using a cloud provider costs money on your provider account and requires a network connection. See ADR-020.
 
+After `ai-interpret`, run `repodocs generate` to add **`architecture-ai.md`**.
+It separates inferred interpretations from proposals and records citations,
+provider/model provenance, the bundle hash, and the IR hash. Model text is
+escaped prose, not executable HTML or Markdown links. The deterministic
+`architecture.md`, `architecture.mmd`, and IR remain unchanged by model output.
+No model claim creates an authoritative relationship or confirms a candidate.
+
+Generation uses stored claims only: it never calls a provider. Missing claims
+leave the deterministic output complete; stale or invalid claims produce a
+warning and are omitted. After source or confirmation changes, explicitly run
+`ai-interpret` again to refresh them. Removing the claims file and regenerating
+retires the optional document, but only if it is manifest-owned and unedited.
+Validation rejects stale or mismatched AI artifacts. Human edits and unowned
+files remain protected.
+
+Inferred claims require evidence bound to their named subjects. Multi-repository
+claims must explicitly name a confirmed candidate and cite both sides; otherwise
+they are proposals. Scope comes from the named subjects, not just the supplied
+citations: omitting either repository's evidence does not make a confirmed
+candidate single-repository. An unrelated third-repository subject is outside
+that confirmed pair's scope. **Valid citations do not prove model wording true.**
+Review interpretations with their evidence. `ai-interpret` reports contribution
+counts, including proposals, rejections, and structural grounding failures.
+Reviewed fake-provider golden cases currently yield 1 inference, 4 proposals,
+3 rejections, and no reviewed unsupported inferences. These are regression
+results, not a real-model factuality benchmark. See ADR-021.
+
 ### Exit codes
 | Code | Meaning |
 |---:|---|

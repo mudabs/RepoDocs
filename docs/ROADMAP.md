@@ -27,8 +27,8 @@
 
 ## Phase 3: AI integration
 - Evidence-bundle construction, redaction, structured claim validation, the Anthropic and Ollama adapters, recorded consent, and deterministic fallback are implemented (ADR-020).
-- Use validated claims in generated documentation.
-- Measure deterministic-versus-AI output using golden fixtures.
+- Current validated claims produce optional AI architecture explanations with provenance, subject-bound citations, safe deterministic fallback, and no graph or confirmation changes (ADR-021).
+- Golden fixtures measure bounded deterministic-versus-AI contribution and reviewed unsupported-inference counts. Real-provider semantic accuracy and broader precision/recall evaluation remain follow-up work.
 
 ## Phase 4: GitHub automation
 - GitHub Action runner integration and permissions for pinned clean revisions.

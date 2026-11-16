@@ -213,7 +213,20 @@ def _cmd_generate(args: argparse.Namespace) -> int:
     ir = _load_scanned_ir(config)
     # Never render a decision the confirmations file no longer records.
     validate_candidate_states(config, ir)
-    result = generate_docs(config, ir)
+    # The AI package is loaded only when claims have been stored; otherwise generation is
+    # purely deterministic and needs nothing from it.
+    ai_status, optional = "absent", {}
+    if (config.internal_path / "ai-claims.json").exists():
+        from .ai.docs import ai_artifact
+
+        ai_status, optional = ai_artifact(config.internal_path, ir)
+    result = generate_docs(config, ir, optional)
+    warnings = []
+    if ai_status in ("stale", "invalid"):
+        warnings.append(
+            f"Stored AI claims are {ai_status} for the current System IR and were not rendered; "
+            "run `repodocs ai-interpret` to refresh them"
+        )
     _emit(
         "generate",
         ok=True,
@@ -222,7 +235,9 @@ def _cmd_generate(args: argparse.Namespace) -> int:
             "destination": result.destination,
             "output_directory": config.output_path.as_posix(),
             "artifacts": result.artifacts,
+            "ai": {"claims": ai_status, "rendered": bool(optional)},
         },
+        warnings=warnings,
     )
     return EXIT_OK
 
@@ -384,6 +399,8 @@ def _cmd_ai_interpret(args: argparse.Namespace) -> int:
         return EXIT_OK
     bundle, bundle_path = _write_bundle(config)
     document = interpret(bundle, provider)
+    from .ai.evaluation import contribution
+
     claims_path = config.internal_path / CLAIMS_FILENAME
     write_json(claims_path, document)
     _emit(
@@ -395,6 +412,7 @@ def _cmd_ai_interpret(args: argparse.Namespace) -> int:
             "provenance": document["provenance"],
             "accepted": len(document["accepted"]),
             "rejected": len(document["rejected"]),
+            "contribution": contribution(_load_scanned_ir(config), document),
             "bundle": _bundle_summary(bundle, bundle_path),
         },
     )
