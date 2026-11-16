@@ -1,0 +1,92 @@
+# Example workflow for a RepoDocs coordination repository (ADR-023).
+#
+# Copy it to .github/workflows/ in the coordination repository, replace the placeholders marked
+# CHANGE, and pin the RepoDocs action to a reviewed commit SHA. This file is not active in the
+# RepoDocs repository itself.
+#
+# Setup the repository owner has to do, once:
+#   1. Create a fine-grained token (or a GitHub App installation token) with contents: read on the
+#      source repositories and contents: write plus pull requests: write on this repository, and
+#      store it as the secret REPODOCS_TOKEN. The workflow's own GITHUB_TOKEN stays read-only.
+#   2. Commit repodocs.json, repodocs.confirmations.json, and a .gitignore containing:
+#        sources/
+#        .repodocs/*
+#        !.repodocs/artifact-manifest.json
+#      The manifest must be committed; the other .repodocs files are scratch state.
+#   3. Make the destination of repodocs.json this repository ("."), and list each source at
+#      sources/<id>.
+#
+# Why a token and not GITHUB_TOKEN: it must read other private repositories, and pull requests
+# opened with GITHUB_TOKEN do not start other workflows, so required checks on the
+# documentation pull request would never report.
+
+name: Publish documentation
+
+on:
+  workflow_dispatch:
+  repository_dispatch:
+    types: [source-changed]
+  schedule:
+    - cron: '17 4 * * 1-5'
+  push:
+    branches: [main]
+    # A merged documentation pull request touches only these paths and must not start another run.
+    paths-ignore:
+      - docs/generated/**
+      - .repodocs/artifact-manifest.json
+
+# Never add pull_request or pull_request_target here: this workflow holds a write token.
+permissions:
+  contents: read
+
+# One run at a time. A newer request waits, so a run is never cancelled halfway through a push.
+concurrency:
+  group: repodocs-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Resolve each branch to one SHA now, then check out exactly that SHA. A push that lands
+      # in between cannot change what is analyzed, and the SHA reaches RepoDocs from outside
+      # the checkout, so it is a real pin rather than a copy of whatever was checked out.
+      - name: Resolve source revisions
+        id: revisions
+        env:
+          GH_TOKEN: ${{ secrets.REPODOCS_TOKEN }}
+        run: |
+          resolve() {
+            sha=$(gh api "repos/$1/commits/$2" --jq .sha)
+            [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "Unexpected revision for $1"; exit 1; }
+            echo "$sha"
+          }
+          echo "frontend=$(resolve your-org/smartcart-frontend main)" >> "$GITHUB_OUTPUT"   # CHANGE
+          echo "backend=$(resolve your-org/smartcart-backend main)" >> "$GITHUB_OUTPUT"     # CHANGE
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: your-org/smartcart-frontend # CHANGE
+          ref: ${{ steps.revisions.outputs.frontend }}
+          path: sources/frontend
+          token: ${{ secrets.REPODOCS_TOKEN }}
+          persist-credentials: false
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: your-org/smartcart-backend # CHANGE
+          ref: ${{ steps.revisions.outputs.backend }}
+          path: sources/backend
+          token: ${{ secrets.REPODOCS_TOKEN }}
+          persist-credentials: false
+
+      - uses: mudabs/RepoDocs/.github/actions/publish@0000000000000000000000000000000000000000 # CHANGE: pin a reviewed commit
+        with:
+          revisions: ${{ format('{{"frontend":"{0}","backend":"{1}"}}', steps.revisions.outputs.frontend, steps.revisions.outputs.backend) }}
+          base-branch: ${{ github.event.repository.default_branch }}
+          token: ${{ secrets.REPODOCS_TOKEN }}

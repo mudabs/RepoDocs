@@ -193,6 +193,21 @@ Reviewed fake-provider golden cases currently yield 1 inference, 4 proposals,
 3 rejections, and no reviewed unsupported inferences. These are regression
 results, not a real-model factuality benchmark. See ADR-021.
 
+### Publishing documentation from GitHub Actions
+
+`repodocs publish` opens or updates one documentation pull request from the destination repository, and does nothing when the generated output is unchanged. It is meant to run in a coordination repository's workflow after `scan --snapshot-mode pinned`, `generate`, and `validate`.
+
+- It builds a single commit of the output directory and the artifact manifest on top of the checked-out base, without touching the working tree. If that equals the base, nothing is pushed and no pull request is opened.
+- The commit goes to a bot-owned branch (`repodocs/docs-update` by default) with `--force-with-lease`. A branch already holding identical content is not pushed again, and an open pull request is updated instead of duplicated. To reject a documentation pull request, close it and delete the branch, or the next run opens it again.
+- It refuses to publish while any cross-repository candidate is unresolved (exit code 5), when the destination has changes outside the generated paths, or when the artifact manifest is not inside the destination repository.
+- Commit `.repodocs/artifact-manifest.json`: a clone without it cannot regenerate. Ignore the rest of `.repodocs/` and the `sources/` checkouts. The manifest no longer records the destination's own revision, so merging a documentation pull request does not change the next run's output.
+- `--dry-run` reports the change without contacting the remote. A real run needs `GH_TOKEN` with contents and pull request write access to the destination, and the GitHub CLI.
+- `repodocs scan --pins-json '{"frontend": "<sha>"}'` supplies pins from a workflow, merged with `--pin`. Check sources out by that exact SHA, which leaves them detached, so the output does not depend on a branch name.
+- AI interpretation does not run in CI. If stored claims no longer match the sources, `architecture-ai.md` is removed from the documentation pull request, which says so.
+- Decisions in `repodocs.confirmations.json` bind to file content hashes. Record them from a checkout whose line endings were not converted, or they go stale on a Linux runner and fail the gate.
+
+The reusable action is `.github/actions/publish`; `docs/examples/repodocs-publish.yml` is a complete example for a coordination repository, including the one-time token and `.gitignore` setup. See ADR-023 for the design and for the choices that still await the owner's approval.
+
 ### Exit codes
 | Code | Meaning |
 |---:|---|
@@ -203,6 +218,7 @@ results, not a real-model factuality benchmark. See ADR-021.
 | 5 | Cross-repository candidates are unresolved or their decisions are stale |
 | 6 | Snapshot rejected: dirty, non-Git, unpinned in pinned mode, stale, or ambiguous revision |
 | 7 | AI provider unavailable or returned unusable output; deterministic commands are unaffected |
+| 8 | Publication failed: git, remote, or pull request error, or unsafe destination state |
 
 ## Setup
 1. Open the repository in Codex Desktop, Claude Code, or another development environment.
@@ -211,6 +227,8 @@ results, not a real-model factuality benchmark. See ADR-021.
 4. Run the test suite with `python -m pytest`.
 
 ## Testing and CI
+
+The `Publication self-test` workflow runs the publish action in dry-run mode against a throwaway repository on every pull request, with no secrets, and is not a required check. It does not open a real pull request.
 
 The `Tests` workflow (`.github/workflows/tests.yml`) runs the complete pytest suite on every pull request targeting `main`, on every new commit to such a pull request, on pushes to `main`, and on manual dispatch. It tests Ubuntu and Windows on Python 3.11 (the declared minimum) and Python 3.14, and it always runs the tests present in the commit under test, so tests added by a pull request run automatically. The check names are `test (ubuntu-latest, 3.11)`, `test (ubuntu-latest, 3.14)`, `test (windows-latest, 3.11)`, and `test (windows-latest, 3.14)`.
 

@@ -31,11 +31,9 @@
 - Golden fixtures measure bounded deterministic-versus-AI contribution and reviewed unsupported-inference counts. Real-provider semantic accuracy and broader precision/recall evaluation remain follow-up work.
 
 ## Phase 4: GitHub automation
-- GitHub Action runner integration and permissions for pinned clean revisions.
-- Coordination-repository config for multi-repo projects.
-- Docs PR creation, no-op detection, loop prevention, concurrency controls.
-- CI failure for unresolved required confirmations.
-- End-to-end SmartCart change-to-docs-PR demonstration.
+- GitHub Action runner integration for pinned clean revisions, `repodocs publish`, no-op detection, loop prevention, concurrency controls, and the failing check for unresolved confirmations are implemented (ADR-023).
+- Coordination-repository config for multi-repo projects uses the existing destination configuration with sources checked out under `sources/`.
+- Not yet demonstrated: a real documentation pull request opened on GitHub, which needs a token and a coordination repository, and the end-to-end SmartCart change-to-docs-PR run.
 
 ## Phase 5: post-MVP
 - Hosted managed AI with quotas, privacy and cost controls.

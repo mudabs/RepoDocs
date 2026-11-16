@@ -21,7 +21,7 @@ Milestone 1 CLI commands below are implemented. GitHub Actions, hosted UI, and a
 4. Analyze changes and dependent facts; initial MVP may safely regenerate all artifacts.
 5. Optional configured AI enrichment interprets curated, redacted evidence after consent; local-only mode remains available.
 6. Render and validate docs; skip no-op output.
-7. Open or update a reviewable documentation PR in the coordination repository.
+7. `repodocs publish` opens or updates one reviewable documentation PR on a bot-owned branch of the coordination repository, and does nothing when the output equals the base. See `docs/examples/repodocs-publish.yml`.
 8. Maintainer reviews and merges. CI fails when required confirmations are unresolved; avoid bot-triggered loops and duplicated PRs.
 
 ## C. Future hosted/self-hosted web UI

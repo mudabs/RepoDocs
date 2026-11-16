@@ -1,0 +1,66 @@
+name: Publication self-test
+
+# Runs the publish action on a real runner against a throwaway local repository, in dry-run mode.
+# It needs no secrets and never contacts a remote, so it is safe to run for pull requests from
+# forks. It proves the action installs, runs in order, and fails closed; opening a real pull
+# request is not exercised here. It is separate from the Tests workflow so that workflow's
+# required check names do not change.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publication-selftest-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  selftest:
+    name: publication self-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build a local coordination repository
+        id: fixture
+        run: python3 .github/scripts/publication_fixture.py "$RUNNER_TEMP/coordination" >> "$GITHUB_OUTPUT"
+
+      - name: Run the action in dry-run mode
+        uses: ./.github/actions/publish
+        with:
+          revisions: ${{ steps.fixture.outputs.revisions }}
+          base-branch: main
+          dry-run: 'true'
+          working-directory: ${{ runner.temp }}/coordination
+
+      - name: Check the generated documentation exists and was not committed
+        run: |
+          test -f "$RUNNER_TEMP/coordination/docs/generated/architecture.md"
+          test -f "$RUNNER_TEMP/coordination/.repodocs/artifact-manifest.json"
+          test "$(git -C "$RUNNER_TEMP/coordination" rev-list --count HEAD)" = "1"
+
+      # A pin that does not match the checkout must stop the action with a failing step.
+      - name: Run the action with a wrong pin
+        id: wrong
+        continue-on-error: true
+        uses: ./.github/actions/publish
+        with:
+          revisions: ${{ steps.fixture.outputs.wrong_revisions }}
+          base-branch: main
+          dry-run: 'true'
+          working-directory: ${{ runner.temp }}/coordination
+
+      - name: A wrong pin must have failed
+        if: steps.wrong.outcome != 'failure'
+        run: |
+          echo "The action accepted a pin that does not match the checkout."
+          exit 1

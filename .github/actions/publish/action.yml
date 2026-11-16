@@ -1,0 +1,86 @@
+name: RepoDocs publish documentation
+description: >-
+  Scan source repositories at exact pinned commits, generate and validate the system
+  documentation, and open or update one reviewable documentation pull request. Does nothing
+  when the output has not changed. See ADR-023.
+
+inputs:
+  revisions:
+    description: >-
+      JSON object mapping each source repository ID to the exact commit SHA it was checked out
+      at. The SHAs must come from outside the checkouts, for example from the GitHub API or a
+      dispatch payload, so a checkout that moved is rejected instead of trusted.
+    required: true
+  base-branch:
+    description: Branch the documentation pull request targets, normally the default branch.
+    required: true
+  publish-branch:
+    description: Bot-owned branch that holds the documentation commit. Do not use it for other work.
+    required: false
+    default: repodocs/docs-update
+  token:
+    description: >-
+      Token with contents and pull request write access to the coordination repository.
+      Not needed with dry-run.
+    required: false
+    default: ''
+  dry-run:
+    description: Compute and report the change without contacting the remote.
+    required: false
+    default: 'false'
+  working-directory:
+    description: The coordination repository checkout that holds repodocs.json.
+    required: false
+    default: '.'
+  python-version:
+    description: Python version to run RepoDocs with.
+    required: false
+    default: '3.11'
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    # RepoDocs is installed from the same revision as this action, so the engine and its
+    # workflow cannot drift apart.
+    - name: Install RepoDocs
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+      run: python -m pip install "$ACTION_PATH/../../.."
+
+    - name: Scan the pinned revisions
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        REVISIONS: ${{ inputs.revisions }}
+      run: repodocs scan --snapshot-mode pinned --pins-json "$REVISIONS"
+
+    - name: Generate documentation
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: repodocs generate
+
+    # Exit code 5 here means cross-repository candidates are unresolved: nothing is published.
+    - name: Validate documentation and confirmations
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: repodocs validate
+
+    - name: Publish
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        BASE_BRANCH: ${{ inputs.base-branch }}
+        PUBLISH_BRANCH: ${{ inputs.publish-branch }}
+        DRY_RUN: ${{ inputs.dry-run }}
+      run: |
+        arguments=(--base "$BASE_BRANCH" --branch "$PUBLISH_BRANCH")
+        if [ "$DRY_RUN" = "true" ]; then
+          arguments+=(--dry-run)
+        fi
+        repodocs publish "${arguments[@]}"
