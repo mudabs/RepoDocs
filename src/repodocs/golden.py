@@ -346,21 +346,31 @@ def score_provenance(observed: Observed) -> dict[str, Any]:
     ir = observed.ir
     snapshots = {item["repository_id"]: item for item in ir["snapshots"]}
     unresolved: list[dict[str, Any]] = []
+    files: dict[Path, tuple[str, int] | None] = {}  # each file is read once, however many records cite it
+
+    def file_facts(path: Path) -> tuple[str, int] | None:
+        if path not in files:
+            if path.is_file():
+                data = path.read_bytes()
+                files[path] = (sha256_bytes(data), len(data.decode("utf-8", errors="replace").splitlines()))
+            else:
+                files[path] = None
+        return files[path]
+
     for record in ir["evidence"]:
         root = observed.repositories.get(record["repository_id"])
         problem = None
         if root is None or record["repository_id"] not in snapshots:
             problem = "unknown-repository"
-        elif not (root / record["path"]).is_file():
-            problem = "file-missing"
         else:
-            data = (root / record["path"]).read_bytes()
-            lines = len(data.decode("utf-8", errors="replace").splitlines())
-            if sha256_bytes(data) != record["content_hash"]:
+            facts = file_facts(root / record["path"])
+            if facts is None:
+                problem = "file-missing"
+            elif facts[0] != record["content_hash"]:
                 problem = "hash-mismatch"
             elif record["revision"] != snapshots[record["repository_id"]]["revision"]:
                 problem = "revision-mismatch"
-            elif record["kind"] == "span" and not 1 <= record["line_start"] <= record["line_end"] <= lines:
+            elif record["kind"] == "span" and not 1 <= record["line_start"] <= record["line_end"] <= facts[1]:
                 problem = "span-out-of-range"
         if problem:
             unresolved.append({"repository": record["repository_id"], "path": record["path"], "reason": problem})
@@ -503,6 +513,12 @@ def score_ai(case: dict[str, Any], ir: dict[str, Any], deterministic: dict[str, 
     with_rate = _ratio(with_unsupported, with_total)
     baseline_rate = deterministic["unsupported_rate"]
     delta = None if with_rate is None or baseline_rate is None else round(with_rate - baseline_rate, 4)
+    # The delta above is rounded for display. Whether AI increased the rate is decided on exact counts:
+    # with_unsupported / with_total > unsupported / deterministic, compared by cross-multiplication.
+    if deterministic["deterministic"] == 0:
+        increases = with_unsupported > 0
+    else:
+        increases = with_unsupported * deterministic["deterministic"] > deterministic["unsupported"] * with_total
     return {
         "basis": "recorded-response-replay",
         "contribution": report,
@@ -513,7 +529,7 @@ def score_ai(case: dict[str, Any], ir: dict[str, Any], deterministic: dict[str, 
             "deterministic": {"claims": deterministic["deterministic"], "unsupported": deterministic["unsupported"], "unsupported_rate": baseline_rate},
             "with_ai": {"claims": with_total, "unsupported": with_unsupported, "unsupported_rate": with_rate},
             "unsupported_rate_delta": delta,
-            "increases_unsupported_rate": bool(delta is not None and delta > 0),
+            "increases_unsupported_rate": increases,
         },
     }
 
@@ -543,9 +559,11 @@ def failures_of(report: dict[str, Any]) -> list[str]:
 
     failed = []
     provenance, diagrams, candidates, ai = report["provenance"], report["diagrams"], report["candidates"], report["ai"]
-    if provenance["resolution"] not in (None, 1.0):
+    # Decisions use exact counts. The ratios are rounded to four places for display, and one failure
+    # among tens of thousands of records rounds to 1.0. Zero records or references is valid.
+    if provenance["evidence_resolved"] != provenance["evidence_records"]:
         failed.append("evidence-does-not-resolve-to-files")
-    if provenance["reference_resolution"] not in (None, 1.0):
+    if provenance["references_resolved"] != provenance["references"]:
         failed.append("evidence-reference-unresolved")
     if report["claims"]["unsupported"]:
         failed.append("unsupported-deterministic-claim")

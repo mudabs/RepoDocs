@@ -463,3 +463,101 @@ def test_runner_fails_on_an_invariant_failure(monkeypatch, capsys) -> None:
 
     monkeypatch.setattr(golden, "evaluate_cases", broken)
     assert main([str(CASES_DIR)]) == 1
+
+
+# ------------------------------------------------------------------ exact counts decide, rounded ratios only report
+BULK = 25_000
+
+
+def inflate_evidence(o: Observed, *, break_hash: bool = False) -> None:
+    """Add many valid evidence records for one real file, so that one broken record rounds away."""
+
+    template = next(item for item in o.ir["evidence"] if item["kind"] == "file")
+    bulk = [{**template, "id": f"evidence:bulk{index}"} for index in range(BULK)]
+    if break_hash:
+        bulk[-1]["content_hash"] = "0" * 64
+    o.ir["evidence"].extend(bulk)
+
+
+def inflate_references(o: Observed, *, dangling: bool = False) -> None:
+    inflate_evidence(o)
+    node = o.ir["nodes"][0]
+    node["evidence_ids"] = node["evidence_ids"] + [f"evidence:bulk{index}" for index in range(BULK)]
+    if dangling:
+        node["evidence_ids"].append("evidence:does-not-exist")
+
+
+def test_one_broken_evidence_record_among_many_still_fails_though_the_ratio_rounds_to_one(runs) -> None:
+    result = scored(runs, "postgres", lambda o: inflate_evidence(o, break_hash=True))
+    provenance = result["provenance"]
+
+    assert provenance["resolution"] == 1.0  # the rounded ratio is for display only
+    assert provenance["evidence_resolved"] == provenance["evidence_records"] - 1
+    assert [item["reason"] for item in provenance["unresolved"]] == ["hash-mismatch"]
+    assert "evidence-does-not-resolve-to-files" in result["failures"]
+
+    healthy = scored(runs, "postgres", inflate_evidence)
+    assert healthy["provenance"]["evidence_resolved"] == healthy["provenance"]["evidence_records"]
+    assert "evidence-does-not-resolve-to-files" not in healthy["failures"]
+
+
+def test_one_dangling_reference_among_many_still_fails_though_the_ratio_rounds_to_one(runs) -> None:
+    result = scored(runs, "postgres", lambda o: inflate_references(o, dangling=True))
+    provenance = result["provenance"]
+
+    assert provenance["reference_resolution"] == 1.0
+    assert provenance["references_resolved"] == provenance["references"] - 1
+    assert "evidence-reference-unresolved" in result["failures"]
+    assert "evidence-reference-unresolved" not in scored(runs, "postgres", inflate_references)["failures"]
+
+
+def test_the_runner_exits_nonzero_for_a_failure_hidden_by_rounding(monkeypatch, capsys) -> None:
+    real = golden.run_pipeline
+
+    def damaged(case, workdir):
+        observed = real(case, workdir)
+        if case["name"] == "postgres":
+            inflate_evidence(observed, break_hash=True)
+        return observed
+
+    monkeypatch.setattr(golden, "run_pipeline", damaged)
+    code = main([str(CASES_DIR)])
+
+    assert code == 1
+    failures = {item["name"]: item["failures"] for item in json.loads(capsys.readouterr().out)["cases"]}
+    assert failures["postgres"] == ["evidence-does-not-resolve-to-files"]
+
+
+def test_a_small_ai_increase_in_the_unsupported_rate_is_not_rounded_away(runs) -> None:
+    def many_supported_claims(o: Observed) -> None:
+        template = o.ir["claims"][0]
+        o.ir["claims"].extend({**template, "id": f"claim:bulk{index}"} for index in range(30_000))
+
+    def one_unsupported_ai_claim(case: dict) -> None:
+        case["ai"]["labels"]["claims"].append({
+            "text": "The orders endpoint processes payments.", "classification": "inferred",
+            "subject": "endpoint", "evidence": "endpoint", "expected": "inferred", "supported": False,
+        })
+
+    result = scored(runs, "smartcart-correlation", many_supported_claims, one_unsupported_ai_claim)
+    comparison = result["ai"]["comparison"]
+
+    assert comparison["unsupported_rate_delta"] == 0.0  # 1 in about 30,000 rounds to zero for display
+    assert comparison["with_ai"]["unsupported"] == comparison["deterministic"]["unsupported"] + 1
+    assert comparison["increases_unsupported_rate"] is True
+    assert "ai-increases-unsupported-rate" in result["failures"]
+
+
+def test_zero_denominators_for_provenance_stay_valid(runs) -> None:
+    def strip(o: Observed) -> None:
+        o.ir["evidence"] = []
+        for group in ("nodes", "relationships", "claims", "limitations", "candidates"):
+            for item in o.ir[group]:
+                item["evidence_ids"] = []
+
+    result = scored(runs, "postgres", strip)
+    provenance = result["provenance"]
+
+    assert provenance["evidence_records"] == 0 and provenance["references"] == 0
+    assert provenance["resolution"] is None and provenance["reference_resolution"] is None
+    assert not {"evidence-does-not-resolve-to-files", "evidence-reference-unresolved"} & set(result["failures"])
