@@ -65,21 +65,30 @@ class AnthropicProvider:
         except ImportError as exc:
             raise ConfigError('The anthropic provider needs the SDK; install it with: pip install "repodocs[ai]"') from exc
         try:
-            response = anthropic.Anthropic().beta.messages.create(
-                model=self.model,
-                max_tokens=MAX_OUTPUT_TOKENS,
-                system=system,
-                messages=[{"role": "user", "content": user}],
-                output_config={"format": {"type": "json_schema", "schema": schema}},
-                # On a safety decline the API retries on a fallback model inside the same call.
-                betas=[FALLBACK_BETA],
-                fallbacks="default",
-            )
+            # The SDK follows redirects by default. A redirect would send the evidence bundle to a
+            # target nobody approved, so the transport is built here without that, and the client
+            # (which closes it) is a context manager.
+            with anthropic.Anthropic(http_client=anthropic.DefaultHttpxClient(follow_redirects=False)) as client:
+                response = client.beta.messages.create(
+                    model=self.model,
+                    max_tokens=MAX_OUTPUT_TOKENS,
+                    system=system,
+                    messages=[{"role": "user", "content": user}],
+                    output_config={"format": {"type": "json_schema", "schema": schema}},
+                    # On a safety decline the API retries on a fallback model inside the same call.
+                    betas=[FALLBACK_BETA],
+                    fallbacks="default",
+                )
         except anthropic.AuthenticationError as exc:
             raise ProviderError("Anthropic rejected the credentials; set ANTHROPIC_API_KEY or run `ant auth login`") from exc
         except anthropic.RateLimitError as exc:
             raise ProviderError("Anthropic rate limit reached; retry later") from exc
         except anthropic.APIStatusError as exc:
+            if 300 <= exc.status_code < 400:
+                raise ProviderError(
+                    f"Anthropic answered with a redirect (HTTP {exc.status_code}), which is not followed so the "
+                    "bundle is not sent anywhere else; check ANTHROPIC_BASE_URL"
+                ) from exc
             raise ProviderError(f"Anthropic API error (HTTP {exc.status_code})") from exc
         except anthropic.APIConnectionError as exc:
             raise ProviderError("Unable to reach the Anthropic API") from exc

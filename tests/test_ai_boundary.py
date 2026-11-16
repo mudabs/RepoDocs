@@ -233,3 +233,135 @@ def test_a_redirect_is_not_followed(monkeypatch) -> None:
 
     assert len(first.requests) == 1
     assert elsewhere.requests == [], "the redirect target received a request"
+
+
+# ------------------------------------------------------------------ the Anthropic SDK against a local server
+CREDENTIAL = "test-credential-not-real-0123456789"
+BODY_SECRET = "response-body-secret-0123456789"
+
+
+def messages_reply(handler: BaseHTTPRequestHandler) -> None:
+    body = json.dumps({
+        "id": "msg_test", "type": "message", "role": "assistant", "model": "claude-opus-5-5", "stop_reason": "end_turn",
+        "stop_sequence": None, "usage": {"input_tokens": 1, "output_tokens": 1},
+        "content": [{"type": "text", "text": '{"claims": []}'}],
+    }).encode()
+    handler.send_response(200)
+    handler.send_header("Content-Type", "application/json")
+    handler.send_header("Content-Length", str(len(body)))
+    handler.end_headers()
+    handler.wfile.write(body)
+
+
+def point_the_sdk_at(monkeypatch, server: HTTPServer) -> None:
+    pytest.importorskip("anthropic")
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", f"http://127.0.0.1:{server.server_port}")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", CREDENTIAL)
+    for name in ("HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy", "HTTPS_PROXY", "https_proxy"):
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_the_real_sdk_client_sends_the_bundle_once_with_the_structured_output_request(monkeypatch) -> None:
+    server = start(messages_reply)
+    point_the_sdk_at(monkeypatch, server)
+    schema = {"type": "object", "properties": {"claims": {"type": "array"}}}
+    try:
+        response = AnthropicProvider("claude-opus-5-5").generate("system text", "bundle text", schema)
+    finally:
+        stop(server)
+
+    assert response.data == {"claims": []} and response.model == "claude-opus-5-5"
+    assert len(server.requests) == 1
+    request = json.loads(server.requests[0][2])
+    assert request["model"] == "claude-opus-5-5" and request["system"] == "system text"
+    assert request["messages"] == [{"role": "user", "content": "bundle text"}]
+    assert request["output_config"] == {"format": {"type": "json_schema", "schema": schema}}
+
+
+@pytest.mark.parametrize("status", [301, 302, 303, 307, 308])
+def test_no_anthropic_redirect_is_followed_and_the_bundle_goes_nowhere_else(monkeypatch, status: int) -> None:
+    elsewhere = start(messages_reply)
+
+    def redirect(handler: BaseHTTPRequestHandler) -> None:
+        body = BODY_SECRET.encode()
+        handler.send_response(status)
+        handler.send_header("Location", f"http://127.0.0.1:{elsewhere.server_port}/v1/messages?token={BODY_SECRET}")
+        handler.send_header("Content-Length", str(len(body)))
+        handler.end_headers()
+        handler.wfile.write(body)
+
+    first = start(redirect)
+    point_the_sdk_at(monkeypatch, first)
+    try:
+        with pytest.raises(ProviderError) as caught:
+            AnthropicProvider("claude-opus-5-5").generate("system text", "REPOSITORY_CONTENT_MARKER", {})
+    finally:
+        stop(first, elsewhere)
+
+    assert len(first.requests) == 1, "a redirect must not be retried"
+    assert elsewhere.requests == [], "the redirect target received a request"
+    message = str(caught.value)
+    assert f"HTTP {status}" in message and "not followed" in message
+    for secret in (CREDENTIAL, BODY_SECRET, "REPOSITORY_CONTENT_MARKER", "127.0.0.1"):
+        assert secret not in message
+
+
+def test_a_redirect_from_anthropic_exits_7_and_leaves_the_documents_usable(tmp_path: Path, capsys, monkeypatch) -> None:
+    elsewhere = start(messages_reply)
+
+    def redirect(handler: BaseHTTPRequestHandler) -> None:
+        handler.send_response(307)
+        handler.send_header("Location", f"http://127.0.0.1:{elsewhere.server_port}/v1/messages")
+        handler.send_header("Content-Length", "0")
+        handler.end_headers()
+
+    first = start(redirect)
+    point_the_sdk_at(monkeypatch, first)
+    root = scanned_project(tmp_path, capsys)
+    assert invoke(root, capsys, "ai-configure", "--provider", "anthropic", "--consent-external")[0] == 0
+    try:
+        code, payload = invoke(root, capsys, "ai-interpret")
+    finally:
+        stop(first, elsewhere)
+
+    assert code == 7 and not payload["ok"]
+    assert CREDENTIAL not in json.dumps(payload) and "AKIAIOSFODNN7EXAMPLE" not in json.dumps(payload)
+    assert elsewhere.requests == []
+    assert not (root / ".repodocs" / "ai-claims.json").exists()
+    assert invoke(root, capsys, "generate")[0] == 0
+    assert invoke(root, capsys, "validate", "--allow-unresolved")[0] == 0
+    # What was sent to the one approved target was the redacted bundle.
+    sent = first.requests[0][2].decode("utf-8")
+    assert "AKIAIOSFODNN7EXAMPLE" not in sent and "[REDACTED:aws-access-key]" in sent
+    assert CREDENTIAL not in sent
+
+
+def test_the_provider_resources_are_released(monkeypatch) -> None:
+    closed: list[bool] = []
+    import types
+
+    class Client(types.SimpleNamespace):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            closed.append(True)
+            return False
+
+    class Status(Exception):
+        status_code = 500
+
+    def create(**kwargs):
+        raise Status()
+
+    module = types.SimpleNamespace(
+        APIStatusError=Status, AuthenticationError=type("A", (Status,), {}), RateLimitError=type("R", (Status,), {}),
+        APIConnectionError=type("C", (Exception,), {}), DefaultHttpxClient=lambda **kwargs: kwargs,
+        Anthropic=lambda **kwargs: Client(beta=types.SimpleNamespace(messages=types.SimpleNamespace(create=create))),
+    )
+    monkeypatch.setitem(__import__("sys").modules, "anthropic", module)
+
+    with pytest.raises(ProviderError):
+        AnthropicProvider("m").generate("s", "u", {})
+
+    assert closed == [True]

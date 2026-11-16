@@ -515,8 +515,16 @@ def fake_anthropic(monkeypatch, *, stop_reason="end_turn", text='{"claims": []}'
         thinking = types.SimpleNamespace(type="thinking", thinking="")
         return types.SimpleNamespace(stop_reason=stop_reason, content=[thinking, block], model="claude-opus-5-5")
 
-    module.Anthropic = lambda: types.SimpleNamespace(
-        beta=types.SimpleNamespace(messages=types.SimpleNamespace(create=create))
+    class Client(types.SimpleNamespace):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    module.DefaultHttpxClient = lambda **kwargs: types.SimpleNamespace(options=kwargs)
+    module.Anthropic = lambda **kwargs: Client(
+        beta=types.SimpleNamespace(messages=types.SimpleNamespace(create=create)), options=kwargs
     )
     monkeypatch.setitem(sys.modules, "anthropic", module)
     return calls
