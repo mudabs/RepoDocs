@@ -85,6 +85,8 @@ Store repository-local docs in owning repos and system-wide docs in one configur
 ## Security boundaries
 Untrusted repository inputs; file/path traversal protection, resource limits, sandboxing where necessary, no arbitrary builds, prompt-injection resistant AI input, secret redaction, explicit consent before external inference, local-only mode, least-privilege GitHub App/token, safe Markdown/SVG rendering, tenancy separation in hosted mode.
 
+Implemented (ADR-025): scanning disables the git settings a repository can use to run programs (`core.fsmonitor`, filter commands) and stops when git state cannot be read; links that leave a repository, including Windows junctions, are skipped; unparseable or hostile file contents skip that file, not the scan; text from analyzed source is escaped or fenced in generated Markdown and Mermaid, and `validate` rejects active Markdown and Mermaid directives; loopback AI requests ignore proxies and no provider request follows a redirect; and redaction covers more token shapes and prefixed secret keys. Not implemented: sandboxing for external analyzers, redaction of the deterministic documents, and parse time limits.
+
 ## Quality evaluation
 
 Implemented as `repodocs.golden` (ADR-024): reviewed golden cases under `tests/golden`, one versioned JSON report, and an exact committed baseline that the test suite enforces. Golden files are written from fixture sources, not tool output, and are updated by hand.
