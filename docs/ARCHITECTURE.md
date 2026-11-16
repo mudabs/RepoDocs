@@ -87,6 +87,8 @@ Untrusted repository inputs; file/path traversal protection, resource limits, sa
 
 ## Quality evaluation
 
+Implemented as `repodocs.golden` (ADR-024): reviewed golden cases under `tests/golden`, one versioned JSON report, and an exact committed baseline that the test suite enforces. Golden files are written from fixture sources, not tool output, and are updated by hand.
+
 Representative golden fixtures define expected facts and relationships. Evaluation reports fact-level precision and recall, cross-repository correlation accuracy, unsupported-claim rate, evidence resolution, diagram validity, output stability across unchanged scans, and the incremental contribution of AI compared with deterministic-only generation. Human review may assess readability, but appearance alone is not an accuracy criterion.
 
 ## Major failure modes

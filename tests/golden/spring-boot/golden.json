@@ -1,0 +1,65 @@
+{
+  "schema_version": "1.0",
+  "name": "spring-boot",
+  "description": "A Spring Boot backend. Expectations were derived from the Java sources, ADR-015, and the fixture README, which lists the constructs that must be reported instead of analyzed. Endpoints, classes, and exposes edges are enumerated completely. A limitation's evidence must contain the text that makes it a limitation. Review notes: the functional route is anchored at the method declaration because ADR-015 says method bodies are not scanned; the SpEL expression (OrderService line 17) and the @Profile annotation (SecurityConfig line 8) are expected on their own lines, and the analyzer currently cites the line after and before them, so those two stay as misses until the analyzer is fixed.",
+  "repositories": [
+    {"id": "backend", "path": "../../fixtures/spring-boot-repo"}
+  ],
+  "closed": {"limitations": true},
+  "nodes": [
+    {"type": "class", "repository": "backend", "name": "SmartCartApplication"},
+    {"type": "class", "repository": "backend", "name": "CustomerController", "attributes": {"stereotype": "controller"}},
+    {"type": "class", "repository": "backend", "name": "OrderController", "attributes": {"stereotype": "controller"}},
+    {"type": "class", "repository": "backend", "name": "OrderService", "attributes": {"stereotype": "service"}},
+    {"type": "class", "repository": "backend", "name": "CustomerRepository", "attributes": {"stereotype": "repository"}},
+    {"type": "class", "repository": "backend", "name": "OrderRepository", "attributes": {"stereotype": "repository"}},
+    {"type": "class", "repository": "backend", "name": "Customer", "attributes": {"stereotype": "entity"}},
+    {"type": "class", "repository": "backend", "name": "Order", "attributes": {"stereotype": "entity"}},
+    {"type": "class", "repository": "backend", "name": "OrderItem", "attributes": {"stereotype": "entity"}},
+    {"type": "class", "repository": "backend", "name": "FunctionalRoutes", "attributes": {"stereotype": "configuration"}},
+    {"type": "class", "repository": "backend", "name": "SecurityConfig", "attributes": {"stereotype": "configuration"}},
+    {"type": "class", "repository": "backend", "name": "PluginLoader", "attributes": {"stereotype": "component"}},
+    {"type": "endpoint", "repository": "backend", "name": "GET /api/customers/{id}"},
+    {"type": "endpoint", "repository": "backend", "name": "GET /api/v1/customers/{id}"},
+    {"type": "endpoint", "repository": "backend", "name": "GET /api/orders"},
+    {"type": "endpoint", "repository": "backend", "name": "GET /api/orders/{id}"},
+    {"type": "endpoint", "repository": "backend", "name": "POST /api/orders"},
+    {"type": "endpoint", "repository": "backend", "name": "PUT /api/orders/{id}"},
+    {"type": "endpoint", "repository": "backend", "name": "PATCH /api/orders/{id}"}
+  ],
+  "relationships": [
+    {"type": "exposes", "source": {"type": "class", "repository": "backend", "name": "CustomerController"}, "target": {"type": "endpoint", "repository": "backend", "name": "GET /api/customers/{id}"}},
+    {"type": "exposes", "source": {"type": "class", "repository": "backend", "name": "CustomerController"}, "target": {"type": "endpoint", "repository": "backend", "name": "GET /api/v1/customers/{id}"}},
+    {"type": "exposes", "source": {"type": "class", "repository": "backend", "name": "OrderController"}, "target": {"type": "endpoint", "repository": "backend", "name": "GET /api/orders"}},
+    {"type": "exposes", "source": {"type": "class", "repository": "backend", "name": "OrderController"}, "target": {"type": "endpoint", "repository": "backend", "name": "GET /api/orders/{id}"}},
+    {"type": "exposes", "source": {"type": "class", "repository": "backend", "name": "OrderController"}, "target": {"type": "endpoint", "repository": "backend", "name": "POST /api/orders"}},
+    {"type": "exposes", "source": {"type": "class", "repository": "backend", "name": "OrderController"}, "target": {"type": "endpoint", "repository": "backend", "name": "PUT /api/orders/{id}"}},
+    {"type": "exposes", "source": {"type": "class", "repository": "backend", "name": "OrderController"}, "target": {"type": "endpoint", "repository": "backend", "name": "PATCH /api/orders/{id}"}}
+  ],
+  "evidence": [
+    {"subject": {"type": "endpoint", "repository": "backend", "name": "GET /api/orders"}, "path": "src/main/java/com/smartcart/order/OrderController.java", "line": 31},
+    {"subject": {"type": "endpoint", "repository": "backend", "name": "GET /api/orders/{id}"}, "path": "src/main/java/com/smartcart/order/OrderController.java", "line": 37},
+    {"subject": {"type": "endpoint", "repository": "backend", "name": "POST /api/orders"}, "path": "src/main/java/com/smartcart/order/OrderController.java", "line": 42},
+    {"subject": {"type": "endpoint", "repository": "backend", "name": "PUT /api/orders/{id}"}, "path": "src/main/java/com/smartcart/order/OrderController.java", "line": 47},
+    {"subject": {"type": "endpoint", "repository": "backend", "name": "PATCH /api/orders/{id}"}, "path": "src/main/java/com/smartcart/order/OrderController.java", "line": 47},
+    {"subject": {"type": "endpoint", "repository": "backend", "name": "GET /api/customers/{id}"}, "path": "src/main/java/com/smartcart/customer/CustomerController.java", "line": 18},
+    {"subject": {"type": "class", "repository": "backend", "name": "Order"}, "path": "src/main/java/com/smartcart/order/Order.java", "line": 21}
+  ],
+  "limitations": [
+    {"repository": "backend", "kind": "dynamic-routing", "path": "src/main/java/com/smartcart/order/OrderController.java", "line": 52},
+    {"repository": "backend", "kind": "dynamic-routing", "path": "src/main/java/com/smartcart/config/FunctionalRoutes.java", "line": 15},
+    {"repository": "backend", "kind": "reflection", "path": "src/main/java/com/smartcart/util/PluginLoader.java", "line": 9},
+    {"repository": "backend", "kind": "reflection", "path": "src/main/java/com/smartcart/util/PluginLoader.java", "line": 10},
+    {"repository": "backend", "kind": "generated-code", "path": "src/main/java/com/smartcart/order/OrderSummary.java", "line": 9},
+    {"repository": "backend", "kind": "runtime-configuration", "path": "src/main/java/com/smartcart/config/SecurityConfig.java", "line": 8},
+    {"repository": "backend", "kind": "runtime-configuration", "path": "src/main/java/com/smartcart/order/OrderService.java", "line": 17},
+    {"repository": "backend", "kind": "unsupported-construct", "path": "src/main/java/com/smartcart/order/OrderRepository.java", "line": 14},
+    {"repository": "backend", "kind": "unsupported-language", "path": "src/main/kotlin/com/smartcart/Extras.kt"},
+    {"repository": "backend", "kind": "unsupported-construct", "path": "src/main/resources/application.yml", "line": 17}
+  ],
+  "diagrams": {
+    "artifacts": [
+      "architecture.mmd"
+    ]
+  }
+}

@@ -219,6 +219,15 @@ The `Tests` workflow (`.github/workflows/tests.yml`) runs the complete pytest su
 - The workflow has read-only permissions, uses no secrets, and pins its actions to commit SHAs. Update a pin by replacing the SHA and the version comment together.
 - This is development CI for RepoDocs itself. Documentation-publication automation for user projects is separate work in Milestone 4.
 
+### Quality evaluation
+
+`python -m repodocs.golden tests/golden --summary` scores RepoDocs against reviewed golden fixtures and prints a table; without `--summary` it prints the versioned JSON report (`schemas/golden-report-1.0.json`). It reports node, relationship, and limitation precision and recall, evidence recall, cross-repository candidate accuracy, evidence resolution against the files on disk, the unsupported-claim rate, diagram validity, unchanged-scan stability, and a deterministic-versus-AI comparison. A ratio is `null` when it has no denominator.
+
+- A case is `tests/golden/<name>/golden.json`. Write it from the fixture sources, never from tool output, and name facts by type, repository, and name, not by ID or hash. See ADR-024 for the metric definitions.
+- The report lists `missing` and `unexpected` facts in the golden's own form. Decide which side is wrong, then edit the golden by hand; there is no command that rewrites it. Where the tool misses a real fact, keep it in the golden.
+- `tests/golden/baseline-report.json` holds exact scores, and the suite fails if they change in either direction. After a reviewed change, regenerate it with `python -m repodocs.golden tests/golden --output tests/golden/baseline-report.json` and review the diff.
+- These scores describe the fixtures only. The AI comparison replays a recorded response and says nothing about a model's quality, and diagram validity uses the built-in validator, not a Mermaid renderer.
+
 The suite does not measure coverage and is not comprehensive. Known untested areas include the Poetry and Maven manifest dependency paths outside the framework fixtures and behavior on macOS.
 
 ## License

@@ -40,3 +40,11 @@ jobs:
         run: python -m pip install -e ".[test]"
       - name: Run the complete test suite
         run: python -m pytest -ra
+
+      # Reports the golden-fixture metrics in the log and the job summary. The suite above already
+      # fails on any change; this step makes the numbers visible, and shows whether Linux and
+      # Windows agree. `shell: bash` makes a pipe fail when the evaluation fails.
+      - name: Report golden-fixture quality metrics
+        shell: bash
+        run: |
+          python -m repodocs.golden tests/golden --baseline tests/golden/baseline-report.json --summary | tee -a "$GITHUB_STEP_SUMMARY"

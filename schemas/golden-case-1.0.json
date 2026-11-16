@@ -1,0 +1,142 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://repodocs.dev/schemas/golden-case-1.0.json",
+  "title": "RepoDocs golden evaluation case",
+  "description": "A reviewed description of what RepoDocs must find in fixture repositories. It is written from the fixture sources, never from tool output, and names facts by semantic selectors because identifiers and content hashes change with line endings. Node and relationship types that appear here are enumerated completely, so extra findings of those types count against precision.",
+  "type": "object",
+  "required": ["schema_version", "name", "description", "repositories"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "name": {"type": "string", "minLength": 1},
+    "description": {"type": "string", "minLength": 1},
+    "repositories": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "path"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "path": {"type": "string", "minLength": 1, "description": "Fixture directory, relative to this file."}
+        }
+      }
+    },
+    "closed": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "node_types": {"type": "array", "items": {"type": "string"}, "description": "Node types enumerated completely even when no node of that type is expected."},
+        "relationship_types": {"type": "array", "items": {"type": "string"}},
+        "limitations": {"type": "boolean", "description": "When true, every reported limitation must be listed, so extras count against precision."}
+      }
+    },
+    "nodes": {"type": "array", "items": {"$ref": "#/$defs/selector"}},
+    "relationships": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["type", "source", "target"],
+        "additionalProperties": false,
+        "properties": {
+          "type": {"type": "string", "minLength": 1},
+          "classification": {"enum": ["observed", "inferred", "proposed"]},
+          "source": {"$ref": "#/$defs/selector"},
+          "target": {"$ref": "#/$defs/selector"}
+        }
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["subject", "path"],
+        "additionalProperties": false,
+        "properties": {
+          "subject": {"$ref": "#/$defs/selector"},
+          "path": {"type": "string", "minLength": 1},
+          "line": {"type": "integer", "minimum": 1, "description": "When present the evidence must be a span that contains this line; when absent any evidence in the file counts."}
+        }
+      }
+    },
+    "limitations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["repository", "kind", "path"],
+        "additionalProperties": false,
+        "properties": {
+          "repository": {"type": "string", "minLength": 1},
+          "kind": {"enum": ["dynamic-routing", "reflection", "generated-code", "runtime-configuration", "unsupported-construct", "unsupported-language", "unreadable-source", "ambiguous-reference"]},
+          "path": {"type": "string", "minLength": 1},
+          "line": {"type": "integer", "minimum": 1}
+        }
+      }
+    },
+    "candidates": {
+      "type": "object",
+      "description": "The complete set of cross-repository candidates, and pairs that must not exist.",
+      "additionalProperties": false,
+      "properties": {
+        "expected": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["request", "endpoint"],
+            "additionalProperties": false,
+            "properties": {
+              "request": {"$ref": "#/$defs/selector"},
+              "endpoint": {"$ref": "#/$defs/selector"},
+              "confidence": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1}
+            }
+          }
+        },
+        "absent": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["request", "endpoint"],
+            "additionalProperties": false,
+            "properties": {
+              "request": {"$ref": "#/$defs/selector"},
+              "endpoint": {"anyOf": [{"$ref": "#/$defs/selector"}, {"type": "null"}], "description": "null means no candidate at all may exist for the request."}
+            }
+          }
+        }
+      }
+    },
+    "diagrams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "artifacts": {"type": "array", "items": {"type": "string"}},
+        "erd": {
+          "type": "object",
+          "required": ["entities", "relationships"],
+          "additionalProperties": false,
+          "properties": {"entities": {"type": "integer", "minimum": 0}, "relationships": {"type": "integer", "minimum": 0}}
+        }
+      }
+    },
+    "ai": {
+      "type": "object",
+      "required": ["claims"],
+      "additionalProperties": false,
+      "properties": {"claims": {"type": "string", "minLength": 1, "description": "A reviewed recorded-response file, relative to this file. The comparison replays it; no model is called."}}
+    }
+  },
+  "$defs": {
+    "selector": {
+      "type": "object",
+      "required": ["type", "name"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {"type": "string", "minLength": 1},
+        "repository": {"type": "string", "minLength": 1},
+        "name": {"type": "string", "minLength": 1},
+        "attributes": {"type": "object", "description": "Extra attribute values that must match, used only to disambiguate; a selector matching more than one node is an error."}
+      }
+    }
+  }
+}
