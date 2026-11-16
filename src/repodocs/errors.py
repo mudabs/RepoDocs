@@ -19,6 +19,10 @@ class ProviderError(RepoDocsError):
     """An AI provider was unavailable or returned unusable output."""
 
 
+class PublicationError(RepoDocsError):
+    """Documentation could not be published safely."""
+
+
 class ScanError(RepoDocsError):
     """A repository could not be scanned safely."""
 
@@ -46,3 +50,4 @@ EXIT_OWNERSHIP = 4
 EXIT_CONFIRMATION = 5
 EXIT_SNAPSHOT = 6
 EXIT_AI_PROVIDER = 7
+EXIT_PUBLICATION = 8

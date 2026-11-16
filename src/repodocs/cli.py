@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +43,7 @@ from .errors import (
     EXIT_CONFIRMATION,
     EXIT_OK,
     EXIT_OWNERSHIP,
+    EXIT_PUBLICATION,
     EXIT_SNAPSHOT,
     EXIT_USAGE,
     EXIT_VALIDATION,
@@ -49,6 +51,7 @@ from .errors import (
     ConfirmationError,
     OwnershipError,
     ProviderError,
+    PublicationError,
     RepoDocsError,
     SnapshotError,
     ValidationError,
@@ -160,6 +163,20 @@ def _cmd_set_destination(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _parse_pins_json(value: str | None) -> dict[str, str]:
+    """Pins as a JSON object of repository ID to commit SHA, for workflows that resolve them first."""
+
+    if not value:
+        return {}
+    try:
+        data = json.loads(value)
+    except ValueError as exc:
+        raise ConfigError(f"--pins-json is not valid JSON: {exc}") from exc
+    if not isinstance(data, dict) or any(not isinstance(key, str) or not isinstance(item, str) for key, item in data.items()):
+        raise ConfigError("--pins-json must be a JSON object mapping repository IDs to commit SHAs")
+    return data
+
+
 def _parse_pins(values: list[str] | None) -> dict[str, str]:
     pins: dict[str, str] = {}
     for value in values or []:
@@ -172,7 +189,11 @@ def _parse_pins(values: list[str] | None) -> dict[str, str]:
 
 def _cmd_scan(args: argparse.Namespace) -> int:
     config = ProjectConfig.load(_root(args))
-    ir, warnings = scan_project(config, mode=args.snapshot_mode, pins=_parse_pins(args.pins))
+    pins = _parse_pins(args.pins)
+    for repository_id, revision in _parse_pins_json(args.pins_json).items():
+        if pins.setdefault(repository_id, revision) != revision:
+            raise ConfigError(f"Conflicting pins for {repository_id}: --pin and --pins-json disagree")
+    ir, warnings = scan_project(config, mode=args.snapshot_mode, pins=pins)
     apply_decisions(ir, load_decisions(config.root))
     validate_ir(ir)
     config.internal_path.mkdir(parents=True, exist_ok=True)
@@ -242,17 +263,22 @@ def _cmd_generate(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
-def _cmd_validate(args: argparse.Namespace) -> int:
-    config = ProjectConfig.load(_root(args))
-    artifacts, ir = validate_project(config)
+def _require_resolved_candidates(ir: dict[str, Any]) -> None:
     unresolved = unresolved_candidates(ir)
-    if unresolved and not args.allow_unresolved:
+    if unresolved:
         shown = ", ".join(item["id"] for item in unresolved[:10])
         raise ConfirmationError(
             f"{len(unresolved)} cross-repository candidate(s) require confirmation or rejection "
             f"(unresolved or stale): {shown}{', ...' if len(unresolved) > 10 else ''}; "
             "list them with `repodocs candidates`"
         )
+
+
+def _cmd_validate(args: argparse.Namespace) -> int:
+    config = ProjectConfig.load(_root(args))
+    artifacts, ir = validate_project(config)
+    if not args.allow_unresolved:
+        _require_resolved_candidates(ir)
     _emit(
         "validate",
         ok=True,
@@ -335,6 +361,38 @@ def _cmd_decide(args: argparse.Namespace) -> int:
             "candidate_states": status_counts(ir),
         },
     )
+    return EXIT_OK
+
+
+def _cmd_publish(args: argparse.Namespace) -> int:
+    """Publish generated documentation as a reviewable pull request, or do nothing when unchanged."""
+
+    from .publish import GhPullRequests, publish
+
+    config = ProjectConfig.load(_root(args))
+    # Never publish output that has not just been validated, with confirmations resolved.
+    _, ir = validate_project(config)
+    _require_resolved_candidates(ir)
+    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    pull_requests = None
+    if not args.dry_run:
+        if not token:
+            raise ConfigError(
+                "Publishing needs a token with contents and pull request write access to the destination "
+                "repository in GH_TOKEN; use --dry-run to check without publishing"
+            )
+        pull_requests = GhPullRequests(config.destination_root(), token)
+    result = publish(
+        config,
+        ir,
+        base=args.base,
+        branch=args.branch,
+        remote=args.remote,
+        dry_run=args.dry_run,
+        token=token,
+        pull_requests=pull_requests,
+    )
+    _emit("publish", ok=True, data=result)
     return EXIT_OK
 
 
@@ -479,6 +537,11 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="REPOSITORY_ID=COMMIT_SHA",
         help="Expected commit for a repository in this run; overrides the configured pinned_revision",
     )
+    scan_parser.add_argument(
+        "--pins-json",
+        metavar="JSON",
+        help='Expected commits as a JSON object, for example \'{"frontend": "<sha>"}\'; merged with --pin',
+    )
     scan_parser.set_defaults(handler=_cmd_scan)
 
     generate_parser = subparsers.add_parser(
@@ -513,6 +576,15 @@ def _build_parser() -> argparse.ArgumentParser:
         decide_parser.add_argument("candidate_ids", nargs="+", metavar="CANDIDATE_ID")
         decide_parser.add_argument("--note", help="Reason recorded with the decision")
         decide_parser.set_defaults(handler=_cmd_decide)
+
+    publish_parser = subparsers.add_parser(
+        "publish", help="Open or update a reviewable documentation pull request; does nothing when output is unchanged"
+    )
+    publish_parser.add_argument("--base", required=True, help="Branch the pull request targets, normally the default branch")
+    publish_parser.add_argument("--branch", default="repodocs/docs-update", help="Bot-owned branch holding the documentation commit")
+    publish_parser.add_argument("--remote", default="origin")
+    publish_parser.add_argument("--dry-run", action="store_true", help="Compute the change without contacting the remote")
+    publish_parser.set_defaults(handler=_cmd_publish)
 
     ai_configure = subparsers.add_parser("ai-configure", help="Choose the optional AI provider and record consent")
     ai_configure.add_argument("--provider", choices=AI_PROVIDERS)
@@ -551,6 +623,9 @@ def main(argv: list[str] | None = None) -> int:
     except ConfirmationError as exc:
         _emit(args.command, ok=False, errors=[str(exc)])
         return EXIT_CONFIRMATION
+    except PublicationError as exc:
+        _emit(args.command, ok=False, errors=[str(exc)])
+        return EXIT_PUBLICATION
     except ProviderError as exc:
         _emit(args.command, ok=False, errors=[f"{exc}. Deterministic scan, generate, and validate are unaffected"])
         return EXIT_AI_PROVIDER

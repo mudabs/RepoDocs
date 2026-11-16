@@ -35,6 +35,16 @@ OPTIONAL_ARTIFACT_GENERATORS = {
 DESTINATION_IDENTITY_FIELDS = ("repository_id", "role", "path", "output_directory")
 
 
+# What the committed manifest records about the destination. The destination's own Git revision
+# and working-tree state are deliberately absent: a documentation commit moves them, so recording
+# them would make every merged documentation pull request change the manifest and start another.
+MANIFEST_DESTINATION_FIELDS = (*DESTINATION_IDENTITY_FIELDS, "pinned_revision")
+
+
+def manifest_destination(destination: dict[str, Any]) -> dict[str, Any]:
+    return {field: destination[field] for field in MANIFEST_DESTINATION_FIELDS}
+
+
 def destination_identity(destination: Any) -> dict[str, Any]:
     source = destination if isinstance(destination, dict) else {}
     return {field: source.get(field) for field in DESTINATION_IDENTITY_FIELDS}
@@ -538,11 +548,11 @@ def _all_files(root: Path) -> set[str]:
 
 
 def describe_destination(config: ProjectConfig) -> dict[str, Any]:
-    """Resolve the configured destination and record its ownership facts.
+    """Resolve the configured destination and report its ownership facts.
 
     Fails when the destination is missing, is not a directory, or is pinned to a revision
-    that the checkout does not match. Paths are recorded as configured so the manifest is
-    stable across machines.
+    that the checkout does not match. The result includes the destination's current Git state
+    for the command response; the manifest keeps only the stable fields.
     """
 
     spec = config.destination()
@@ -603,7 +613,7 @@ def _manifest(ir: dict[str, Any], destination: dict[str, Any], artifact_contents
     return {
         "manifest_version": MANIFEST_SCHEMA_VERSION,
         "ownership": "repodocs-generated",
-        "destination": destination,
+        "destination": manifest_destination(destination),
         "source_ir_hash": source_hash,
         "generator": GENERATOR_NAME,
         "generator_version": GENERATOR_VERSION,

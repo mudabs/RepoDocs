@@ -63,8 +63,8 @@ def test_separate_destination_repository(tmp_path: Path, capsys) -> None:
     assert manifest["destination"]["role"] == "destination"
     assert manifest["destination"]["path"] == "docs-repo"
     assert manifest["destination"]["output_directory"] == "docs/generated"
-    assert manifest["destination"]["vcs"] is None
-    assert manifest["destination"]["working_tree_state"] == "non-git"
+    # Volatile Git facts about the destination never enter the committed manifest.
+    assert set(manifest["destination"]) == {"repository_id", "role", "path", "output_directory", "pinned_revision"}
 
     code, payload = invoke(root, capsys, "validate")
     assert code == 0
@@ -281,10 +281,11 @@ def test_pinned_destination_must_match_checkout(tmp_path: Path, capsys) -> None:
     code, payload = invoke(root, capsys, "generate")
     assert code == 0
     manifest = read_manifest(root)
-    assert manifest["destination"]["vcs"] == "git"
-    assert manifest["destination"]["git_revision"] == sha
     assert manifest["destination"]["pinned_revision"] == sha
-    assert manifest["destination"]["working_tree_state"] == "clean"
+    assert "git_revision" not in manifest["destination"]
+    # The live facts are still reported by the command itself.
+    assert payload["data"]["destination"]["git_revision"] == sha
+    assert payload["data"]["destination"]["working_tree_state"] == "clean"
 
     git(docs, "add", "-A")
     git(docs, "commit", "-q", "-m", "docs")
