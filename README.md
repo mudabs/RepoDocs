@@ -232,7 +232,8 @@ The reusable action is `.github/actions/publish`; `docs/examples/repodocs-publis
 
 RepoDocs treats every scanned repository as untrusted (ADR-025).
 
-- Scanning reads files and runs only `git`. It never imports, builds, or executes repository code, and it turns off the git settings a repository could use to run a program (`core.fsmonitor` and filter commands). If git cannot report a repository's state, the scan stops instead of assuming it is clean.
+- Scanning reads files and runs only `git`. It never imports, builds, or executes repository code, and it turns off the git settings a repository could use to run a program (`core.fsmonitor`, filter commands, and hooks), in nested submodules too. If git cannot report a repository's state, the scan stops instead of assuming it is clean.
+- Evidence names a commit only when the files analyzed are exactly that commit. A modified, untracked, or differently checked-out submodule, or an ignored file that is analyzed, gives content-fingerprint provenance in a local scan, and a pinned scan refuses it and names the cause. An uninitialized submodule adds no files and is reported as a warning.
 - Symlinks, directories that leave the repository (including Windows junctions), binary files, files over 2 MiB, more than 20,000 files, and more than 50 MiB in total are skipped or refused with a message. A file that cannot be parsed is skipped, and the rest of the repository is still analyzed.
 - Text from analyzed source is escaped or placed in code spans in generated Markdown, and Mermaid labels use Mermaid entities. `repodocs validate` rejects raw HTML, link and image syntax, and Mermaid directives in generated output.
 - Redaction is pattern-based, not a guarantee. The generated documentation is not redacted, so do not publish documentation from a repository whose analyzed literals contain secrets.

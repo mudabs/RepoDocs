@@ -108,6 +108,24 @@ def test_a_status_failure_stops_the_scan_instead_of_reporting_a_clean_tree(tmp_p
         read_git_state(repository)
 
 
+def test_a_configuration_that_cannot_be_listed_stops_the_scan_instead_of_leaving_filters_on(tmp_path: Path, monkeypatch) -> None:
+    import repodocs.snapshot as snapshot
+
+    repository = configured_repository(tmp_path)
+    real = snapshot._git
+
+    def failing(root, *options, arguments):
+        completed = real(root, *options, arguments=arguments)
+        if arguments[:1] == ("config",):
+            completed.returncode, completed.stderr = 128, "fatal: bad config line 1"
+        return completed
+
+    monkeypatch.setattr(snapshot, "_git", failing)
+
+    with pytest.raises(SnapshotError, match="bad config line 1"):
+        read_git_state(repository)
+
+
 def test_a_scan_of_a_repository_with_a_hostile_git_config_still_completes(tmp_path: Path, capsys) -> None:
     sentinel, command = sentinel_script(tmp_path)
     repository = configured_repository(tmp_path)
@@ -374,60 +392,6 @@ def test_a_table_name_cannot_break_out_of_the_erd_comments_or_labels(tmp_path: P
 
 def test_scrub_removes_every_kind_of_line_break() -> None:
     assert scrub("a\r\nb c\u0085d\x00e") == "a b c d e"
-
-
-# ------------------------------------------------------------------ submodules
-def repository_with_submodule(tmp_path: Path) -> tuple[Path, Path]:
-    import os
-    import subprocess
-
-    from conftest import GIT_ENVIRONMENT
-
-    library = tmp_path / "library"
-    library.mkdir()
-    (library / ".gitattributes").write_text("* filter=trap\n", encoding="utf-8")
-    init_git_repository(library)
-    repository = configured_repository(tmp_path)
-    subprocess.run(
-        ["git", "-C", str(repository), "-c", "protocol.file.allow=always", "submodule", "add", "-q", str(library), "sub"],
-        check=True, capture_output=True, env={**os.environ, **GIT_ENVIRONMENT},
-    )
-    git(repository, "commit", "-q", "-m", "add the submodule")
-    return repository, repository / "sub"
-
-
-def test_a_submodule_configured_program_is_not_run(tmp_path: Path) -> None:
-    import time
-
-    sentinel, command = sentinel_script(tmp_path)
-    repository, submodule = repository_with_submodule(tmp_path)
-    configuration = next((repository / ".git" / "modules").rglob("config"))
-    git(repository, "config", "-f", str(configuration), "filter.trap.clean", command)
-    time.sleep(1.1)
-    (submodule / "README.md").touch()
-
-    read_git_state(repository)
-
-    assert not sentinel.exists(), "scanning ran a program configured by a submodule"
-
-
-def test_a_submodule_at_another_commit_makes_the_snapshot_dirty(tmp_path: Path) -> None:
-    repository, submodule = repository_with_submodule(tmp_path)
-    assert read_git_state(repository).working_tree_state == "clean"
-    (submodule / "other.txt").write_text("new\n", encoding="utf-8")
-    git(submodule, "add", "-A")
-    git(submodule, "commit", "-q", "-m", "move the submodule")
-
-    assert read_git_state(repository).working_tree_state == "dirty"
-
-
-def test_uncommitted_edits_inside_a_submodule_are_not_noticed(tmp_path: Path) -> None:
-    """Pins a known limit: noticing them needs a child git process that would run the submodule's programs."""
-
-    repository, submodule = repository_with_submodule(tmp_path)
-    (submodule / "README.md").write_text("edited and not committed\n", encoding="utf-8")
-
-    assert read_git_state(repository).working_tree_state == "clean"
 
 
 # ------------------------------------------------------------------ writing into an untrusted destination

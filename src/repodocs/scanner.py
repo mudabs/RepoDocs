@@ -271,10 +271,12 @@ def scan_project(
         root = config.resolve_repository(repository)
         files, file_warnings, total_bytes = discover_files(root, _excluded_output_paths(config, repository.id))
         warnings.extend(f"{repository.id}: {warning}" for warning in file_warnings)
+        git_state = read_git_state(root, frozenset(EXCLUDED_DIRECTORIES))
+        warnings.extend(f"{repository.id}: {note}" for note in git_state.notes)
         header = resolve_snapshot(
             repository_id=repository.id,
             mode=mode,
-            git=read_git_state(root),
+            git=git_state,
             fingerprint=content_fingerprint([(item.path, item.content_hash) for item in files]),
             pinned_revision=pins.get(repository.id, repository.pinned_revision),
         )
