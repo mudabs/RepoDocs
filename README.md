@@ -100,7 +100,7 @@ When a project contains PostgreSQL table facts, `repodocs generate` produces **`
 - Foreign keys produce crow's-foot relationship lines with identifying (`--`) or non-identifying (`..`) styles depending on child primary keys, and cardinality (`||`, `|o`, `o{`, `o|`) reflecting column nullability and uniqueness.
 - Entity and relationship evidence mappings (file paths, line spans, and evidence IDs) are preserved in `erd.mmd` as structured comment blocks and inline declarations.
 - Missing primary keys and repository-scoped unsupported relationships (such as foreign keys referencing tables outside the declaring repository) are reported in `erd.mmd` diagram comments and under `### Schema diagnostics` in `architecture.md`.
-- `repodocs validate` performs documented renderer-compatible verification without requiring external Node.js or browser tooling, strictly enforcing attribute type syntax.
+- `repodocs validate` checks Mermaid syntax with a built-in Python validator that needs no Node.js or browser tooling and enforces attribute type syntax. It is not the Mermaid renderer and does not prove that a diagram renders.
 - `erd.mmd` is tracked in `artifact-manifest.json`, protected against unexpected edits, and safely retired when database facts are no longer present. See ADR-022.
 
 ### Cross-repository candidates
@@ -246,6 +246,7 @@ The `Tests` workflow (`.github/workflows/tests.yml`) runs the complete pytest su
 - A case is `tests/golden/<name>/golden.json`. Write it from the fixture sources, never from tool output, and name facts by type, repository, and name, not by ID or hash. See ADR-024 for the metric definitions.
 - The report lists `missing` and `unexpected` facts in the golden's own form. Decide which side is wrong, then edit the golden by hand; there is no command that rewrites it. Where the tool misses a real fact, keep it in the golden.
 - `tests/golden/baseline-report.json` holds exact scores, and the suite fails if they change in either direction. After a reviewed change, regenerate it with `python -m repodocs.golden tests/golden --output tests/golden/baseline-report.json` and review the diff.
+- Cases are validated against `schemas/golden-case-1.0.json` (needs the `jsonschema` test dependency), and provenance failures are decided on exact counts, not rounded ratios.
 - These scores describe the fixtures only. The AI comparison replays a recorded response and says nothing about a model's quality, and diagram validity uses the built-in validator, not a Mermaid renderer.
 
 The suite does not measure coverage and is not comprehensive. Known untested areas include the Poetry and Maven manifest dependency paths outside the framework fixtures and behavior on macOS.

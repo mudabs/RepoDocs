@@ -23,7 +23,7 @@
 - Supported PostgreSQL static schema extraction is implemented (ADR-017): databases, tables, columns, keys, foreign keys, reported unsupported constructs, and inferred ORM table links.
 - React/Spring Boot cross-repository HTTP candidate discovery is implemented with OpenAPI 3.0.x/3.1.x JSON input, semantic candidate IDs, snapshot/evidence bindings, conservative origin matching, URL sanitization, and explicitly unconfirmed documentation (ADR-018).
 - Confirmation and rejection decisions are persisted with evidence and revision bindings, stale detection, and the exit code 5 validation failure (ADR-019).
-- Mermaid ERD generation and documented renderer-compatible validation are implemented (ADR-022): deterministic `erd.mmd` generation from PostgreSQL table facts, crow's-foot cardinality, identifying relationships, reported missing keys and unresolved references, and ownership protection.
+- Mermaid ERD generation and validation with a built-in syntax validator (not the Mermaid renderer; renderer validation is still open under epic #8) are implemented (ADR-022): deterministic `erd.mmd` generation from PostgreSQL table facts, crow's-foot cardinality, identifying relationships, reported missing keys and unresolved references, and ownership protection.
 
 ## Phase 3: AI integration
 - Evidence-bundle construction, redaction, structured claim validation, the Anthropic and Ollama adapters, recorded consent, and deterministic fallback are implemented (ADR-020).
