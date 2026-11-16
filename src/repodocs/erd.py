@@ -61,6 +61,18 @@ def _escape_label(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
 
 
+def _evidence_sort_key(ev_id: str, evidence_map: dict[str, dict[str, Any]]) -> tuple[str, str, int, str]:
+    ev = evidence_map.get(ev_id)
+    if not ev:
+        return ("", "", 0, ev_id)
+    return (
+        ev.get("repository_id", ""),
+        ev.get("path", ""),
+        ev.get("line_start", 0) if ev.get("kind") == "span" else 0,
+        ev_id,
+    )
+
+
 def _format_evidence_ref(ev_id: str, evidence_map: dict[str, dict[str, Any]]) -> str:
     ev = evidence_map.get(ev_id)
     if not ev:
@@ -175,8 +187,9 @@ def build_erd_model(ir: dict[str, Any]) -> ERDModel | None:
         unique_constraints = attrs.get("unique_constraints", [])
         foreign_keys = attrs.get("foreign_keys", [])
         raw_columns = attrs.get("columns", [])
-        evidence_ids = tuple(node.get("evidence_ids", []))
-        evidence_refs = tuple(_format_evidence_ref(eid, evidence_map) for eid in evidence_ids)
+        raw_evidence_ids = set(node.get("evidence_ids", []))
+        sorted_evidence_ids = tuple(sorted(raw_evidence_ids, key=lambda eid: _evidence_sort_key(eid, evidence_map)))
+        evidence_refs = tuple(_format_evidence_ref(eid, evidence_map) for eid in sorted_evidence_ids)
 
         has_pk = bool(primary_key)
         if not has_pk:
@@ -236,7 +249,7 @@ def build_erd_model(ir: dict[str, Any]) -> ERDModel | None:
                 repository_id=repo_id,
                 schema=schema,
                 has_primary_key=has_pk,
-                evidence_ids=evidence_ids,
+                evidence_ids=sorted_evidence_ids,
                 evidence_refs=evidence_refs,
             )
         )
@@ -280,8 +293,9 @@ def build_erd_model(ir: dict[str, Any]) -> ERDModel | None:
 
         is_identifying = bool(child_pk and fk_cols and set(fk_cols).issubset(set(child_pk)))
         label = ", ".join(fk_cols) if fk_cols else "references"
-        edge_evidence_ids = tuple(edge.get("evidence_ids", []))
-        edge_evidence_refs = tuple(_format_evidence_ref(eid, evidence_map) for eid in edge_evidence_ids)
+        raw_edge_evidence_ids = set(edge.get("evidence_ids", []))
+        sorted_edge_evidence_ids = tuple(sorted(raw_edge_evidence_ids, key=lambda eid: _evidence_sort_key(eid, evidence_map)))
+        edge_evidence_refs = tuple(_format_evidence_ref(eid, evidence_map) for eid in sorted_edge_evidence_ids)
 
         relationships.append(
             ERDRelationship(
@@ -291,7 +305,7 @@ def build_erd_model(ir: dict[str, Any]) -> ERDModel | None:
                 child_cardinality=child_cardinality,
                 identifying=is_identifying,
                 label=label,
-                evidence_ids=edge_evidence_ids,
+                evidence_ids=sorted_edge_evidence_ids,
                 evidence_refs=edge_evidence_refs,
             )
         )
