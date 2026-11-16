@@ -3,7 +3,7 @@
   "$id": "https://repodocs.dev/schemas/system-ir-1.0.json",
   "title": "RepoDocs System IR",
   "type": "object",
-  "required": ["ir_version", "project", "snapshots", "nodes", "relationships", "evidence", "claims", "limitations", "provenance"],
+  "required": ["ir_version", "project", "snapshots", "nodes", "relationships", "evidence", "claims", "limitations", "candidates", "provenance"],
   "properties": {
     "ir_version": {"const": "1.0"},
     "project": {
@@ -20,6 +20,7 @@
     "relationships": {"type": "array", "items": {"$ref": "#/$defs/relationship"}},
     "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence"}},
     "claims": {"type": "array", "items": {"$ref": "#/$defs/claim"}},
+    "candidates": {"type": "array", "items": {"$ref": "#/$defs/candidate"}},
     "limitations": {
       "type": "array",
       "description": "Constructs an analyzer observed but did not turn into facts: dynamic routing, reflection, generated code, runtime configuration, unsupported constructs or languages, unreadable sources, ambiguous references.",
@@ -54,6 +55,42 @@
   },
   "additionalProperties": true,
   "$defs": {
+    "candidate": {
+      "type": "object",
+      "required": ["id", "type", "source", "target", "status", "classification", "confidence", "reasons", "evidence_ids", "snapshots", "attributes"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "type": {"const": "http"},
+        "source": {"type": "string", "minLength": 1},
+        "target": {"type": "string", "minLength": 1},
+        "status": {"const": "candidate"},
+        "classification": {"const": "inferred"},
+        "confidence": {"type": "number", "minimum": 0, "exclusiveMaximum": 1},
+        "reasons": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {
+          "enum": ["method-match", "literal-path-match", "template-path-match", "declared-server-origin-match"]
+        }},
+        "evidence_ids": {"type": "array", "minItems": 2, "uniqueItems": true, "items": {"type": "string"}},
+        "snapshots": {
+          "type": "object", "minProperties": 2, "maxProperties": 2,
+          "additionalProperties": {
+            "type": "object", "required": ["revision", "revision_kind"], "additionalProperties": false,
+            "properties": {
+              "revision": {"type": "string", "minLength": 1},
+              "revision_kind": {"$ref": "#/$defs/revision_kind"}
+            }
+          }
+        },
+        "attributes": {
+          "type": "object", "required": ["method", "path", "origin_supported"], "additionalProperties": false,
+          "properties": {
+            "method": {"type": "string", "minLength": 1},
+            "path": {"type": "string", "minLength": 1},
+            "origin_supported": {"type": "boolean"}
+          }
+        }
+      }
+    },
     "snapshot_mode": {
       "enum": ["local", "pinned"],
       "description": "local: working tree including uncommitted changes. pinned: clean checkout of one exact commit."

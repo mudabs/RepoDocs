@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from pathlib import Path
 from typing import Any
 
-from .common import sha256_text
+from .common import semantic_id, sha256_text
 from .config import ProjectConfig
+from .correlation import discover_candidates
 from .errors import OwnershipError, ValidationError
 from .generator import (
     MANIFEST_SCHEMA_VERSION,
@@ -21,6 +23,7 @@ from .generator import (
 )
 from .ir import IR_SCHEMA_VERSION, ir_hash
 from .snapshot import REVISION_KIND_COMMIT, REVISION_KIND_CONTENT, SNAPSHOT_MODES
+from .urls import safe_url
 
 
 CLASSIFICATIONS = {"observed", "inferred", "proposed"}
@@ -49,7 +52,7 @@ def load_ir(path: Path) -> dict[str, Any]:
 
 
 def validate_ir(ir: dict[str, Any]) -> list[str]:
-    required = {"ir_version", "project", "snapshots", "nodes", "relationships", "evidence", "claims", "provenance"}
+    required = {"ir_version", "project", "snapshots", "nodes", "relationships", "evidence", "claims", "candidates", "provenance"}
     missing = sorted(required - set(ir))
     if missing:
         raise ValidationError("System IR is missing fields: " + ", ".join(missing))
@@ -112,7 +115,94 @@ def validate_ir(ir: dict[str, Any]) -> list[str]:
     for node in ir["nodes"]:
         if not set(node.get("evidence_ids", [])) <= evidence_ids:
             raise ValidationError(f"Node references unknown evidence: {node.get('id')}")
+        if node.get("type") == "http_request":
+            for field in ("url", "base_url"):
+                value = node["attributes"].get(field)
+                if value is not None and (not isinstance(value, str) or safe_url(value) != value):
+                    raise ValidationError("HTTP request URLs must be sanitized; run scan again")
+    validate_candidates(ir)
     return []
+
+
+def validate_candidates(ir: dict[str, Any]) -> None:
+    """Check identity, uncertainty, both evidence sides, and exact snapshot bindings."""
+
+    candidates = ir["candidates"]
+    if not isinstance(candidates, list):
+        raise ValidationError("IR candidates must be an array")
+    nodes = {node["id"]: node for node in ir["nodes"]}
+    evidence = {item["id"]: item for item in ir["evidence"]}
+    snapshots = {
+        item["repository_id"]: {"revision": item["revision"], "revision_kind": item["revision_kind"]}
+        for item in ir["snapshots"]
+    }
+    seen = set()
+    for candidate in candidates:
+        def fail() -> None:
+            raise ValidationError("Invalid cross-repository candidate: identity, evidence, state, or revisions")
+
+        if not isinstance(candidate, dict):
+            fail()
+        if set(candidate) != {
+            "id", "type", "source", "target", "status", "classification",
+            "confidence", "reasons", "evidence_ids", "snapshots", "attributes",
+        }:
+            fail()
+        if not isinstance(candidate.get("source"), str) or not isinstance(candidate.get("target"), str):
+            fail()
+        source, target = nodes.get(candidate.get("source")), nodes.get(candidate.get("target"))
+        if source is None or target is None or source["type"] != "http_request" or target["type"] != "endpoint":
+            fail()
+        source_repo = source["attributes"].get("repository_id")
+        target_repo = target["attributes"].get("repository_id")
+        if source_repo == target_repo or source_repo not in snapshots or target_repo not in snapshots:
+            fail()
+        expected_id = semantic_id("candidate", "http", source["id"], target["id"])
+        if candidate.get("id") != expected_id or expected_id in seen:
+            fail()
+        seen.add(expected_id)
+        confidence = candidate.get("confidence")
+        if (candidate.get("type") != "http" or candidate.get("status") != "candidate"
+                or candidate.get("classification") != "inferred"
+                or type(confidence) not in (int, float) or not math.isfinite(confidence) or not 0 <= confidence < 1):
+            fail()
+        if candidate.get("snapshots") != {repo: snapshots[repo] for repo in (source_repo, target_repo)}:
+            fail()
+        required_evidence = set(source["evidence_ids"]) | set(target["evidence_ids"])
+        evidence_ids = candidate.get("evidence_ids")
+        if (not source["evidence_ids"] or not target["evidence_ids"] or not isinstance(evidence_ids, list)
+                or any(not isinstance(key, str) for key in evidence_ids)
+                or set(evidence_ids) != required_evidence):
+            fail()
+        if any(evidence[key]["repository_id"] != source_repo for key in source["evidence_ids"]):
+            fail()
+        if any(evidence[key]["repository_id"] != target_repo for key in target["evidence_ids"]):
+            fail()
+        reasons = candidate.get("reasons")
+        if not isinstance(reasons, list) or not reasons or any(not isinstance(reason, str) or reason not in {
+            "method-match", "literal-path-match", "template-path-match", "declared-server-origin-match"
+        } for reason in reasons):
+            fail()
+        attributes = candidate.get("attributes")
+        if not isinstance(attributes, dict) or set(attributes) != {"method", "path", "origin_supported"}:
+            fail()
+        path = attributes.get("path")
+        if (not isinstance(path, str) or not path.startswith("/") or path.startswith("//") or safe_url(path) != path
+                or attributes.get("method") != source["attributes"].get("http_method")
+                or not isinstance(attributes.get("origin_supported"), bool)):
+            fail()
+        if (attributes["origin_supported"] != ("declared-server-origin-match" in reasons)
+                or source["attributes"].get("http_method") != target["attributes"].get("http_method")):
+            fail()
+
+    # Field checks alone would accept a well-formed candidate whose path or origin does not
+    # match its endpoint. The stored matches must be exactly what discovery derives from the
+    # graph; decision state is validated separately.
+    def match_facts(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [{k: v for k, v in item.items() if k not in ("status", "confirmation")} for item in items]
+
+    if match_facts(candidates) != match_facts(discover_candidates(ir)):
+        raise ValidationError("Cross-repository candidates do not match the request and endpoint facts; run scan again")
 
 
 def validate_artifacts(config: ProjectConfig, ir: dict[str, Any]) -> list[str]:

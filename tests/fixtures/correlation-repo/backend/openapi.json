@@ -1,0 +1,14 @@
+{
+  "openapi": "3.1.0",
+  "info": {"title": "SmartCart", "version": "1"},
+  "servers": [{"url": "https://shop.example.invalid/api"}],
+  "paths": {
+    "/orders": {"get": {"responses": {"200": {"description": "OK"}}}},
+    "/orders/{orderId}": {"$ref": "#/components/pathItems/Order"}
+  },
+  "components": {
+    "pathItems": {
+      "Order": {"get": {"responses": {"200": {"description": "OK"}}}}
+    }
+  }
+}

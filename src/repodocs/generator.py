@@ -80,6 +80,7 @@ def render_markdown(ir: dict[str, Any]) -> str:
     )
     nodes = {node["id"]: node for node in ir["nodes"]}
     lines.extend(_render_analysis_sections(ir, nodes, evidence))
+    lines.extend(_render_candidate_section(ir, nodes, evidence))
     lines.extend(["", "## Observed relationships", ""])
     observed_relationships = [item for item in relationships if item.get("classification") == "observed"]
     if observed_relationships:
@@ -146,6 +147,36 @@ def render_markdown(ir: dict[str, Any]) -> str:
 
 def _cell(value: Any) -> str:
     return str(value).replace("|", "\\|").replace("\n", " ")
+
+
+def _render_candidate_section(
+    ir: dict[str, Any], nodes: dict[str, dict[str, Any]], evidence: dict[str, dict[str, Any]]
+) -> list[str]:
+    lines = ["", "## Cross-repository candidates (unconfirmed)", ""]
+    lines.append(
+        "These are inferred matches, not authoritative service links or observed traffic."
+        " All matches, including unique high-confidence ones, require explicit confirmation."
+        " Method/path agreement alone does not establish service ownership; competing matches are preserved."
+    )
+    candidates = ir.get("candidates", [])
+    if not candidates:
+        lines.extend(["", "No cross-repository candidates were discovered."])
+        return lines
+    lines.extend(["", "| Candidate | Request | Endpoint | Confidence | Basis | Revisions | Evidence |",
+                  "|---|---|---|---:|---|---|---|"])
+    for candidate in sorted(candidates, key=lambda item: item["id"]):
+        source, target = nodes[candidate["source"]], nodes[candidate["target"]]
+        revisions = ", ".join(
+            f"{_cell(repo)}: {item['revision_kind']} `{_cell(item['revision'])}`"
+            for repo, item in sorted(candidate["snapshots"].items())
+        )
+        refs = ", ".join(_evidence_ref(evidence, key) for key in candidate["evidence_ids"])
+        lines.append(
+            f"| `{candidate['id']}` (candidate) | {_cell(source['attributes']['repository_id'])}: {_cell(source['name'])} | "
+            f"{_cell(target['attributes']['repository_id'])}: {_cell(target['name'])} | {candidate['confidence']} | "
+            f"{_cell(', '.join(candidate['reasons']))} | {revisions} | {refs} |"
+        )
+    return lines
 
 
 def _evidence_ref(evidence: dict[str, dict[str, Any]], evidence_id: str) -> str:

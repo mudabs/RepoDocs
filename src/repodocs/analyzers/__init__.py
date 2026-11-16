@@ -240,8 +240,9 @@ def run_analyzers(
 def builtin_analyzers() -> tuple[Analyzer, ...]:
     """The trusted analyzers shipped with RepoDocs, in a stable order."""
 
+    from .openapi import OpenApiAnalyzer
     from .postgresql import PostgreSqlAnalyzer
     from .react import ReactAnalyzer
     from .spring_boot import SpringBootAnalyzer
 
-    return (PostgreSqlAnalyzer(), ReactAnalyzer(), SpringBootAnalyzer())
+    return (OpenApiAnalyzer(), PostgreSqlAnalyzer(), ReactAnalyzer(), SpringBootAnalyzer())

@@ -26,4 +26,8 @@ Issue #15 asks for a React adapter that extracts components, routes, API clients
 
 ## Consequences
 
+ADR-018 adds URL sanitization before request identity, attributes, names, and
+claims are created: userinfo, queries, and fragments are omitted. Imported
+axios/ky instance declarations also contribute evidence to their request sites.
+
 Request sites are declared targets, never observed traffic, and the generated documentation says so. Correlation can match `http_request` URLs and patterns against backend `endpoint` paths as candidates (ADR-003). JavaScript and TypeScript are read by a comment- and string-masking structural scanner, not a parser; quotes in operator position start strings and quotes after a word are JSX text, regex literals are not recognized, and what the scanner cannot classify is left out rather than guessed. The generated Markdown gains Routes, Outgoing HTTP requests, and Components sections, and the Services table summarizes whatever each adapter extracted. Schemas remain at version 1.0 because nothing is released (ADR-014).

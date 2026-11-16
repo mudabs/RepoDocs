@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..ir import claim_id, node_id, relationship_id
+from ..urls import safe_url
 from . import (
     CLASSIFICATION_OBSERVED,
     LIMITATION_AMBIGUOUS_REFERENCE,
@@ -819,24 +820,31 @@ class ReactAnalyzer:
 
     # ----------------------------------------------------------------- requests
     @staticmethod
-    def _own_instances(module: Module) -> dict[str, tuple[str, str | None]]:
-        """``const api = axios.create({ baseURL })`` style client instances declared in a module."""
+    def _own_instances(module: Module) -> dict[str, tuple[str, str | None, str, int, bool]]:
+        """``const api = axios.create({ baseURL })`` style client instances declared in a module.
+
+        The last element is true when a base URL option is present but is not a supported
+        literal. Such an instance has an unknown base, which is different from having none.
+        """
 
         masked = module.source.masked
-        instances: dict[str, tuple[str, str | None]] = {}
+        instances: dict[str, tuple[str, str | None, str, int, bool]] = {}
         for match in INSTANCE_CREATE.finditer(masked):
             client = "axios" if match.group(2).startswith("axios") else "ky"
             args_end = skip_balanced(masked, match.end() - 1, "(", ")")
             base_url = None
+            unresolved = False
             brace = masked.find("{", match.end(), args_end)
             if brace != -1:
                 fields = object_fields(masked, brace, skip_balanced(masked, brace, "{", "}"))
                 for key in ("baseURL", "prefixUrl"):
                     if key in fields:
                         token = module.source.string_at(fields[key][0])
-                        if token is not None and token.kind == "string":
-                            base_url = token.value
-            instances[match.group(1)] = (client, base_url)
+                        base_url = safe_url(token.value) if token is not None and token.kind == "string" else None
+                        unresolved = base_url is None
+            instances[match.group(1)] = (
+                client, base_url, module.file.path, module.source.line(match.start()), unresolved
+            )
         return instances
 
     def _requests(self, context: RepositoryContext, modules: dict[str, Module], result: AnalysisResult) -> None:
@@ -931,6 +939,16 @@ class ReactAnalyzer:
                                 )
                                 method = "ANY"
                 base_url = instances[instance][1] if instance else None
+                base_url_unresolved = instances[instance][4] if instance else False
+                url = safe_url(url)
+                if url is None:
+                    result.evidence.append(span)
+                    result.limitations.append(context.limitation(
+                        LIMITATION_UNSUPPORTED_CONSTRUCT,
+                        f"{module.file.path} line {line}: unsupported HTTP URL; target was not extracted.",
+                        [span["id"]],
+                    ))
+                    continue
                 # Identity includes the client instance and its base URL, so `api.get("/users")` and
                 # `admin.get("/users")` on instances with different base URLs stay distinct sites.
                 key = (method, url, client, instance or "", base_url or "")
@@ -951,6 +969,7 @@ class ReactAnalyzer:
                             "client": client,
                             "instance": instance,
                             "base_url": base_url,
+                            "base_url_unresolved": base_url_unresolved,
                             "module": module.file.path,
                             "lines": [],
                         },
@@ -959,6 +978,18 @@ class ReactAnalyzer:
                 )
                 site["attributes"]["lines"].append(line)
                 site["evidence_ids"].append(span["id"])
+                if instance:
+                    _, _, declaration_path, declaration_line, _ = instances[instance]
+                    declaration = context.span_evidence(declaration_path, declaration_line)
+                    result.evidence.append(declaration)
+                    site["evidence_ids"].append(declaration["id"])
+                    if base_url_unresolved:
+                        result.limitations.append(context.limitation(
+                            LIMITATION_RUNTIME_CONFIGURATION,
+                            f"{declaration_path} line {declaration_line}: client `{instance}` has a base URL that is "
+                            "not a supported literal; its relative request targets are unknown and are not correlated.",
+                            [declaration["id"]],
+                        ))
             for site in sites.values():
                 site["attributes"]["lines"] = sorted(set(site["attributes"]["lines"]))
                 site["evidence_ids"] = sorted(set(site["evidence_ids"]))

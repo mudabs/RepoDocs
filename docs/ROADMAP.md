@@ -21,7 +21,7 @@
 ## Phase 2: framework and multi-repository analysis
 - Analyzer contract with span evidence and reported limitations (ADR-015), the Spring Boot adapter, and the React adapter (ADR-016) are implemented.
 - Supported PostgreSQL static schema extraction is implemented (ADR-017): databases, tables, columns, keys, foreign keys, reported unsupported constructs, and inferred ORM table links.
-- Add the React repository and cross-repo candidate matching for the SmartCart system.
+- React/Spring Boot cross-repository HTTP candidate discovery is implemented with OpenAPI 3.0.x/3.1.x JSON input, semantic candidate IDs, snapshot/evidence bindings, conservative origin matching, URL sanitization, and explicitly unconfirmed documentation (ADR-018).
 - Persist confirmation overrides and add Mermaid ERD generation when evidence supports it.
 
 ## Phase 3: AI integration
