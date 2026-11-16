@@ -352,3 +352,91 @@ def test_gradle_detection_and_missing_application_class(tmp_path: Path, capsys) 
     }
     assert "Kotlin" not in json.dumps(ir["limitations"])
     assert_valid("system-ir-1.0.json", ir)
+
+
+# ------------------------------------------------------------------ limitation evidence
+POM = """<project>
+  <modelVersion>4.0.0</modelVersion>
+  <parent><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-parent</artifactId><version>3.2.5</version></parent>
+  <artifactId>widgets</artifactId>
+  <dependencies><dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-web</artifactId></dependency></dependencies>
+</project>
+"""
+WIDGET = """package app;
+
+import lombok.Data;
+import org.springframework.beans.factory.annotation.Value;
+
+@Component
+@Profile({"prod",
+          "staging"})
+@Data
+public class Widget {
+
+    @Value(
+        "#{systemProperties['region']}")
+    private String region;
+
+    @ConditionalOnProperty(name = "widgets.enabled")
+    public void configure() {
+    }
+}
+"""
+
+
+def limitation_spans(tmp_path: Path, capsys) -> dict[str, tuple[int, int]]:
+    root = tmp_path / "project"
+    java = root / "backend" / "src" / "main" / "java" / "app"
+    java.mkdir(parents=True)
+    (root / "backend" / "pom.xml").write_text(POM, encoding="utf-8")
+    (java / "App.java").write_text("package app;\n\n@SpringBootApplication\npublic class App {\n}\n", encoding="utf-8")
+    (java / "Widget.java").write_text(WIDGET, encoding="utf-8")
+    assert invoke(root, capsys, "init", "Widgets")[0] == 0
+    assert invoke(root, capsys, "add", "backend", "--id", "backend", "--destination")[0] == 0
+    assert invoke(root, capsys, "scan")[0] == 0
+    ir = read_ir(root)
+    evidence = {item["id"]: item for item in ir["evidence"]}
+    spans = {}
+    for limitation in ir["limitations"]:
+        if not limitation["message"].startswith("app.Widget"):
+            continue
+        record = evidence[limitation["evidence_ids"][0]]
+        assert record["path"].endswith("Widget.java") and record["kind"] == "span"
+        spans[limitation["message"].split(";")[0]] = (record["line_start"], record["line_end"])
+    return spans
+
+
+def test_limitations_cite_the_annotation_that_triggers_them(tmp_path: Path, capsys) -> None:
+    """The evidence must contain the annotation text, not the member line next to it."""
+
+    spans = limitation_spans(tmp_path, capsys)
+    lines = WIDGET.splitlines()
+
+    def first(needle: str) -> int:
+        return next(index for index, text in enumerate(lines, start=1) if needle in text)
+
+    # A class annotation that is not the first one, spanning two lines.
+    assert spans["app.Widget is annotated @Profile"] == (first("@Profile"), first("@Profile") + 1)
+    # Lombok is cited where @Data is, not at the first annotation on the class (@Component).
+    assert spans["app.Widget uses Lombok (@Data)"] == (first("@Data"), first("@Data"))
+    assert first("@Component") != first("@Data")
+    # A multi-line field annotation is cited from its first line to its last, not at the field declaration.
+    assert spans["app.Widget.region uses a SpEL expression in @Value"] == (first("@Value("), first("@Value(") + 1)
+    assert spans["app.Widget.region uses a SpEL expression in @Value"][1] < first("private String region")
+    # A method annotation.
+    assert spans["app.Widget.configure is annotated @ConditionalOnProperty"] == (first("@ConditionalOnProperty"),) * 2
+
+
+def test_the_fixture_limitations_contain_their_triggering_text(tmp_path: Path, capsys) -> None:
+    root, repository = spring_project(tmp_path, capsys)
+    assert invoke(root, capsys, "scan")[0] == 0
+    ir = read_ir(root)
+    evidence = {item["id"]: item for item in ir["evidence"]}
+    for needle, file in (("#{", "OrderService.java"), ("@Profile", "SecurityConfig.java")):
+        text = next(path for path in repository.rglob(file)).read_text(encoding="utf-8").splitlines()
+        cited = [
+            evidence[key]
+            for limitation in ir["limitations"] if limitation["kind"] == "runtime-configuration"
+            for key in limitation["evidence_ids"] if evidence[key]["path"].endswith(file)
+        ]
+        assert cited and any(needle in "\n".join(text[record["line_start"] - 1 : record["line_end"]]) for record in cited), file

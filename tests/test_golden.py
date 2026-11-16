@@ -134,13 +134,13 @@ def test_golden_files_hold_no_identifiers_or_hashes() -> None:
         assert not re.search(r"\b[0-9a-f]{40,64}\b", text), path
 
 
-def test_known_analyzer_gaps_are_recorded_in_the_baseline_not_hidden(report) -> None:
-    """Two Spring limitations cite the line next to the annotation that triggers them. The golden keeps the
-    correct line, so recall stays below 1 until the analyzer is fixed."""
+def test_spring_limitations_cite_the_annotation_that_triggers_them(report) -> None:
+    """The harness first recorded these as misses: the analyzer cited the line next to the @Value SpEL and
+    @Profile annotations. The golden never changed; the analyzer was fixed, and only the baseline moved."""
 
     spring = next(item for item in report["cases"] if item["name"] == "spring-boot")["limitations"]
-    assert spring["recall"] == 0.8
-    assert {(item["path"].rsplit("/", 1)[-1], item["line"]) for item in spring["missing"]} == {("OrderService.java", 17), ("SecurityConfig.java", 8)}
+    assert spring["recall"] == 1.0 and spring["precision"] == 1.0
+    assert spring["missing"] == [] and spring["unexpected"] == []
 
 
 # ------------------------------------------------------------------ the harness can fail
@@ -442,7 +442,7 @@ def test_runner_fails_when_the_report_differs_from_the_baseline(tmp_path, capsys
 def test_runner_summary_is_a_markdown_table(capsys) -> None:
     assert main([str(CASES_DIR), "--summary"]) == 0
     text = capsys.readouterr().out
-    assert text.startswith("## Golden-fixture evaluation") and "| spring-boot |" in text and "| 0.8 |" in text
+    assert text.startswith("## Golden-fixture evaluation") and "| spring-boot | 1 | 1 | 1 | 1 | 1 |" in text
     assert "n/a" in text
 
 

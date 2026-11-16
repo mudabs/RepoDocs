@@ -34,7 +34,7 @@ from . import (
     RepositoryContext,
 )
 from .config_files import read_properties_keys, read_yaml_keys
-from .java import JavaUnit, TypeDecl, annotation_values, generic_arguments, parse_java, strip_generics
+from .java import Annotation, JavaUnit, TypeDecl, annotation_values, generic_arguments, parse_java, strip_generics
 
 
 FRAMEWORK_NAME = "Spring Boot"
@@ -125,6 +125,12 @@ class ExtractedType:
     @property
     def package(self) -> str:
         return self.unit.package or ""
+
+
+def _annotation_end(annotation: Annotation) -> int:
+    """The last line of an annotation, which spans several lines when its arguments do."""
+
+    return annotation.line + annotation.args.count("\n")
 
 
 class SpringBootAnalyzer:
@@ -883,8 +889,8 @@ class SpringBootAnalyzer:
     def _scan_limitations(self, context: RepositoryContext, unit: JavaUnit, result: AnalysisResult) -> None:
         """Report runtime-dependent constructs anywhere in a unit, including non-stereotyped classes."""
 
-        def report(kind: str, line: int, message: str, symbol: str | None = None) -> None:
-            evidence = context.span_evidence(unit.path, line, symbol=symbol)
+        def report(kind: str, line: int, message: str, symbol: str | None = None, line_end: int | None = None) -> None:
+            evidence = context.span_evidence(unit.path, line, line_end, symbol=symbol)
             result.evidence.append(evidence)
             result.limitations.append(context.limitation(kind, message, [evidence["id"]]))
 
@@ -904,33 +910,44 @@ class SpringBootAnalyzer:
             break
         for decl in unit.types:
             qualified = unit.qualified(decl.name if decl.outer is None else f"{decl.outer}.{decl.name}")
-            lombok = sorted({a.simple_name for a in decl.annotations if a.simple_name in LOMBOK_ANNOTATIONS})
+            lombok_annotations = [a for a in decl.annotations if a.simple_name in LOMBOK_ANNOTATIONS]
+            lombok = sorted({a.simple_name for a in lombok_annotations})
             if lombok:
                 report(
                     LIMITATION_GENERATED_CODE,
-                    decl.first_line,
+                    lombok_annotations[0].line,
                     f"{qualified} uses Lombok ({', '.join('@' + name for name in lombok)}); generated members are not visible to static extraction.",
                     qualified,
+                    line_end=_annotation_end(lombok_annotations[0]),
                 )
-            if decl.has_annotation("Generated"):
-                report(LIMITATION_GENERATED_CODE, decl.first_line, f"{qualified} is marked @Generated; generated code is reported, not analyzed.", qualified)
-            members = [(decl.first_line, qualified, decl.annotations)]
-            members.extend((m.first_line, f"{qualified}.{m.name}", m.annotations) for m in decl.methods)
-            members.extend((f.line, f"{qualified}.{f.name}", f.annotations) for f in decl.fields)
-            for line, symbol, annotations in members:
+            generated = next((a for a in decl.annotations if a.simple_name == "Generated"), None)
+            if generated is not None:
+                report(
+                    LIMITATION_GENERATED_CODE,
+                    generated.line,
+                    f"{qualified} is marked @Generated; generated code is reported, not analyzed.",
+                    qualified,
+                    line_end=_annotation_end(generated),
+                )
+            members = [(qualified, decl.annotations)]
+            members.extend((f"{qualified}.{m.name}", m.annotations) for m in decl.methods)
+            members.extend((f"{qualified}.{f.name}", f.annotations) for f in decl.fields)
+            for symbol, annotations in members:
                 for annotation in annotations:
                     simple = annotation.simple_name
                     if simple == "Profile" or simple.startswith(CONDITIONAL_PREFIX):
                         report(
                             LIMITATION_RUNTIME_CONFIGURATION,
-                            line,
+                            annotation.line,
                             f"{symbol} is annotated @{simple}; whether it is active depends on runtime configuration.",
                             symbol,
+                            line_end=_annotation_end(annotation),
                         )
                     elif simple == "Value" and "#{" in annotation.args:
                         report(
                             LIMITATION_RUNTIME_CONFIGURATION,
-                            line,
+                            annotation.line,
                             f"{symbol} uses a SpEL expression in @Value; its value is evaluated at runtime.",
                             symbol,
+                            line_end=_annotation_end(annotation),
                         )

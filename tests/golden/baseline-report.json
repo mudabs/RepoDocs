@@ -244,38 +244,12 @@
       "failures": [],
       "limitations": {
         "expected": 10,
-        "matched": 8,
-        "missing": [
-          {
-            "kind": "runtime-configuration",
-            "line": 17,
-            "path": "src/main/java/com/smartcart/order/OrderService.java",
-            "repository": "backend"
-          },
-          {
-            "kind": "runtime-configuration",
-            "line": 8,
-            "path": "src/main/java/com/smartcart/config/SecurityConfig.java",
-            "repository": "backend"
-          }
-        ],
+        "matched": 10,
+        "missing": [],
         "observed": 10,
-        "precision": 0.8,
-        "recall": 0.8,
-        "unexpected": [
-          {
-            "kind": "runtime-configuration",
-            "line": 18,
-            "path": "src/main/java/com/smartcart/order/OrderService.java",
-            "repository": "backend"
-          },
-          {
-            "kind": "runtime-configuration",
-            "line": 7,
-            "path": "src/main/java/com/smartcart/config/SecurityConfig.java",
-            "repository": "backend"
-          }
-        ]
+        "precision": 1.0,
+        "recall": 1.0,
+        "unexpected": []
       },
       "name": "spring-boot",
       "nodes": {
