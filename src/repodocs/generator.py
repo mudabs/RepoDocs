@@ -9,6 +9,7 @@ from typing import Any
 
 from .common import canonical_json, sha256_text, write_json
 from .config import ProjectConfig
+from .erd import build_erd_model, render_erd
 from .errors import OwnershipError, SnapshotError
 from .ir import ir_hash
 from .snapshot import read_git_state
@@ -23,7 +24,11 @@ GENERATOR_VERSION = "1.0"
 # name so the manifest shows which files contain model output.
 AI_ARTIFACT = "architecture-ai.md"
 AI_GENERATOR_NAME = "repodocs-ai"
-OPTIONAL_ARTIFACT_GENERATORS = {AI_ARTIFACT: AI_GENERATOR_NAME}
+ERD_ARTIFACT = "erd.mmd"
+OPTIONAL_ARTIFACT_GENERATORS = {
+    AI_ARTIFACT: AI_GENERATOR_NAME,
+    ERD_ARTIFACT: GENERATOR_NAME,
+}
 
 # The fields that identify where generated output lives. Revision and tree state change
 # legitimately between runs and are deliberately not part of the identity.
@@ -380,6 +385,14 @@ def _render_database_section(ir: dict[str, Any], nodes: dict[str, dict[str, Any]
                 f"{'yes' if column.get('nullable', True) else 'no'} | {_cell(column.get('default') or '-')} | "
                 f"{key} | {attributes.get('repository_id', '')} |"
             )
+    erd_model = build_erd_model(ir)
+    if erd_model is not None and (erd_model.missing_keys or erd_model.unsupported_relationships):
+        lines.append("")
+        lines.extend(["### Schema diagnostics", ""])
+        for mk in erd_model.missing_keys:
+            lines.append(f"- **Missing key**: {mk}")
+        for ur in erd_model.unsupported_relationships:
+            lines.append(f"- **Unsupported relationship**: {ur}")
     return lines
 
 
@@ -632,6 +645,9 @@ def generate_docs(
         "architecture.md": render_markdown(ir),
         "architecture.mmd": render_mermaid(ir),
     }
+    erd_source = render_erd(ir)
+    if erd_source is not None:
+        contents[ERD_ARTIFACT] = erd_source
     for name, content in (optional or {}).items():
         if name not in OPTIONAL_ARTIFACT_GENERATORS:
             raise OwnershipError(f"Unknown optional artifact: {name}")
