@@ -134,6 +134,7 @@ HOSTILE_FILES = {
     "deeply nested package.json": {"package.json": "[" * DEPTH + "]" * DEPTH},
     "deeply nested React package.json": {"web/package.json": "[" * DEPTH + "]" * DEPTH, "web/App.jsx": "export default function A() { return null }"},
     "deeply nested package.json next to SQL": {"package.json": "[" * DEPTH + "]" * DEPTH, "db/migration/V1__x.sql": "CREATE TABLE t (id int);"},
+    "package.json that is valid JSON of the wrong shape": {"package.json": "[1, 2]", "web/package.json": "42", "app/package.json": "null"},
     "deeply nested pyproject.toml": {"pyproject.toml": "a = " + "[" * 5000 + "]" * 5000},
     "deeply nested XML": {"pom.xml": "<project>" + "<a>" * DEPTH + "</a>" * DEPTH + "</project>"},
     "deeply nested OpenAPI": {"openapi.json": '{"openapi":"3.0.0","info":{"title":"x","version":"1"},"paths":{},"x":' + "[" * DEPTH + "]" * DEPTH + "}"},

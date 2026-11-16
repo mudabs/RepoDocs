@@ -182,6 +182,8 @@ def _manifest_dependencies(path: Path) -> list[str]:
     try:
         if name == "package.json":
             data = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                return []
             result: list[str] = []
             for section in ("dependencies", "devDependencies", "peerDependencies"):
                 values = data.get(section, {})
