@@ -1,0 +1,42 @@
+name: Tests
+
+# Development CI for RepoDocs itself. It runs the complete pytest suite present in the
+# commit under test, so tests added by a pull request run automatically.
+# Uses pull_request (never pull_request_target): fork code runs without secrets or write access.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    # Check names are stable and used by branch protection: "test (ubuntu-latest, 3.11)" etc.
+    name: test (${{ matrix.os }}, ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.11", "3.14"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install project with test dependencies
+        run: python -m pip install -e ".[test]"
+      - name: Run the complete test suite
+        run: python -m pytest -ra

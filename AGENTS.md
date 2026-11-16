@@ -26,6 +26,7 @@ Build evidence-backed, maintainable documentation and diagrams for single- and m
 - Do not assume proposed CLI commands, schemas, packages, or hosted services already exist.
 - Before implementation, identify which decisions are settled and which require user approval.
 - Prefer small, testable vertical slices; add tests for parsers, provenance, diagram generation, and publication safety.
+- Behavior changes require relevant tests and bug fixes require regression coverage. The `Tests` workflow runs the full suite on Linux and Windows for every pull request to `main`; local runs supplement those checks.
 - When changing architecture, update `docs/DECISIONS.md` and affected documentation in the same PR.
 - Do not invent source relationships, runtime execution order, or coverage guarantees.
 - When uncertain, propose options and tradeoffs rather than silently making consequential choices.
