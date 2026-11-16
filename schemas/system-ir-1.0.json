@@ -64,7 +64,25 @@
         "type": {"const": "http"},
         "source": {"type": "string", "minLength": 1},
         "target": {"type": "string", "minLength": 1},
-        "status": {"const": "candidate"},
+        "status": {"enum": ["candidate", "confirmed", "rejected", "stale"]},
+        "confirmation": {
+          "type": "object", "required": ["decision", "snapshots"], "additionalProperties": false,
+          "description": "The recorded decision and the revisions it was made against. Present unless status is candidate; a stale status means the evidence changed since.",
+          "properties": {
+            "decision": {"enum": ["confirmed", "rejected"]},
+            "note": {"type": "string"},
+            "snapshots": {
+              "type": "object", "minProperties": 1,
+              "additionalProperties": {
+                "type": "object", "required": ["revision", "revision_kind"], "additionalProperties": false,
+                "properties": {
+                  "revision": {"type": "string", "minLength": 1},
+                  "revision_kind": {"$ref": "#/$defs/revision_kind"}
+                }
+              }
+            }
+          }
+        },
         "classification": {"const": "inferred"},
         "confidence": {"type": "number", "minimum": 0, "exclusiveMaximum": 1},
         "reasons": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {

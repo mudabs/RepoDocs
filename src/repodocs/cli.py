@@ -20,13 +20,29 @@ from .config import (
     stored_repository_path,
     validate_pinned_revision,
 )
+from .confirmations import (
+    DECISION_CONFIRMED,
+    DECISION_REJECTED,
+    STATUSES,
+    UNRESOLVED_STATUSES,
+    apply_decisions,
+    confirmations_path,
+    load_decisions,
+    orphaned_decisions,
+    record_decision,
+    save_decisions,
+    status_counts,
+    unresolved_candidates,
+)
 from .errors import (
+    EXIT_CONFIRMATION,
     EXIT_OK,
     EXIT_OWNERSHIP,
     EXIT_SNAPSHOT,
     EXIT_USAGE,
     EXIT_VALIDATION,
     ConfigError,
+    ConfirmationError,
     OwnershipError,
     RepoDocsError,
     SnapshotError,
@@ -36,7 +52,7 @@ from .generator import generate_docs
 from .ir import write_ir
 from .scanner import scan_project
 from .snapshot import SNAPSHOT_MODE_LOCAL, SNAPSHOT_MODES
-from .validation import load_ir, validate_ir, validate_project
+from .validation import load_ir, validate_candidate_states, validate_ir, validate_project
 
 
 OUTPUT_SCHEMA_VERSION = "1.0"
@@ -152,6 +168,7 @@ def _parse_pins(values: list[str] | None) -> dict[str, str]:
 def _cmd_scan(args: argparse.Namespace) -> int:
     config = ProjectConfig.load(_root(args))
     ir, warnings = scan_project(config, mode=args.snapshot_mode, pins=_parse_pins(args.pins))
+    apply_decisions(ir, load_decisions(config.root))
     validate_ir(ir)
     config.internal_path.mkdir(parents=True, exist_ok=True)
     ir_path = config.internal_path / "ir.json"
@@ -178,6 +195,7 @@ def _cmd_scan(args: argparse.Namespace) -> int:
             "claims": len(ir["claims"]),
             "limitations": len(ir["limitations"]),
             "candidates": len(ir["candidates"]),
+            "candidate_states": status_counts(ir),
             "analyzers": ir["provenance"]["analyzers"],
         },
         warnings=warnings,
@@ -187,8 +205,9 @@ def _cmd_scan(args: argparse.Namespace) -> int:
 
 def _cmd_generate(args: argparse.Namespace) -> int:
     config = ProjectConfig.load(_root(args))
-    ir = load_ir(config.internal_path / "ir.json")
-    validate_ir(ir)
+    ir = _load_scanned_ir(config)
+    # Never render a decision the confirmations file no longer records.
+    validate_candidate_states(config, ir)
     result = generate_docs(config, ir)
     _emit(
         "generate",
@@ -205,11 +224,96 @@ def _cmd_generate(args: argparse.Namespace) -> int:
 
 def _cmd_validate(args: argparse.Namespace) -> int:
     config = ProjectConfig.load(_root(args))
-    artifacts = validate_project(config)
+    artifacts, ir = validate_project(config)
+    unresolved = unresolved_candidates(ir)
+    if unresolved and not args.allow_unresolved:
+        shown = ", ".join(item["id"] for item in unresolved[:10])
+        raise ConfirmationError(
+            f"{len(unresolved)} cross-repository candidate(s) require confirmation or rejection "
+            f"(unresolved or stale): {shown}{', ...' if len(unresolved) > 10 else ''}; "
+            "list them with `repodocs candidates`"
+        )
     _emit(
         "validate",
         ok=True,
-        data={"destination": config.destination().id, "artifacts": artifacts},
+        data={
+            "destination": config.destination().id,
+            "artifacts": artifacts,
+            "candidate_states": status_counts(ir),
+        },
+    )
+    return EXIT_OK
+
+
+def _candidate_summary(candidate: dict[str, Any], nodes: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    def side(node_id: str) -> dict[str, Any]:
+        node = nodes[node_id]
+        return {"id": node_id, "repository_id": node["attributes"].get("repository_id"), "name": node["name"]}
+
+    summary = {
+        "id": candidate["id"],
+        "status": candidate["status"],
+        "confidence": candidate["confidence"],
+        "reasons": candidate["reasons"],
+        "method": candidate["attributes"]["method"],
+        "path": candidate["attributes"]["path"],
+        "source": side(candidate["source"]),
+        "target": side(candidate["target"]),
+        "snapshots": candidate["snapshots"],
+    }
+    if "confirmation" in candidate:
+        summary["confirmation"] = candidate["confirmation"]
+    return summary
+
+
+def _load_scanned_ir(config: ProjectConfig) -> dict[str, Any]:
+    ir = load_ir(config.internal_path / "ir.json")
+    validate_ir(ir)
+    return ir
+
+
+def _cmd_candidates(args: argparse.Namespace) -> int:
+    config = ProjectConfig.load(_root(args))
+    ir = _load_scanned_ir(config)
+    validate_candidate_states(config, ir)
+    wanted = UNRESOLVED_STATUSES if args.status == "unresolved" else STATUSES if args.status == "all" else (args.status,)
+    nodes = {node["id"]: node for node in ir["nodes"]}
+    _emit(
+        "candidates",
+        ok=True,
+        data={
+            "status": args.status,
+            "candidate_states": status_counts(ir),
+            "candidates": [_candidate_summary(item, nodes) for item in ir["candidates"] if item["status"] in wanted],
+            "orphaned_decisions": orphaned_decisions(ir, load_decisions(config.root)),
+        },
+    )
+    return EXIT_OK
+
+
+def _cmd_decide(args: argparse.Namespace) -> int:
+    """Record confirm or reject decisions for candidates in the current scan, all or nothing."""
+
+    config = ProjectConfig.load(_root(args))
+    ir = _load_scanned_ir(config)
+    decisions = load_decisions(config.root)
+    # Start from the states the current file produces, in case it was edited since the scan.
+    apply_decisions(ir, decisions)
+    decision = DECISION_CONFIRMED if args.command == "confirm" else DECISION_REJECTED
+    for candidate_id in args.candidate_ids:
+        record_decision(ir, decisions, candidate_id, decision, args.note)
+    save_decisions(config.root, decisions)
+    apply_decisions(ir, decisions)
+    write_ir(config.internal_path / "ir.json", ir)
+    _emit(
+        args.command,
+        ok=True,
+        data={
+            "decision": decision,
+            "candidate_ids": sorted(set(args.candidate_ids)),
+            "confirmations": confirmations_path(config.root).as_posix(),
+            "candidate_states": status_counts(ir),
+        },
     )
     return EXIT_OK
 
@@ -276,12 +380,38 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     scan_parser.set_defaults(handler=_cmd_scan)
 
-    for name, handler, help_text in (
-        ("generate", _cmd_generate, "Generate deterministic documentation into the destination"),
-        ("validate", _cmd_validate, "Validate IR and generated artifacts"),
+    generate_parser = subparsers.add_parser(
+        "generate", help="Generate deterministic documentation into the destination"
+    )
+    generate_parser.set_defaults(handler=_cmd_generate)
+
+    validate_parser = subparsers.add_parser(
+        "validate", help="Validate IR, generated artifacts, and required confirmations"
+    )
+    validate_parser.add_argument(
+        "--allow-unresolved",
+        action="store_true",
+        help="Do not fail with exit code 5 while cross-repository candidates are unresolved or stale",
+    )
+    validate_parser.set_defaults(handler=_cmd_validate)
+
+    candidates_parser = subparsers.add_parser("candidates", help="List cross-repository candidates from the last scan")
+    candidates_parser.add_argument(
+        "--status",
+        default="unresolved",
+        choices=("unresolved", *STATUSES, "all"),
+        help="unresolved (default) lists candidates without a decision and stale decisions",
+    )
+    candidates_parser.set_defaults(handler=_cmd_candidates)
+
+    for name, help_text in (
+        ("confirm", "Confirm cross-repository candidates as authoritative links"),
+        ("reject", "Reject cross-repository candidates"),
     ):
-        command_parser = subparsers.add_parser(name, help=help_text)
-        command_parser.set_defaults(handler=handler)
+        decide_parser = subparsers.add_parser(name, help=help_text)
+        decide_parser.add_argument("candidate_ids", nargs="+", metavar="CANDIDATE_ID")
+        decide_parser.add_argument("--note", help="Reason recorded with the decision")
+        decide_parser.set_defaults(handler=_cmd_decide)
     return parser
 
 
@@ -296,6 +426,9 @@ def main(argv: list[str] | None = None) -> int:
     except OwnershipError as exc:
         _emit(args.command, ok=False, errors=[str(exc)])
         return EXIT_OWNERSHIP
+    except ConfirmationError as exc:
+        _emit(args.command, ok=False, errors=[str(exc)])
+        return EXIT_CONFIRMATION
     except ValidationError as exc:
         _emit(args.command, ok=False, errors=[str(exc)])
         return EXIT_VALIDATION

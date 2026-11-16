@@ -27,6 +27,10 @@ class ValidationError(RepoDocsError):
     """Persisted state or generated output failed validation."""
 
 
+class ConfirmationError(RepoDocsError):
+    """Required cross-repository confirmations are unresolved."""
+
+
 EXIT_OK = 0
 EXIT_USAGE = 2
 EXIT_VALIDATION = 3

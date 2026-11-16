@@ -7,10 +7,10 @@ Milestone 1 CLI commands below are implemented. GitHub Actions, hosted UI, and a
 2. `repodocs init smartcart`.
 3. `repodocs add ./smartcart-frontend` and `repodocs add ./smartcart-backend`, then register the coordination repository that receives generated system documentation with `repodocs add . --id docs --role destination` (or mark a single source repository with `--destination`).
 4. `repodocs scan` produces versioned JSON findings with source evidence and uncertainty. The default local snapshot mode includes uncommitted changes and records whether evidence resolves to a commit or to a working-tree fingerprint.
-5. Inspect `candidates` in the persisted IR and the scan response's candidate count. Generated Markdown lists every frontend-to-backend match as unconfirmed, with evidence, confidence, and both snapshot revisions. Confirmation/rejection commands, stale-confirmation handling, and unresolved-confirmation CI failures are planned in #18, not implemented by discovery.
+5. Inspect `candidates` in the persisted IR and the scan response's candidate count. Generated Markdown lists every frontend-to-backend match as unconfirmed, with evidence, confidence, and both snapshot revisions. List them with `repodocs candidates`, then run `repodocs confirm <id>` or `repodocs reject <id>`; decisions are stored in `repodocs.confirmations.json` with the evidence and revisions they were made against, and become stale when that evidence changes.
 6. Give explicit consent before sending repository content to the cloud BYO provider, configure redaction, or use local Ollama/local-only deterministic mode.
 7. `repodocs generate` selects the current deterministic architecture/component output; interactive scope selection and ERD/API expansion follow in later milestones.
-8. `repodocs validate` checks diagrams, references, artifact ownership, and required confirmations.
+8. `repodocs validate` checks diagrams, references, artifact ownership, and required confirmations; it exits with code 5 while any candidate is unresolved or stale.
 9. Review local Markdown and Mermaid files.
 10. Full-project regeneration skips a no-op; commit manually or publish system documentation through the coordination repository.
 

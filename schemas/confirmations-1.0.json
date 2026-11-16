@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://repodocs.dev/schemas/confirmations-1.0.json",
+  "title": "RepoDocs cross-repository candidate decisions",
+  "description": "Human confirmation and rejection decisions, each bound to the evidence and repository revisions it was made against.",
+  "type": "object",
+  "required": ["schema_version", "decisions"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "decisions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["candidate_id", "decision", "source", "target", "evidence_ids", "snapshots"],
+        "additionalProperties": false,
+        "properties": {
+          "candidate_id": {"type": "string", "minLength": 1},
+          "decision": {"enum": ["confirmed", "rejected"]},
+          "source": {"type": "string", "minLength": 1},
+          "target": {"type": "string", "minLength": 1},
+          "evidence_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+          "snapshots": {
+            "type": "object",
+            "minProperties": 1,
+            "additionalProperties": {
+              "type": "object",
+              "required": ["revision", "revision_kind"],
+              "additionalProperties": false,
+              "properties": {
+                "revision": {"type": "string", "minLength": 1},
+                "revision_kind": {"enum": ["commit", "content"]}
+              }
+            }
+          },
+          "note": {"type": "string"}
+        }
+      }
+    }
+  }
+}
