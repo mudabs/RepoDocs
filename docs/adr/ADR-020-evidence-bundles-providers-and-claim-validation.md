@@ -42,4 +42,9 @@ ADR-004 settles one BYO cloud provider plus Ollama behind a provider-neutral ada
 
 ## Consequences
 
+ADR-021 extends generation and validation to load current stored claims only when
+an optional AI artifact is present. Inference additionally requires subject-bound
+evidence; multi-repository claims explicitly name a confirmed candidate. Malformed
+or stale optional claims cannot prevent deterministic generation.
+
 The deterministic workflow is unchanged and needs no key, network, or extra dependency. Bundles carry facts, not code, so a model cannot explain implementation details that analysis did not extract; adding curated snippets later would need a new bundle version and a fresh consent decision. Redaction is pattern-based and cannot be proven complete, which is why bundles exclude source text and can be reviewed first. Validation checks that citations exist, not that the cited evidence semantically supports the sentence; issue #20's golden-fixture measurement addresses that. One bundle is sent per request with no chunking, so very large systems may exceed a model's context and will need bundle scoping.

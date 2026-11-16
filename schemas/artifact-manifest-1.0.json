@@ -35,7 +35,10 @@
           "path": {"type": "string", "minLength": 1},
           "content_hash": {"type": "string", "minLength": 1},
           "source_ir_hash": {"type": "string", "minLength": 1},
-          "generator": {"type": "string", "minLength": 1},
+          "generator": {
+            "enum": ["repodocs-deterministic", "repodocs-ai"],
+            "description": "repodocs-ai marks an artifact rendered from validated model claims; every other artifact contains no model output."
+          },
           "generator_version": {"type": "string", "minLength": 1}
         },
         "additionalProperties": false

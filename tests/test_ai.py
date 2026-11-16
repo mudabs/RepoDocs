@@ -170,7 +170,9 @@ def test_duplicate_claims_never_lose_uncertainty_whatever_the_order(tmp_path, ca
         results.append(accepted)
     assert results[0] == results[1]
     by_subject = {tuple(item["subject_ids"]): item["classification"] for item in results[0]}
-    assert by_subject == {(candidate["id"],): "proposed", (request["id"],): "inferred"}
+    # A node-only description with multi-repository evidence cannot bypass the
+    # unconfirmed candidate it declined to name.
+    assert by_subject == {(candidate["id"],): "proposed", (request["id"],): "proposed"}
     assert len({item["id"] for item in results[0]}) == 2
 
     # An exact duplicate with conflicting labels keeps the cautious one in either order.

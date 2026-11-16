@@ -19,6 +19,12 @@ MANIFEST_FILENAME = "artifact-manifest.json"
 GENERATOR_NAME = "repodocs-deterministic"
 GENERATOR_VERSION = "1.0"
 
+# Optional artifacts are generated only when their input exists. Each has its own generator
+# name so the manifest shows which files contain model output.
+AI_ARTIFACT = "architecture-ai.md"
+AI_GENERATOR_NAME = "repodocs-ai"
+OPTIONAL_ARTIFACT_GENERATORS = {AI_ARTIFACT: AI_GENERATOR_NAME}
+
 # The fields that identify where generated output lives. Revision and tree state change
 # legitimately between runs and are deliberately not part of the identity.
 DESTINATION_IDENTITY_FIELDS = ("repository_id", "role", "path", "output_directory")
@@ -561,7 +567,7 @@ def _preflight(output_dir: Path, manifest: dict[str, Any] | None, planned: set[s
             )
         return
     existing_entries = {item["path"]: item for item in manifest.get("artifacts", [])}
-    unexpected_manifest = set(existing_entries) - planned
+    unexpected_manifest = set(existing_entries) - planned - set(OPTIONAL_ARTIFACT_GENERATORS)
     if unexpected_manifest:
         raise OwnershipError(
             "Artifact manifest contains unexpected paths: " + ", ".join(sorted(unexpected_manifest))
@@ -570,6 +576,8 @@ def _preflight(output_dir: Path, manifest: dict[str, Any] | None, planned: set[s
     if unexpected_files:
         raise OwnershipError("Generated output contains unowned files: " + ", ".join(sorted(unexpected_files)))
     for relative_path, entry in existing_entries.items():
+        if relative_path in OPTIONAL_ARTIFACT_GENERATORS and entry.get("generator") != OPTIONAL_ARTIFACT_GENERATORS[relative_path]:
+            raise OwnershipError(f"Artifact manifest mislabels optional output: {relative_path}")
         path = output_dir / relative_path
         if path.exists():
             current_hash = sha256_text(path.read_text(encoding="utf-8"))
@@ -591,7 +599,7 @@ def _manifest(ir: dict[str, Any], destination: dict[str, Any], artifact_contents
                 "path": path,
                 "content_hash": sha256_text(content),
                 "source_ir_hash": source_hash,
-                "generator": GENERATOR_NAME,
+                "generator": OPTIONAL_ARTIFACT_GENERATORS.get(path, GENERATOR_NAME),
                 "generator_version": GENERATOR_VERSION,
             }
             for path, content in sorted(artifact_contents.items())
@@ -599,7 +607,15 @@ def _manifest(ir: dict[str, Any], destination: dict[str, Any], artifact_contents
     }
 
 
-def generate_docs(config: ProjectConfig, ir: dict[str, Any]) -> GenerationResult:
+def generate_docs(
+    config: ProjectConfig, ir: dict[str, Any], optional: dict[str, str] | None = None
+) -> GenerationResult:
+    """Write the deterministic artifacts plus any optional ones supplied for this run.
+
+    An optional artifact that was generated before and is not supplied now is removed, so
+    output never keeps a document whose input is gone or out of date.
+    """
+
     destination = describe_destination(config)
     output_dir = config.output_path
     path_to_manifest = manifest_path(config)
@@ -616,10 +632,19 @@ def generate_docs(config: ProjectConfig, ir: dict[str, Any]) -> GenerationResult
         "architecture.md": render_markdown(ir),
         "architecture.mmd": render_mermaid(ir),
     }
+    for name, content in (optional or {}).items():
+        if name not in OPTIONAL_ARTIFACT_GENERATORS:
+            raise OwnershipError(f"Unknown optional artifact: {name}")
+        contents[name] = content
     _preflight(output_dir, manifest, set(contents))
     output_dir.mkdir(parents=True, exist_ok=True)
     new_manifest = _manifest(ir, destination, contents)
     changed = False
+    # _preflight has verified that owned files are unedited, so a retired one is safe to remove.
+    for name in set(OPTIONAL_ARTIFACT_GENERATORS) - set(contents):
+        if (output_dir / name).exists():
+            (output_dir / name).unlink()
+            changed = True
     for relative_path, content in contents.items():
         path = output_dir / relative_path
         if not path.exists() or path.read_text(encoding="utf-8") != content:

@@ -64,6 +64,12 @@ def validate_claims(raw: Any, bundle: dict[str, Any]) -> tuple[list[dict[str, An
     evidence_ids = {item["id"] for item in bundle["evidence"]}
     candidate_status = {item["id"]: item["status"] for item in bundle["candidates"]}
     subject_ids = {item["id"] for item in bundle["nodes"]} | {item["id"] for item in bundle["relationships"]} | set(candidate_status)
+    subject_evidence = {
+        item["id"]: set(item["evidence_ids"])
+        for group in ("nodes", "relationships", "candidates") for item in bundle[group]
+    }
+    evidence_repositories = {item["id"]: item["repository_id"] for item in bundle["evidence"]}
+    confirmed = {item["id"]: item for item in bundle["candidates"] if item["status"] == "confirmed"}
     accepted: dict[str, dict[str, Any]] = {}
     rejected: list[dict[str, str]] = []
 
@@ -98,8 +104,21 @@ def validate_claims(raw: Any, bundle: dict[str, Any]) -> tuple[list[dict[str, An
             reject(text, "unknown-subject")
             continue
         unconfirmed = any(candidate_status.get(item, "confirmed") != "confirmed" for item in subjects)
-        # Without evidence, or about an unconfirmed candidate, a claim is only ever a proposal.
-        if not cited or unconfirmed:
+        # Citations must belong to the subjects being interpreted, not merely
+        # exist somewhere in the bundle. This is structural grounding, not a
+        # semantic proof of arbitrary model wording.
+        grounded = bool(subjects and cited) and all(subject_evidence[item] & set(cited) for item in subjects)
+        allowed_evidence = set().union(*(subject_evidence[item] for item in subjects))
+        grounded = grounded and set(cited) <= allowed_evidence
+        repositories = {evidence_repositories[item] for item in cited}
+        # Naming two endpoints (or only a frontend node) must not bypass a
+        # candidate's unconfirmed state. Multi-repo interpretations require a
+        # cited, confirmed candidate with evidence from both sides.
+        cross_repo_supported = len(repositories) <= 1 or any(
+            key in confirmed and set(confirmed[key]["evidence_ids"]) <= set(cited)
+            for key in subjects
+        )
+        if not grounded or unconfirmed or not cross_repo_supported:
             classification = CLASSIFICATION_PROPOSED
         text = redact_text(text.strip())[0]
         # Identity covers subjects too, so the same sentence about a different subject is a

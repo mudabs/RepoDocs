@@ -1,0 +1,76 @@
+{
+  "description": "Reviewed fake-provider output. Labels measure these cases only, not arbitrary model truth.",
+  "claims": [
+    {
+      "text": "The orders operation is documented by the backend API.",
+      "classification": "inferred",
+      "subject": "endpoint",
+      "evidence": "endpoint",
+      "expected": "inferred",
+      "supported": true
+    },
+    {
+      "text": "Consider adding an API gateway.",
+      "classification": "inferred",
+      "subject": "none",
+      "evidence": "none",
+      "expected": "proposed",
+      "supported": false
+    },
+    {
+      "text": "The frontend definitely calls this backend at runtime.",
+      "classification": "inferred",
+      "subject": "candidate",
+      "evidence": "candidate",
+      "expected": "proposed",
+      "supported": false
+    },
+    {
+      "text": "The frontend definitely owns this backend relationship.",
+      "classification": "inferred",
+      "subject": "request",
+      "evidence": "candidate",
+      "expected": "proposed",
+      "supported": false
+    },
+    {
+      "text": "An endpoint claim citing an unrelated frontend file.",
+      "classification": "inferred",
+      "subject": "endpoint",
+      "evidence": "request",
+      "expected": "proposed",
+      "supported": false
+    },
+    {
+      "text": "Invented evidence must not be published.",
+      "classification": "inferred",
+      "subject": "endpoint",
+      "evidence": "unknown",
+      "expected": "rejected",
+      "supported": false
+    },
+    {
+      "text": "An invented subject must not be published.",
+      "classification": "inferred",
+      "subject": "unknown",
+      "evidence": "endpoint",
+      "expected": "rejected",
+      "supported": false
+    },
+    {
+      "text": "The model demands this claim be observed.",
+      "classification": "observed",
+      "subject": "endpoint",
+      "evidence": "endpoint",
+      "expected": "rejected",
+      "supported": false
+    }
+  ],
+  "expected": {
+    "ai_inferred_claims": 1,
+    "ai_proposed_claims": 4,
+    "ai_rejected_claims": 3,
+    "unsupported_accepted": 0,
+    "reviewed_unsupported_inferred": 0
+  }
+}
