@@ -1,0 +1,68 @@
+{
+  "schema_version": "1.0",
+  "name": "smartcart-correlation",
+  "description": "A React frontend and two OpenAPI backends. Expectations were derived by reading the fixture sources, the base URL and path rules of ADR-018, and the node conventions of ADR-016. Disclosure: the tool's node names and candidate list for this fixture had been seen while the project was built, so agreement here is weak evidence of independence; the spring-boot and postgres cases were written before any output was compared. Node types listed under nodes and relationships are enumerated completely.",
+  "repositories": [
+    {"id": "frontend", "path": "../../fixtures/correlation-repo/frontend"},
+    {"id": "backend", "path": "../../fixtures/correlation-repo/backend"},
+    {"id": "competing", "path": "../../fixtures/correlation-repo/competing"}
+  ],
+  "closed": {"limitations": true},
+  "nodes": [
+    {"type": "framework", "repository": "frontend", "name": "React"},
+    {"type": "component", "repository": "frontend", "name": "App"},
+    {"type": "module", "repository": "frontend", "name": "src/App.tsx"},
+    {"type": "module", "repository": "frontend", "name": "src/client.ts"},
+    {"type": "http_request", "repository": "frontend", "name": "GET /orders"},
+    {"type": "http_request", "repository": "frontend", "name": "GET /orders/{id}"},
+    {"type": "http_request", "repository": "frontend", "name": "DELETE /orders"},
+    {"type": "http_request", "repository": "frontend", "name": "GET https://other.example.invalid/api/orders"},
+    {"type": "http_request", "repository": "frontend", "name": "GET /api/orders"},
+    {"type": "http_request", "repository": "frontend", "name": "GET https://shop.example.invalid/api/orders"},
+    {"type": "endpoint", "repository": "backend", "name": "GET /orders"},
+    {"type": "endpoint", "repository": "backend", "name": "GET /orders/{orderId}"},
+    {"type": "endpoint", "repository": "competing", "name": "GET /orders"}
+  ],
+  "relationships": [
+    {"type": "requests", "source": {"type": "module", "repository": "frontend", "name": "src/App.tsx"}, "target": {"type": "http_request", "repository": "frontend", "name": "GET /orders"}},
+    {"type": "requests", "source": {"type": "module", "repository": "frontend", "name": "src/App.tsx"}, "target": {"type": "http_request", "repository": "frontend", "name": "GET /orders/{id}"}},
+    {"type": "requests", "source": {"type": "module", "repository": "frontend", "name": "src/App.tsx"}, "target": {"type": "http_request", "repository": "frontend", "name": "DELETE /orders"}},
+    {"type": "requests", "source": {"type": "module", "repository": "frontend", "name": "src/App.tsx"}, "target": {"type": "http_request", "repository": "frontend", "name": "GET https://other.example.invalid/api/orders"}},
+    {"type": "requests", "source": {"type": "module", "repository": "frontend", "name": "src/App.tsx"}, "target": {"type": "http_request", "repository": "frontend", "name": "GET /api/orders"}},
+    {"type": "requests", "source": {"type": "module", "repository": "frontend", "name": "src/App.tsx"}, "target": {"type": "http_request", "repository": "frontend", "name": "GET https://shop.example.invalid/api/orders"}}
+  ],
+  "evidence": [
+    {"subject": {"type": "http_request", "repository": "frontend", "name": "GET /orders"}, "path": "src/App.tsx", "line": 5},
+    {"subject": {"type": "http_request", "repository": "frontend", "name": "GET /orders"}, "path": "src/client.ts", "line": 4},
+    {"subject": {"type": "http_request", "repository": "frontend", "name": "GET /orders/{id}"}, "path": "src/App.tsx", "line": 6},
+    {"subject": {"type": "http_request", "repository": "frontend", "name": "DELETE /orders"}, "path": "src/App.tsx", "line": 7},
+    {"subject": {"type": "http_request", "repository": "frontend", "name": "GET https://other.example.invalid/api/orders"}, "path": "src/App.tsx", "line": 8},
+    {"subject": {"type": "http_request", "repository": "frontend", "name": "GET /api/orders"}, "path": "src/App.tsx", "line": 9},
+    {"subject": {"type": "http_request", "repository": "frontend", "name": "GET https://shop.example.invalid/api/orders"}, "path": "src/App.tsx", "line": 10},
+    {"subject": {"type": "endpoint", "repository": "backend", "name": "GET /orders"}, "path": "openapi.json"},
+    {"subject": {"type": "endpoint", "repository": "backend", "name": "GET /orders/{orderId}"}, "path": "openapi.json"},
+    {"subject": {"type": "endpoint", "repository": "competing", "name": "GET /orders"}, "path": "openapi.json"}
+  ],
+  "limitations": [],
+  "candidates": {
+    "expected": [
+      {"request": {"type": "http_request", "repository": "frontend", "name": "GET /orders"}, "endpoint": {"type": "endpoint", "repository": "backend", "name": "GET /orders"}, "confidence": 0.9},
+      {"request": {"type": "http_request", "repository": "frontend", "name": "GET /orders/{id}"}, "endpoint": {"type": "endpoint", "repository": "backend", "name": "GET /orders/{orderId}"}, "confidence": 0.9},
+      {"request": {"type": "http_request", "repository": "frontend", "name": "GET /api/orders"}, "endpoint": {"type": "endpoint", "repository": "backend", "name": "GET /orders"}, "confidence": 0.65},
+      {"request": {"type": "http_request", "repository": "frontend", "name": "GET /api/orders"}, "endpoint": {"type": "endpoint", "repository": "competing", "name": "GET /orders"}, "confidence": 0.65},
+      {"request": {"type": "http_request", "repository": "frontend", "name": "GET https://shop.example.invalid/api/orders"}, "endpoint": {"type": "endpoint", "repository": "backend", "name": "GET /orders"}, "confidence": 0.9}
+    ],
+    "absent": [
+      {"request": {"type": "http_request", "repository": "frontend", "name": "DELETE /orders"}, "endpoint": null},
+      {"request": {"type": "http_request", "repository": "frontend", "name": "GET https://other.example.invalid/api/orders"}, "endpoint": null},
+      {"request": {"type": "http_request", "repository": "frontend", "name": "GET /orders"}, "endpoint": {"type": "endpoint", "repository": "competing", "name": "GET /orders"}},
+      {"request": {"type": "http_request", "repository": "frontend", "name": "GET https://shop.example.invalid/api/orders"}, "endpoint": {"type": "endpoint", "repository": "competing", "name": "GET /orders"}}
+    ]
+  },
+  "diagrams": {
+    "artifacts": [
+      "architecture.mmd"
+    ]
+  },
+  "ai": {"claims": "../../fixtures/ai-architecture/golden.json"}
+}

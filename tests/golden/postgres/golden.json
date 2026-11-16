@@ -1,0 +1,48 @@
+{
+  "schema_version": "1.0",
+  "name": "postgres",
+  "description": "Flyway-style PostgreSQL migrations. Expectations were derived by applying V1, V2, and V3 by hand. Partitions are tables with a partition parent (ADR-017 table node; the fixture README lists a partitioned table as handled), and the PARTITION BY parent is reported as a limitation because the partition strategy is not modeled. temp_stuff is dropped and audit_log is renamed. Tables and foreign-key edges are enumerated completely. ADR-017 does not name a kind for an ALTER of an undefined table, so that case uses ambiguous-reference, the kind it defines for references to tables the sources do not describe.",
+  "repositories": [
+    {"id": "database", "path": "../../fixtures/postgres-repo"}
+  ],
+  "closed": {"limitations": true},
+  "nodes": [
+    {"type": "table", "repository": "database", "name": "customers"},
+    {"type": "table", "repository": "database", "name": "orders"},
+    {"type": "table", "repository": "database", "name": "order_items"},
+    {"type": "table", "repository": "database", "name": "billing.invoices"},
+    {"type": "table", "repository": "database", "name": "audit_entries"},
+    {"type": "table", "repository": "database", "name": "events"},
+    {"type": "table", "repository": "database", "name": "events_2024"}
+  ],
+  "relationships": [
+    {"type": "references", "classification": "observed", "source": {"type": "table", "repository": "database", "name": "orders"}, "target": {"type": "table", "repository": "database", "name": "customers"}},
+    {"type": "references", "classification": "observed", "source": {"type": "table", "repository": "database", "name": "order_items"}, "target": {"type": "table", "repository": "database", "name": "orders"}},
+    {"type": "references", "classification": "observed", "source": {"type": "table", "repository": "database", "name": "billing.invoices"}, "target": {"type": "table", "repository": "database", "name": "orders"}}
+  ],
+  "evidence": [
+    {"subject": {"type": "table", "repository": "database", "name": "customers"}, "path": "db/migration/V1__init.sql", "line": 7},
+    {"subject": {"type": "table", "repository": "database", "name": "orders"}, "path": "db/migration/V1__init.sql", "line": 14},
+    {"subject": {"type": "table", "repository": "database", "name": "order_items"}, "path": "db/migration/V2__order_items.sql", "line": 1},
+    {"subject": {"type": "table", "repository": "database", "name": "billing.invoices"}, "path": "db/migration/V2__order_items.sql", "line": 11},
+    {"subject": {"type": "table", "repository": "database", "name": "audit_entries"}, "path": "db/migration/V3__evolve.sql", "line": 11}
+  ],
+  "limitations": [
+    {"repository": "database", "kind": "unsupported-construct", "path": "db/migration/V2__order_items.sql", "line": 18},
+    {"repository": "database", "kind": "ambiguous-reference", "path": "db/migration/V3__evolve.sql", "line": 5},
+    {"repository": "database", "kind": "unsupported-construct", "path": "db/migration/V3__evolve.sql", "line": 14},
+    {"repository": "database", "kind": "unsupported-construct", "path": "db/migration/V3__evolve.sql", "line": 16},
+    {"repository": "database", "kind": "unsupported-construct", "path": "db/migration/V3__evolve.sql", "line": 23},
+    {"repository": "database", "kind": "unsupported-construct", "path": "db/migration/V3__evolve.sql", "line": 25},
+    {"repository": "database", "kind": "ambiguous-reference", "path": "db/migration/V3__evolve.sql", "line": 27},
+    {"repository": "database", "kind": "unsupported-construct", "path": "db/migration/U3__evolve.sql"},
+    {"repository": "database", "kind": "unsupported-construct", "path": "db/changelog/db.changelog-master.yaml"}
+  ],
+  "diagrams": {
+    "artifacts": [
+      "architecture.mmd",
+      "erd.mmd"
+    ],
+    "erd": {"entities": 7, "relationships": 3}
+  }
+}

@@ -30,6 +30,7 @@ ADR-005 settled that the first analyzers are trusted Python modules, and ADR-002
 ### Limitations
 - The IR gains a required `limitations` list. Each entry names the repository, the analyzer, a kind from a closed set (`dynamic-routing`, `reflection`, `generated-code`, `runtime-configuration`, `unsupported-construct`, `unsupported-language`, `unreadable-source`, `ambiguous-reference`), a message, and evidence. Limitations are rendered in generated documentation and are never turned into nodes, relationships, or claims.
 - Configuration analyzers record property keys only. Values are never read into the IR, so credentials and connection strings cannot reach documentation or model inputs.
+- A limitation's evidence is the span of the construct that triggers it. For an annotation that is the annotation itself, from its first line to its last when its arguments span lines, not the member that carries it. The golden-fixture harness checks this (ADR-024).
 - Sources under test trees (`src/test/`) are not analyzed for framework facts.
 
 ### Spring Boot adapter scope (issue #14)

@@ -1,0 +1,170 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://repodocs.dev/schemas/golden-report-1.0.json",
+  "title": "RepoDocs golden evaluation report",
+  "description": "Scores for RepoDocs against reviewed golden fixtures. Scores describe those fixtures only. A ratio is null when its denominator is zero, because the metric then does not apply; it is never reported as 1.0. Counts and ratios contain no hashes or identifiers, so the report is stable across operating systems.",
+  "type": "object",
+  "required": ["report_version", "basis", "cases", "failures"],
+  "additionalProperties": false,
+  "properties": {
+    "report_version": {"const": "1.0"},
+    "basis": {"type": "string"},
+    "failures": {"type": "integer", "minimum": 0, "description": "Total invariant failures across cases. Recall below 1 is tracked in the baseline, not counted here."},
+    "cases": {"type": "array", "items": {"$ref": "#/$defs/case"}}
+  },
+  "$defs": {
+    "ratio": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+    "facts": {"type": "array", "items": {"type": "object"}},
+    "setScore": {
+      "type": "object",
+      "required": ["expected", "observed", "matched", "precision", "recall", "missing", "unexpected"],
+      "additionalProperties": false,
+      "properties": {
+        "expected": {"type": "integer", "minimum": 0},
+        "observed": {"type": "integer", "minimum": 0},
+        "matched": {"type": "integer", "minimum": 0},
+        "precision": {"$ref": "#/$defs/ratio"},
+        "recall": {"$ref": "#/$defs/ratio"},
+        "missing": {"$ref": "#/$defs/facts"},
+        "unexpected": {"$ref": "#/$defs/facts"}
+      }
+    },
+    "case": {
+      "type": "object",
+      "required": ["name", "nodes", "relationships", "evidence", "limitations", "candidates", "provenance", "claims", "diagrams", "stability", "ai", "failures"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "nodes": {"$ref": "#/$defs/setScore"},
+        "relationships": {"$ref": "#/$defs/setScore"},
+        "evidence": {
+          "type": "object",
+          "required": ["expected", "matched", "recall", "missing"],
+          "additionalProperties": false,
+          "properties": {
+            "expected": {"type": "integer", "minimum": 0},
+            "matched": {"type": "integer", "minimum": 0},
+            "recall": {"$ref": "#/$defs/ratio"},
+            "missing": {"$ref": "#/$defs/facts"}
+          }
+        },
+        "limitations": {"$ref": "#/$defs/setScore"},
+        "candidates": {
+          "type": "object",
+          "required": ["observed", "non_authoritative_violations", "cross_repository_relationships", "expected", "matched", "precision", "recall", "accuracy", "missing", "unexpected", "forbidden_present", "confidence_mismatches", "unresolved_absent"],
+          "additionalProperties": false,
+          "properties": {
+            "observed": {"type": "integer", "minimum": 0},
+            "expected": {"type": ["integer", "null"], "minimum": 0},
+            "matched": {"type": ["integer", "null"], "minimum": 0},
+            "precision": {"$ref": "#/$defs/ratio"},
+            "recall": {"$ref": "#/$defs/ratio"},
+            "accuracy": {"$ref": "#/$defs/ratio", "description": "Matched candidates over the union of expected and observed, so extra and missing candidates both lower it."},
+            "non_authoritative_violations": {"type": "integer", "minimum": 0, "description": "Candidates that are not inferred or whose confidence is 1. Must be 0."},
+            "cross_repository_relationships": {"type": "integer", "minimum": 0, "description": "Observed relationships between different repositories. Must be 0; cross-repository links are candidates only."},
+            "missing": {"$ref": "#/$defs/facts"},
+            "unexpected": {"$ref": "#/$defs/facts"},
+            "forbidden_present": {"$ref": "#/$defs/facts"},
+            "confidence_mismatches": {"$ref": "#/$defs/facts"},
+            "unresolved_absent": {"$ref": "#/$defs/facts", "description": "Forbidden-candidate selectors that match no node. They would check nothing, so each is a failure."}
+          }
+        },
+        "provenance": {
+          "type": "object",
+          "required": ["evidence_records", "evidence_resolved", "resolution", "references", "references_resolved", "reference_resolution", "unresolved", "misbound_references", "misbound"],
+          "additionalProperties": false,
+          "description": "Evidence is checked against the files on disk: the path stays inside the repository, the file exists, its hash matches, the span lies inside it, and the revision and revision kind match the snapshot. Pass or fail uses the exact counts; the ratios are rounded for display.",
+          "properties": {
+            "evidence_records": {"type": "integer", "minimum": 0},
+            "evidence_resolved": {"type": "integer", "minimum": 0},
+            "resolution": {"$ref": "#/$defs/ratio"},
+            "references": {"type": "integer", "minimum": 0},
+            "references_resolved": {"type": "integer", "minimum": 0},
+            "reference_resolution": {"$ref": "#/$defs/ratio"},
+            "unresolved": {"$ref": "#/$defs/facts"},
+            "misbound_references": {"type": "integer", "minimum": 0, "description": "Evidence references from a node or limitation that cites another repository's evidence. Must be 0."},
+            "misbound": {"$ref": "#/$defs/facts"}
+          }
+        },
+        "claims": {
+          "type": "object",
+          "required": ["deterministic", "unsupported", "unsupported_rate"],
+          "additionalProperties": false,
+          "properties": {
+            "deterministic": {"type": "integer", "minimum": 0},
+            "unsupported": {"type": "integer", "minimum": 0, "description": "Claims that cite no evidence or evidence that does not exist."},
+            "unsupported_rate": {"$ref": "#/$defs/ratio"}
+          }
+        },
+        "diagrams": {
+          "type": "object",
+          "required": ["expected", "missing", "total", "valid", "validity", "invalid", "erd"],
+          "additionalProperties": false,
+          "description": "Validity is checked with RepoDocs' built-in Python validator, not a Mermaid renderer.",
+          "properties": {
+            "expected": {"type": "array", "items": {"type": "string"}},
+            "missing": {"type": "array", "items": {"type": "string"}},
+            "total": {"type": "integer", "minimum": 0},
+            "valid": {"type": "integer", "minimum": 0},
+            "validity": {"$ref": "#/$defs/ratio"},
+            "invalid": {"$ref": "#/$defs/facts"},
+            "erd": {
+              "type": ["object", "null"],
+              "required": ["expected_entities", "entities", "expected_relationships", "relationships", "matches"],
+              "additionalProperties": false,
+              "properties": {
+                "expected_entities": {"type": "integer"},
+                "entities": {"type": "integer"},
+                "expected_relationships": {"type": "integer"},
+                "relationships": {"type": "integer"},
+                "matches": {"type": "boolean"}
+              }
+            }
+          }
+        },
+        "stability": {
+          "type": "object",
+          "required": ["ir_identical", "artifacts_identical"],
+          "additionalProperties": false,
+          "description": "The pipeline ran twice in one interpreter, on copies in different directories; both runs must agree. Independence from the hash seed is checked separately by a test, not by this field.",
+          "properties": {"ir_identical": {"type": "boolean"}, "artifacts_identical": {"type": "boolean"}}
+        },
+        "ai": {
+          "type": ["object", "null"],
+          "required": ["basis", "contribution", "reviewed_unsupported_inferred", "expectation_mismatches", "wrong_outcomes", "comparison"],
+          "additionalProperties": false,
+          "description": "Replays a recorded, reviewed model response. It measures validation and labelling behavior on that response; it says nothing about the quality of any model.",
+          "properties": {
+            "basis": {"const": "recorded-response-replay"},
+            "contribution": {"type": "object"},
+            "reviewed_unsupported_inferred": {"type": "integer", "minimum": 0},
+            "expectation_mismatches": {"$ref": "#/$defs/facts"},
+            "wrong_outcomes": {"$ref": "#/$defs/facts"},
+            "comparison": {
+              "type": "object",
+              "required": ["deterministic", "with_ai", "unsupported_rate_delta", "increases_unsupported_rate"],
+              "additionalProperties": false,
+              "properties": {
+                "deterministic": {"$ref": "#/$defs/claimSet"},
+                "with_ai": {"$ref": "#/$defs/claimSet"},
+                "unsupported_rate_delta": {"type": ["number", "null"]},
+                "increases_unsupported_rate": {"type": "boolean"}
+              }
+            }
+          }
+        },
+        "failures": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "claimSet": {
+      "type": "object",
+      "required": ["claims", "unsupported", "unsupported_rate"],
+      "additionalProperties": false,
+      "properties": {
+        "claims": {"type": "integer", "minimum": 0},
+        "unsupported": {"type": "integer", "minimum": 0},
+        "unsupported_rate": {"$ref": "#/$defs/ratio"}
+      }
+    }
+  }
+}

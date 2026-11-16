@@ -1,0 +1,838 @@
+"""The golden-fixture harness: the committed baseline, schema conformance, and proof that every metric can fail."""
+
+from __future__ import annotations
+
+import copy
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+from jsonschema import Draft202012Validator
+
+from repodocs import golden
+from repodocs.golden import (
+    GoldenError,
+    Observed,
+    diff_reports,
+    evaluate_cases,
+    load_case,
+    main,
+    run_pipeline,
+    score_case,
+)
+
+
+ROOT = Path(__file__).parent
+CASES_DIR = ROOT / "golden"
+BASELINE = CASES_DIR / "baseline-report.json"
+SCHEMAS = ROOT.parent / "schemas"
+NAMES = ("smartcart-correlation", "spring-boot", "postgres")
+STABLE = {"ir_identical": True, "artifacts_identical": True}
+REGENERATE = "python -m repodocs.golden tests/golden --output tests/golden/baseline-report.json"
+
+
+def schema(name: str) -> Draft202012Validator:
+    return Draft202012Validator(json.loads((SCHEMAS / name).read_text(encoding="utf-8")))
+
+
+@pytest.fixture(scope="module")
+def report() -> dict:
+    return evaluate_cases(CASES_DIR)
+
+
+@pytest.fixture(scope="module")
+def runs(tmp_path_factory) -> dict:
+    result = {}
+    for name in NAMES:
+        case = load_case(CASES_DIR / name / "golden.json")
+        result[name] = (case, run_pipeline(case, tmp_path_factory.mktemp(name)))
+    return result
+
+
+def baseline_case(name: str) -> dict:
+    return next(item for item in json.loads(BASELINE.read_text(encoding="utf-8"))["cases"] if item["name"] == name)
+
+
+def scored(runs, name, mutate=None, edit_case=None, stability=STABLE) -> dict:
+    """Score a damaged copy of a real observed result, leaving the shared one untouched."""
+
+    case, observed = runs[name]
+    case = copy.deepcopy(case)
+    damaged = Observed(copy.deepcopy(observed.ir), dict(observed.artifacts), observed.repositories)
+    if mutate:
+        mutate(damaged)
+    if edit_case:
+        edit_case(case)
+    return score_case(case, damaged, stability)
+
+
+def node(ir: dict, kind: str, name: str, repository: str | None = None) -> dict:
+    return next(
+        item for item in ir["nodes"]
+        if item["type"] == kind and item["name"] == name and (repository is None or item["attributes"].get("repository_id") == repository)
+    )
+
+
+def drop_node(ir: dict, target: dict) -> None:
+    """Remove a node and everything that depended on it, as a tool that never found it would."""
+
+    ir["nodes"] = [item for item in ir["nodes"] if item["id"] != target["id"]]
+    ir["relationships"] = [e for e in ir["relationships"] if target["id"] not in (e["source"], e["target"])]
+    ir["candidates"] = [c for c in ir["candidates"] if target["id"] not in (c["source"], c["target"])]
+
+
+# ------------------------------------------------------------------ the committed baseline
+def test_report_equals_the_committed_baseline_exactly(report) -> None:
+    baseline = json.loads(BASELINE.read_text(encoding="utf-8"))
+    differences = diff_reports(baseline, report)
+    assert not differences, (
+        "The evaluation report changed. If the change is intended, review it and regenerate the baseline with\n"
+        f"  {REGENERATE}\n" + "\n".join(differences[:20])
+    )
+
+
+def test_report_and_cases_conform_to_their_schemas(report) -> None:
+    assert not list(schema("golden-report-1.0.json").iter_errors(report))
+    for name in NAMES:
+        data = json.loads((CASES_DIR / name / "golden.json").read_text(encoding="utf-8"))
+        assert not list(schema("golden-case-1.0.json").iter_errors(data)), name
+
+
+def test_baseline_has_no_invariant_failures_and_covers_every_case(report) -> None:
+    assert report["failures"] == 0
+    assert [item["name"] for item in report["cases"]] == sorted(NAMES)
+    assert all(item["failures"] == [] for item in report["cases"])
+
+
+def test_the_pipeline_is_repeatable_across_independent_evaluations(report) -> None:
+    assert evaluate_cases(CASES_DIR) == report
+
+
+@pytest.mark.parametrize("seed", ["0", "4242"])
+def test_report_does_not_depend_on_the_hash_seed(seed) -> None:
+    """The in-report stability check runs in one interpreter and cannot see seed-dependent ordering."""
+
+    environment = {**os.environ, "PYTHONHASHSEED": seed, "PYTHONPATH": str(ROOT.parent / "src")}
+    done = subprocess.run(
+        [sys.executable, "-m", "repodocs.golden", str(CASES_DIR)], capture_output=True, text=True, env=environment, check=False
+    )
+    assert done.returncode == 0, done.stderr
+    assert json.loads(done.stdout) == json.loads(BASELINE.read_text(encoding="utf-8"))
+
+
+def test_golden_files_hold_no_identifiers_or_hashes() -> None:
+    """Identifiers and hashes change with line endings and content, so a golden may not depend on them."""
+
+    paths = [CASES_DIR / name / "golden.json" for name in NAMES] + [ROOT / "fixtures" / "ai-architecture" / "golden.json"]
+    for path in paths:
+        text = path.read_text(encoding="utf-8")
+        assert not re.search(r"\b(node|evidence|claim|relationship|candidate|ai-claim):[0-9a-f]{8,}", text), path
+        assert not re.search(r"\b[0-9a-f]{40,64}\b", text), path
+
+
+def test_spring_limitations_cite_the_annotation_that_triggers_them(report) -> None:
+    """The harness first recorded these as misses: the analyzer cited the line next to the @Value SpEL and
+    @Profile annotations. The golden never changed; the analyzer was fixed, and only the baseline moved."""
+
+    spring = next(item for item in report["cases"] if item["name"] == "spring-boot")["limitations"]
+    assert spring["recall"] == 1.0 and spring["precision"] == 1.0
+    assert spring["missing"] == [] and spring["unexpected"] == []
+
+
+# ------------------------------------------------------------------ the harness can fail
+def test_dropping_a_node_lowers_node_recall_and_names_it(runs) -> None:
+    result = scored(runs, "spring-boot", lambda o: drop_node(o.ir, node(o.ir, "endpoint", "POST /api/orders")))
+    assert result["nodes"]["recall"] < 1 and result["nodes"]["precision"] == 1.0
+    assert {"type": "endpoint", "repository": "backend", "name": "POST /api/orders"} in result["nodes"]["missing"]
+    assert result["relationships"]["recall"] < 1
+    assert result["evidence"]["recall"] < baseline_case("spring-boot")["evidence"]["recall"]
+
+
+def test_adding_a_spurious_node_lowers_precision_and_names_it(runs) -> None:
+    def add(o: Observed) -> None:
+        source = node(o.ir, "endpoint", "POST /api/orders")
+        o.ir["nodes"].append({**copy.deepcopy(source), "id": "node:spurious", "name": "GET /spurious"})
+
+    result = scored(runs, "spring-boot", add)
+    assert result["nodes"]["precision"] < 1 and result["nodes"]["recall"] == 1.0
+    assert {"type": "endpoint", "repository": "backend", "name": "GET /spurious"} in result["nodes"]["unexpected"]
+
+
+def test_relationship_errors_are_detected_in_both_directions(runs) -> None:
+    def drop(o: Observed) -> None:
+        target = node(o.ir, "endpoint", "GET /api/orders")
+        o.ir["relationships"] = [e for e in o.ir["relationships"] if not (e["type"] == "exposes" and e["target"] == target["id"])]
+
+    dropped = scored(runs, "spring-boot", drop)
+    assert dropped["relationships"]["recall"] < 1 and dropped["relationships"]["missing"]
+
+    def spurious(o: Observed) -> None:
+        edge = next(e for e in o.ir["relationships"] if e["type"] == "exposes")
+        other = node(o.ir, "class", "CustomerController")
+        o.ir["relationships"].append({**edge, "id": "relationship:x", "source": other["id"], "target": node(o.ir, "endpoint", "POST /api/orders")["id"]})
+
+    added = scored(runs, "spring-boot", spurious)
+    assert added["relationships"]["precision"] < 1 and added["relationships"]["unexpected"]
+
+
+def test_a_wrong_classification_counts_as_both_missing_and_unexpected(runs) -> None:
+    def weaken(o: Observed) -> None:
+        for edge in o.ir["relationships"]:
+            if edge["type"] == "references":
+                edge["classification"] = "inferred"
+
+    result = scored(runs, "postgres", weaken)
+    assert result["relationships"]["recall"] == 0.0 and result["relationships"]["precision"] == 0.0
+    assert len(result["relationships"]["missing"]) == 3 and len(result["relationships"]["unexpected"]) == 3
+
+
+def test_evidence_that_no_longer_points_at_the_expected_line_is_a_miss(runs) -> None:
+    def move(o: Observed) -> None:
+        for record in o.ir["evidence"]:
+            if record["path"].endswith("OrderController.java") and record.get("kind") == "span":
+                record["line_start"], record["line_end"] = 1, 2
+
+    result = scored(runs, "spring-boot", move)
+    assert result["evidence"]["recall"] < 1 and result["evidence"]["missing"]
+
+
+@pytest.mark.parametrize("damage, reason", [
+    (lambda r: r.update(line_end=10_000, line_start=9_999), "span-out-of-range"),
+    (lambda r: r.update(content_hash="0" * 64), "hash-mismatch"),
+    (lambda r: r.update(path="does/not/exist.java"), "file-missing"),
+    (lambda r: r.update(revision="not-the-snapshot-revision"), "revision-mismatch"),
+    (lambda r: r.update(repository_id="unknown-repository"), "unknown-repository"),
+])
+def test_provenance_is_checked_against_the_files_on_disk(runs, damage, reason) -> None:
+    def hurt(o: Observed) -> None:
+        record = next(item for item in o.ir["evidence"] if item["kind"] == "span")
+        damage(record)
+
+    result = scored(runs, "spring-boot", hurt)
+    assert result["provenance"]["resolution"] < 1
+    assert [item["reason"] for item in result["provenance"]["unresolved"]] == [reason]
+    assert "evidence-does-not-resolve-to-files" in result["failures"]
+
+
+def test_a_dangling_evidence_reference_is_a_failure(runs) -> None:
+    def dangle(o: Observed) -> None:
+        o.ir["nodes"][0]["evidence_ids"].append("evidence:missing")
+
+    result = scored(runs, "postgres", dangle)
+    assert result["provenance"]["reference_resolution"] < 1
+    assert "evidence-reference-unresolved" in result["failures"]
+
+
+def test_candidate_errors_move_the_cross_repository_metrics(runs) -> None:
+    dropped = scored(runs, "smartcart-correlation", lambda o: o.ir["candidates"].pop())
+    assert dropped["candidates"]["recall"] < 1 and dropped["candidates"]["accuracy"] < 1 and dropped["candidates"]["missing"]
+
+    def forbidden(o: Observed) -> None:
+        delete = node(o.ir, "http_request", "DELETE /orders")
+        target = node(o.ir, "endpoint", "GET /orders", "backend")
+        o.ir["candidates"].append({**copy.deepcopy(o.ir["candidates"][0]), "id": "candidate:x", "source": delete["id"], "target": target["id"]})
+
+    result = scored(runs, "smartcart-correlation", forbidden)
+    assert result["candidates"]["precision"] < 1 and result["candidates"]["forbidden_present"]
+    assert "forbidden-candidate-present" in result["failures"]
+
+    def confidence(o: Observed) -> None:
+        o.ir["candidates"][0]["confidence"] = 0.31
+
+    assert scored(runs, "smartcart-correlation", confidence)["candidates"]["confidence_mismatches"]
+
+
+def test_a_candidate_presented_as_authoritative_is_a_failure(runs) -> None:
+    def promote(o: Observed) -> None:
+        o.ir["candidates"][0]["classification"] = "observed"
+        o.ir["candidates"][0]["confidence"] = 1.0
+
+    result = scored(runs, "smartcart-correlation", promote)
+    assert result["candidates"]["non_authoritative_violations"] == 1
+    assert "authoritative-candidate" in result["failures"]
+
+
+def test_an_observed_cross_repository_relationship_is_a_failure(runs) -> None:
+    def link(o: Observed) -> None:
+        request = node(o.ir, "http_request", "GET /orders")
+        endpoint = node(o.ir, "endpoint", "GET /orders", "backend")
+        o.ir["relationships"].append({"id": "relationship:x", "type": "calls", "source": request["id"], "target": endpoint["id"],
+                                       "classification": "observed", "confidence": 1.0, "evidence_ids": []})
+
+    result = scored(runs, "smartcart-correlation", link)
+    assert result["candidates"]["cross_repository_relationships"] == 1
+    assert "observed-cross-repository-relationship" in result["failures"]
+
+
+def test_limitation_errors_move_recall_and_precision(runs) -> None:
+    dropped = scored(runs, "postgres", lambda o: o.ir["limitations"].pop())
+    assert dropped["limitations"]["recall"] < 1 and dropped["limitations"]["missing"]
+
+    def add(o: Observed) -> None:
+        o.ir["limitations"].append({**copy.deepcopy(o.ir["limitations"][0]), "id": "limitation:x", "kind": "reflection"})
+
+    added = scored(runs, "postgres", add)
+    assert added["limitations"]["precision"] < 1 and added["limitations"]["unexpected"]
+
+
+def test_an_unsupported_deterministic_claim_is_a_failure(runs) -> None:
+    def hollow(o: Observed) -> None:
+        o.ir["claims"][0]["evidence_ids"] = []
+
+    result = scored(runs, "postgres", hollow)
+    assert result["claims"]["unsupported"] == 1 and result["claims"]["unsupported_rate"] > 0
+    assert "unsupported-deterministic-claim" in result["failures"]
+
+
+def test_diagram_problems_are_detected(runs) -> None:
+    def corrupt(o: Observed) -> None:
+        o.artifacts["erd.mmd"] = o.artifacts["erd.mmd"].replace("erDiagram", "erDiagram\n    this is not valid mermaid", 1)
+
+    corrupted = scored(runs, "postgres", corrupt)
+    assert corrupted["diagrams"]["validity"] == 0.5 and corrupted["diagrams"]["invalid"][0]["artifact"] == "erd.mmd"
+    assert "invalid-diagram" in corrupted["failures"]
+
+    removed = scored(runs, "postgres", lambda o: o.artifacts.pop("erd.mmd"))
+    assert removed["diagrams"]["missing"] == ["erd.mmd"] and "expected-diagram-missing" in removed["failures"]
+
+    def extra_entity(o: Observed) -> None:
+        o.artifacts["erd.mmd"] += "    extra {\n    }\n"
+
+    assert "erd-counts-differ" in scored(runs, "postgres", extra_entity)["failures"]
+
+
+def test_unstable_output_is_a_failure(runs) -> None:
+    result = scored(runs, "postgres", stability={"ir_identical": True, "artifacts_identical": False})
+    assert "unstable-output" in result["failures"]
+
+
+def test_an_unsupported_ai_claim_that_is_accepted_raises_the_unsupported_rate(runs) -> None:
+    def add_bad_claim(case: dict) -> None:
+        case["ai"]["labels"]["claims"].append({
+            "text": "The orders endpoint processes payments.", "classification": "inferred",
+            "subject": "endpoint", "evidence": "endpoint", "expected": "inferred", "supported": False,
+        })
+
+    result = scored(runs, "smartcart-correlation", edit_case=add_bad_claim)
+    comparison = result["ai"]["comparison"]
+    assert result["ai"]["reviewed_unsupported_inferred"] == 1
+    assert comparison["unsupported_rate_delta"] > 0 and comparison["increases_unsupported_rate"] is True
+    assert "ai-increases-unsupported-rate" in result["failures"]
+    assert result["ai"]["expectation_mismatches"] and "ai-replay-differs-from-review" in result["failures"]
+
+
+def test_ai_replay_that_disagrees_with_the_review_is_a_failure(runs) -> None:
+    def mislabel(case: dict) -> None:
+        case["ai"]["labels"]["claims"][1]["expected"] = "inferred"  # "Consider adding an API gateway" must stay a proposal
+
+    result = scored(runs, "smartcart-correlation", edit_case=mislabel)
+    assert result["ai"]["wrong_outcomes"] and "ai-replay-differs-from-review" in result["failures"]
+
+
+def test_the_ai_comparison_needs_candidates_to_replay_against(runs) -> None:
+    def clear(o: Observed) -> None:
+        o.ir["candidates"] = []
+
+    with pytest.raises(GoldenError, match="cross-repository candidates"):
+        scored(runs, "smartcart-correlation", clear)
+
+
+# ------------------------------------------------------------------ definitions
+def test_zero_denominators_are_null_never_one(runs) -> None:
+    result = scored(runs, "smartcart-correlation")
+    assert result["limitations"]["expected"] == 0 and result["limitations"]["recall"] is None
+    assert result["limitations"]["precision"] is None
+    spring = scored(runs, "spring-boot")
+    assert spring["candidates"]["expected"] is None and spring["candidates"]["accuracy"] is None
+    assert spring["ai"] is None
+
+    def nothing(case: dict) -> None:
+        case["nodes"], case["relationships"] = [], []
+
+    empty = scored(runs, "postgres", edit_case=nothing)
+    assert empty["nodes"]["recall"] is None and empty["nodes"]["precision"] is None
+
+
+def test_candidate_accuracy_counts_extra_and_missing_candidates_alike(runs) -> None:
+    result = scored(runs, "smartcart-correlation")
+    assert result["candidates"]["accuracy"] == 1.0
+
+    def extra(o: Observed) -> None:
+        request = node(o.ir, "http_request", "GET https://other.example.invalid/api/orders")
+        target = node(o.ir, "endpoint", "GET /orders", "backend")
+        o.ir["candidates"].append({**copy.deepcopy(o.ir["candidates"][0]), "id": "candidate:y", "source": request["id"], "target": target["id"]})
+
+    assert scored(runs, "smartcart-correlation", extra)["candidates"]["accuracy"] == round(5 / 6, 4)
+
+
+def test_selectors_must_identify_exactly_one_node(runs) -> None:
+    def ambiguous(case: dict) -> None:
+        case["nodes"].append({"type": "endpoint", "name": "GET /orders"})  # backend and competing both match
+
+    with pytest.raises(GoldenError, match="matches 2 nodes"):
+        scored(runs, "smartcart-correlation", edit_case=ambiguous)
+
+    def overlapping(case: dict) -> None:
+        case["nodes"].append({"type": "endpoint", "repository": "backend", "name": "GET /orders"})
+
+    with pytest.raises(GoldenError, match="overlap"):
+        scored(runs, "smartcart-correlation", edit_case=overlapping)
+
+    def attributes(case: dict) -> None:
+        case["nodes"] = [item for item in case["nodes"] if item["name"] != "GET /api/orders"] + [
+            {"type": "http_request", "repository": "frontend", "name": "GET /api/orders", "attributes": {"client": "fetch"}}
+        ]
+
+    assert scored(runs, "smartcart-correlation", edit_case=attributes)["nodes"]["recall"] == 1.0
+
+
+def test_malformed_cases_are_rejected(tmp_path) -> None:
+    (tmp_path / "golden.json").write_text("not json", encoding="utf-8")
+    with pytest.raises(GoldenError, match="Unable to read"):
+        load_case(tmp_path / "golden.json")
+    (tmp_path / "golden.json").write_text(json.dumps({"schema_version": "9", "name": "x", "repositories": []}), encoding="utf-8")
+    with pytest.raises(GoldenError, match="schema_version"):
+        load_case(tmp_path / "golden.json")
+    (tmp_path / "golden.json").write_text(json.dumps({"schema_version": "1.0", "name": "x"}), encoding="utf-8")
+    with pytest.raises(GoldenError, match="missing 'repositories'"):
+        load_case(tmp_path / "golden.json")
+    (tmp_path / "golden.json").write_text(
+        json.dumps({"schema_version": "1.0", "name": "x", "description": "x", "repositories": [{"id": "a", "path": "nowhere"}]}),
+        encoding="utf-8",
+    )
+    with pytest.raises(GoldenError, match="not a directory"):
+        load_case(tmp_path / "golden.json")
+
+
+def test_reports_are_free_of_hashes_and_machine_paths(report) -> None:
+    text = json.dumps(report)
+    assert not re.search(r"\b[0-9a-f]{40,64}\b", text)
+    assert not re.search(r"[A-Za-z]:\\\\|/tmp/|/home/|/Users/", text)
+
+
+def test_diff_reports_names_where_reports_differ() -> None:
+    assert diff_reports({"a": {"b": 1, "c": [1, 2]}}, {"a": {"b": 1, "c": [1, 2]}}) == []
+    assert diff_reports({"a": {"b": 1}}, {"a": {"b": 2}}) == ["a.b: 1 != 2"]
+    assert diff_reports({"a": [1]}, {"a": [1, 2]}) == ["a: length 1 != 2"]
+    assert diff_reports({"a": 1}, {}) == ["a: 1 != None"]
+
+
+# ------------------------------------------------------------------ runner
+def test_runner_passes_against_the_baseline_and_writes_the_report(tmp_path, capsys) -> None:
+    out = tmp_path / "report.json"
+    code = main([str(CASES_DIR), "--baseline", str(BASELINE), "--output", str(out)])
+    captured = capsys.readouterr()
+    assert code == 0 and captured.err == ""
+    assert json.loads(captured.out) == json.loads(out.read_text(encoding="utf-8")) == json.loads(BASELINE.read_text(encoding="utf-8"))
+
+
+def test_runner_fails_when_the_report_differs_from_the_baseline(tmp_path, capsys) -> None:
+    changed = json.loads(BASELINE.read_text(encoding="utf-8"))
+    changed["cases"][0]["nodes"]["recall"] = 0.5
+    baseline = tmp_path / "baseline.json"
+    baseline.write_text(json.dumps(changed), encoding="utf-8")
+    code = main([str(CASES_DIR), "--baseline", str(baseline)])
+    assert code == 1
+    assert "baseline differs: cases[0].nodes.recall: 0.5 != 1.0" in capsys.readouterr().err
+
+
+def test_runner_summary_is_a_markdown_table(capsys) -> None:
+    assert main([str(CASES_DIR), "--summary"]) == 0
+    text = capsys.readouterr().out
+    assert text.startswith("## Golden-fixture evaluation") and "| spring-boot | 1 | 1 | 1 | 1 | 1 |" in text
+    assert "n/a" in text
+
+
+def test_runner_reports_usage_errors_with_exit_code_2(tmp_path, capsys) -> None:
+    assert main([str(tmp_path)]) == 2
+    assert "No golden cases found" in capsys.readouterr().err
+    assert main([str(CASES_DIR), "--baseline", str(tmp_path / "missing.json")]) == 2
+    assert "Unable to read baseline" in capsys.readouterr().err
+
+
+def test_runner_fails_on_an_invariant_failure(monkeypatch, capsys) -> None:
+    real = golden.evaluate_cases
+
+    def broken(directory: Path) -> dict:
+        report = real(directory)
+        report["failures"] = 1
+        return report
+
+    monkeypatch.setattr(golden, "evaluate_cases", broken)
+    assert main([str(CASES_DIR)]) == 1
+
+
+# ------------------------------------------------------------------ exact counts decide, rounded ratios only report
+BULK = 25_000
+
+
+def inflate_evidence(o: Observed, *, break_hash: bool = False) -> None:
+    """Add many valid evidence records for one real file, so that one broken record rounds away."""
+
+    template = next(item for item in o.ir["evidence"] if item["kind"] == "file")
+    bulk = [{**template, "id": f"evidence:bulk{index}"} for index in range(BULK)]
+    if break_hash:
+        bulk[-1]["content_hash"] = "0" * 64
+    o.ir["evidence"].extend(bulk)
+
+
+def inflate_references(o: Observed, *, dangling: bool = False) -> None:
+    inflate_evidence(o)
+    node = o.ir["nodes"][0]
+    node["evidence_ids"] = node["evidence_ids"] + [f"evidence:bulk{index}" for index in range(BULK)]
+    if dangling:
+        node["evidence_ids"].append("evidence:does-not-exist")
+
+
+def test_one_broken_evidence_record_among_many_still_fails_though_the_ratio_rounds_to_one(runs) -> None:
+    result = scored(runs, "postgres", lambda o: inflate_evidence(o, break_hash=True))
+    provenance = result["provenance"]
+
+    assert provenance["resolution"] == 1.0  # the rounded ratio is for display only
+    assert provenance["evidence_resolved"] == provenance["evidence_records"] - 1
+    assert [item["reason"] for item in provenance["unresolved"]] == ["hash-mismatch"]
+    assert "evidence-does-not-resolve-to-files" in result["failures"]
+
+    healthy = scored(runs, "postgres", inflate_evidence)
+    assert healthy["provenance"]["evidence_resolved"] == healthy["provenance"]["evidence_records"]
+    assert "evidence-does-not-resolve-to-files" not in healthy["failures"]
+
+
+def test_one_dangling_reference_among_many_still_fails_though_the_ratio_rounds_to_one(runs) -> None:
+    result = scored(runs, "postgres", lambda o: inflate_references(o, dangling=True))
+    provenance = result["provenance"]
+
+    assert provenance["reference_resolution"] == 1.0
+    assert provenance["references_resolved"] == provenance["references"] - 1
+    assert "evidence-reference-unresolved" in result["failures"]
+    assert "evidence-reference-unresolved" not in scored(runs, "postgres", inflate_references)["failures"]
+
+
+def test_the_runner_exits_nonzero_for_a_failure_hidden_by_rounding(monkeypatch, capsys) -> None:
+    real = golden.run_pipeline
+
+    def damaged(case, workdir):
+        observed = real(case, workdir)
+        if case["name"] == "postgres":
+            inflate_evidence(observed, break_hash=True)
+        return observed
+
+    monkeypatch.setattr(golden, "run_pipeline", damaged)
+    code = main([str(CASES_DIR)])
+
+    assert code == 1
+    failures = {item["name"]: item["failures"] for item in json.loads(capsys.readouterr().out)["cases"]}
+    assert failures["postgres"] == ["evidence-does-not-resolve-to-files"]
+
+
+def test_a_small_ai_increase_in_the_unsupported_rate_is_not_rounded_away(runs) -> None:
+    def many_supported_claims(o: Observed) -> None:
+        template = o.ir["claims"][0]
+        o.ir["claims"].extend({**template, "id": f"claim:bulk{index}"} for index in range(30_000))
+
+    def one_unsupported_ai_claim(case: dict) -> None:
+        case["ai"]["labels"]["claims"].append({
+            "text": "The orders endpoint processes payments.", "classification": "inferred",
+            "subject": "endpoint", "evidence": "endpoint", "expected": "inferred", "supported": False,
+        })
+
+    result = scored(runs, "smartcart-correlation", many_supported_claims, one_unsupported_ai_claim)
+    comparison = result["ai"]["comparison"]
+
+    assert comparison["unsupported_rate_delta"] == 0.0  # 1 in about 30,000 rounds to zero for display
+    assert comparison["with_ai"]["unsupported"] == comparison["deterministic"]["unsupported"] + 1
+    assert comparison["increases_unsupported_rate"] is True
+    assert "ai-increases-unsupported-rate" in result["failures"]
+
+
+def test_zero_denominators_for_provenance_stay_valid(runs) -> None:
+    def strip(o: Observed) -> None:
+        o.ir["evidence"] = []
+        for group in ("nodes", "relationships", "claims", "limitations", "candidates"):
+            for item in o.ir[group]:
+                item["evidence_ids"] = []
+
+    result = scored(runs, "postgres", strip)
+    provenance = result["provenance"]
+
+    assert provenance["evidence_records"] == 0 and provenance["references"] == 0
+    assert provenance["resolution"] is None and provenance["reference_resolution"] is None
+    assert not {"evidence-does-not-resolve-to-files", "evidence-reference-unresolved"} & set(result["failures"])
+
+
+# ------------------------------------------------------------------ checks that could pass vacuously
+def write_case(tmp_path: Path, name: str, edit=None) -> Path:
+    """A copy of a real golden case in a temporary directory, with absolute fixture paths."""
+
+    data = json.loads((CASES_DIR / name / "golden.json").read_text(encoding="utf-8"))
+    for repository in data["repositories"]:
+        repository["path"] = str((CASES_DIR / name / repository["path"]).resolve())
+    if "ai" in data:
+        data["ai"]["claims"] = str((CASES_DIR / name / data["ai"]["claims"]).resolve())
+    if edit:
+        edit(data)
+    folder = tmp_path / name
+    folder.mkdir(exist_ok=True)
+    (folder / "golden.json").write_text(json.dumps(data), encoding="utf-8")
+    return folder / "golden.json"
+
+
+def test_a_misspelled_selector_key_is_rejected_instead_of_dropping_the_constraint(tmp_path) -> None:
+    def typo(data: dict) -> None:
+        data["nodes"][0]["repo"] = data["nodes"][0].pop("repository")  # would silently match any repository
+
+    with pytest.raises(GoldenError, match="does not match schemas/golden-case-1.0.json"):
+        load_case(write_case(tmp_path, "spring-boot", typo))
+
+
+@pytest.mark.parametrize("edit", [
+    lambda data: data.update(extra_section=[]),
+    lambda data: data["limitations"][0].update(kind="not-a-kind"),
+    lambda data: data["nodes"].append({"type": "endpoint"}),
+    lambda data: data["evidence"][0].update(line=0),
+    lambda data: data.update(closed={"limitation": True}),
+])
+def test_cases_are_validated_against_the_published_schema(tmp_path, edit) -> None:
+    with pytest.raises(GoldenError, match="does not match schemas/golden-case-1.0.json"):
+        load_case(write_case(tmp_path, "spring-boot", edit))
+
+
+def test_a_missing_validator_or_schema_is_a_loud_error_not_a_skipped_check(tmp_path, monkeypatch) -> None:
+    path = write_case(tmp_path, "spring-boot")
+    monkeypatch.setitem(sys.modules, "jsonschema", None)
+    with pytest.raises(GoldenError, match="needs the jsonschema package"):
+        load_case(path)
+    monkeypatch.undo()
+    monkeypatch.setattr(golden, "SCHEMA_PATH", tmp_path / "missing" / "golden-case-1.0.json")
+    with pytest.raises(GoldenError, match="schema .* is unavailable"):
+        load_case(path)
+
+
+def test_a_selector_naming_an_unknown_repository_is_rejected(tmp_path) -> None:
+    def wrong(data: dict) -> None:
+        data["relationships"][0]["target"]["repository"] = "backnd"
+
+    with pytest.raises(GoldenError, match="unknown repository 'backnd'"):
+        load_case(write_case(tmp_path, "spring-boot", wrong))
+
+
+@pytest.mark.parametrize("name, edit, message", [
+    ("spring-boot", lambda d: d["relationships"].append(copy.deepcopy(d["relationships"][0])), "duplicate expected relationships"),
+    ("spring-boot", lambda d: d["nodes"].append(copy.deepcopy(d["nodes"][0])), "duplicate expected nodes"),
+    ("spring-boot", lambda d: d["evidence"].append(copy.deepcopy(d["evidence"][0])), "duplicate expected evidence"),
+    ("spring-boot", lambda d: d["limitations"].append(copy.deepcopy(d["limitations"][0])), "duplicate expected limitations"),
+    ("smartcart-correlation", lambda d: d["candidates"]["expected"].append(copy.deepcopy(d["candidates"]["expected"][0])), "duplicate expected candidates"),
+    ("smartcart-correlation", lambda d: d["candidates"]["absent"].append(copy.deepcopy(d["candidates"]["absent"][0])), "duplicate absent candidates"),
+])
+def test_duplicate_expectations_are_rejected_rather_than_collapsed(tmp_path, name, edit, message) -> None:
+    with pytest.raises(GoldenError, match=message):
+        load_case(write_case(tmp_path, name, edit))
+
+
+@pytest.mark.parametrize("edit", [
+    # the same pair both expected and forbidden
+    lambda d: d["candidates"]["absent"].append({"request": d["candidates"]["expected"][0]["request"], "endpoint": d["candidates"]["expected"][0]["endpoint"]}),
+    # every candidate for a request forbidden, though one is expected
+    lambda d: d["candidates"]["absent"].append({"request": d["candidates"]["expected"][0]["request"], "endpoint": None}),
+])
+def test_a_candidate_cannot_be_both_expected_and_forbidden(tmp_path, edit) -> None:
+    with pytest.raises(GoldenError, match="both expected and forbidden"):
+        load_case(write_case(tmp_path, "smartcart-correlation", edit))
+
+
+def test_a_forbidden_candidate_selector_that_matches_nothing_is_a_failure_not_a_skip(runs) -> None:
+    def typo(case: dict) -> None:
+        case["candidates"]["absent"].append(
+            {"request": {"type": "http_request", "repository": "frontend", "name": "DELETE /ordres"}, "endpoint": None}
+        )
+
+    result = scored(runs, "smartcart-correlation", edit_case=typo)
+    assert result["candidates"]["unresolved_absent"] == [
+        {"request": {"type": "http_request", "repository": "frontend", "name": "DELETE /ordres"}, "endpoint": None}
+    ]
+    assert "absent-selector-unresolved" in result["failures"]
+
+
+def test_duplicate_observed_facts_are_unexpected_not_swallowed(runs) -> None:
+    def twice(o: Observed) -> None:
+        edge = next(e for e in o.ir["relationships"] if e["type"] == "exposes")
+        o.ir["relationships"].append({**edge, "id": "relationship:duplicate"})
+
+    spring = scored(runs, "spring-boot", twice)
+    assert spring["relationships"]["observed"] == 8 and spring["relationships"]["matched"] == 7
+    assert [item.get("duplicate") for item in spring["relationships"]["unexpected"]] == [True]
+
+    def twice_candidate(o: Observed) -> None:
+        o.ir["candidates"].append({**copy.deepcopy(o.ir["candidates"][0]), "id": "candidate:duplicate"})
+
+    correlation = scored(runs, "smartcart-correlation", twice_candidate)
+    assert correlation["candidates"]["observed"] == 6 and correlation["candidates"]["matched"] == 5
+    assert [item.get("duplicate") for item in correlation["candidates"]["unexpected"]] == [True]
+    assert correlation["candidates"]["precision"] < 1
+
+
+# ------------------------------------------------------------------ the AI replay
+def shared_text_claims(case: dict) -> None:
+    """Two different claims with the same wording: one about an endpoint, one about an unconfirmed candidate."""
+
+    labels = case["ai"]["labels"]
+    labels["claims"] += [
+        {"text": "Shared wording.", "classification": "inferred", "subject": "endpoint", "evidence": "endpoint",
+         "expected": "proposed", "supported": True},  # mislabelled: the replay will accept it as inferred
+        {"text": "Shared wording.", "classification": "inferred", "subject": "candidate", "evidence": "candidate",
+         "expected": "proposed", "supported": False},
+    ]
+    labels["expected"]["ai_inferred_claims"] += 1
+    labels["expected"]["ai_proposed_claims"] += 1
+
+
+def test_distinct_ai_claims_with_the_same_text_are_scored_separately(runs) -> None:
+    result = scored(runs, "smartcart-correlation", edit_case=shared_text_claims)
+    ai = result["ai"]
+
+    # Keyed by text, the second claim's proposal would stand in for the first and hide the mislabel.
+    assert [item["expected"] for item in ai["wrong_outcomes"]] == ["proposed"]
+    assert ai["wrong_outcomes"][0]["observed"] == "inferred"
+    assert "ai-replay-differs-from-review" in result["failures"]
+
+
+def test_ai_labels_must_state_every_expected_metric_and_describe_distinct_claims(runs) -> None:
+    def drop_expected(case: dict) -> None:
+        case["ai"]["labels"]["expected"] = {}
+
+    with pytest.raises(GoldenError, match="expected metrics"):
+        scored(runs, "smartcart-correlation", edit_case=drop_expected)
+
+    def repeat(case: dict) -> None:
+        case["ai"]["labels"]["claims"].append(copy.deepcopy(case["ai"]["labels"]["claims"][0]))
+
+    with pytest.raises(GoldenError, match="describe the same claim"):
+        scored(runs, "smartcart-correlation", edit_case=repeat)
+
+    def malformed(case: dict) -> None:
+        case["ai"]["labels"]["claims"][0]["subject"] = "endpoit"
+
+    with pytest.raises(GoldenError, match="invalid subject"):
+        scored(runs, "smartcart-correlation", edit_case=malformed)
+
+
+# ------------------------------------------------------------------ provenance and binding
+def test_evidence_cannot_resolve_to_a_file_outside_its_repository(runs) -> None:
+    case, observed = runs["postgres"]
+    outside = observed.repositories["database"].parent / "outside.txt"
+    outside.write_text("not part of the repository\n", encoding="utf-8")
+
+    def escape(o: Observed) -> None:
+        record = next(item for item in o.ir["evidence"] if item["kind"] == "file")
+        record["path"] = "../outside.txt"
+        record["content_hash"] = golden.sha256_bytes(outside.read_bytes())
+
+    try:
+        result = scored(runs, "postgres", escape)
+    finally:
+        outside.unlink()
+    assert [item["reason"] for item in result["provenance"]["unresolved"]] == ["path-escapes-repository"]
+    assert "evidence-does-not-resolve-to-files" in result["failures"]
+
+
+@pytest.mark.parametrize("path", ["/etc/hostname", "C:/Windows/win.ini", "db\\migration\\V1__init.sql", "", "."])
+def test_malformed_evidence_paths_do_not_resolve(runs, path) -> None:
+    def hurt(o: Observed) -> None:
+        next(item for item in o.ir["evidence"] if item["kind"] == "file")["path"] = path
+
+    result = scored(runs, "postgres", hurt)
+    assert [item["reason"] for item in result["provenance"]["unresolved"]] == ["path-escapes-repository"]
+
+
+def test_evidence_must_carry_the_snapshots_revision_kind(runs) -> None:
+    def swap(o: Observed) -> None:
+        record = o.ir["evidence"][0]
+        record["revision_kind"] = "commit" if record["revision_kind"] == "content" else "content"
+
+    result = scored(runs, "postgres", swap)
+    assert [item["reason"] for item in result["provenance"]["unresolved"]] == ["revision-kind-mismatch"]
+    assert "evidence-does-not-resolve-to-files" in result["failures"]
+
+
+def other_repository_evidence(o: Observed) -> None:
+    """The backend endpoint cites competing's openapi.json: same path, different repository."""
+
+    ours = node(o.ir, "endpoint", "GET /orders", "backend")
+    theirs = node(o.ir, "endpoint", "GET /orders", "competing")
+    ours["evidence_ids"] = list(theirs["evidence_ids"])
+
+
+def test_evidence_in_another_repository_with_the_same_path_does_not_satisfy_an_assertion(runs) -> None:
+    result = scored(runs, "smartcart-correlation", other_repository_evidence)
+
+    assert result["evidence"]["recall"] < 1  # openapi.json exists in both repositories; only the path matched
+    assert result["provenance"]["misbound_references"] >= 1
+    assert "evidence-bound-to-another-repository" in result["failures"]
+
+
+def test_a_limitation_cited_from_another_repository_does_not_match(runs) -> None:
+    def foreign(o: Observed) -> None:
+        theirs = node(o.ir, "endpoint", "GET /orders", "competing")
+        o.ir["limitations"].append({
+            "id": "limitation:x", "repository_id": "backend", "analyzer": "test", "kind": "unsupported-construct",
+            "message": "cited from another repository", "evidence_ids": list(theirs["evidence_ids"]),
+        })
+
+    def expect(case: dict) -> None:
+        case["limitations"] = [{"repository": "backend", "kind": "unsupported-construct", "path": "openapi.json"}]
+
+    result = scored(runs, "smartcart-correlation", foreign, expect)
+    assert result["limitations"]["recall"] == 0.0 and result["limitations"]["matched"] == 0
+    assert result["provenance"]["misbound_references"] >= 1
+
+
+# ------------------------------------------------------------------ line endings and the CI step
+def converted_copy(tmp_path: Path, newline: bytes) -> Path:
+    """The fixtures and golden cases copied with every text file rewritten to the given line ending."""
+
+    for name in ("fixtures", "golden"):
+        shutil.copytree(ROOT / name, tmp_path / name)
+    for path in (tmp_path / "fixtures").rglob("*"):
+        if path.is_file():
+            path.write_bytes(path.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", newline))
+    return tmp_path / "golden"
+
+
+@pytest.mark.parametrize("newline", [b"\n", b"\r\n"], ids=["lf", "crlf"])
+def test_the_report_is_identical_for_lf_and_crlf_checkouts(tmp_path, newline) -> None:
+    cases = converted_copy(tmp_path, newline)
+    source = next((tmp_path / "fixtures" / "spring-boot-repo" / "src").rglob("OrderController.java")).read_bytes()
+    assert (b"\r\n" in source) == (newline == b"\r\n"), "the copy was not converted"
+
+    report = evaluate_cases(cases)
+
+    assert report == json.loads(BASELINE.read_text(encoding="utf-8"))
+    # Hashes differ between the two copies, yet the report holds none, and evidence still resolves to the files.
+    assert all(item["provenance"]["evidence_resolved"] == item["provenance"]["evidence_records"] for item in report["cases"])
+
+
+def test_the_metrics_step_keeps_the_shell_that_makes_a_failure_fail_the_job() -> None:
+    """On Linux a step without `shell:` runs `bash -e` with no pipefail, and a pipe into tee reports success."""
+
+    workflow = (ROOT.parent / ".github" / "workflows" / "tests.yml").read_text(encoding="utf-8")
+    steps = {}
+    for block in workflow.split("      - name: ")[1:]:
+        steps[block.splitlines()[0]] = block
+    metrics = steps["Report golden-fixture quality metrics"]
+    assert "shell: bash" in metrics and "python -m repodocs.golden" in metrics and "| tee" in metrics
+    assert "--baseline tests/golden/baseline-report.json" in metrics
+
+    negative = steps["A failing evaluation must fail the step"]
+    assert "continue-on-error: true" in negative and "shell: bash" in negative and "| tee" in negative
+    guard = steps["The failing evaluation must have been reported as a failure"]
+    assert "steps.failing-evaluation.outcome != 'failure'" in guard and "exit 1" in guard
+
+
+def test_long_values_in_baseline_differences_are_shortened() -> None:
+    lines = diff_reports({"cases": ["x" * 5000]}, {})
+    assert len(lines) == 1 and len(lines[0]) < 260 and "5" in lines[0] and "characters" in lines[0]
