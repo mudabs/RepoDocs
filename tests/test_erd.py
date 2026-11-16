@@ -344,6 +344,133 @@ def test_missing_target_diagnostics_scope_to_repository() -> None:
     )
 
 
+def test_erd_schema_qualified_foreign_key_diagnostics() -> None:
+    ir = {
+        "nodes": [
+            # Schema-qualified table billing.customers
+            {
+                "id": "node_billing_customers",
+                "type": "table",
+                "name": "billing.customers",
+                "attributes": {
+                    "repository_id": "database",
+                    "schema": "billing",
+                    "table": "customers",
+                    "primary_key": ["id"],
+                    "columns": [
+                        {"name": "id", "type": "bigint", "nullable": False, "primary_key": True},
+                    ],
+                    "unique_constraints": [],
+                    "foreign_keys": [],
+                },
+                "evidence_ids": ["ev_1"],
+            },
+            # Table orders referencing bare "customers" (which is NOT defined in public schema)
+            {
+                "id": "node_orders",
+                "type": "table",
+                "name": "orders",
+                "attributes": {
+                    "repository_id": "database",
+                    "table": "orders",
+                    "primary_key": ["id"],
+                    "columns": [
+                        {"name": "id", "type": "bigint", "nullable": False, "primary_key": True},
+                        {"name": "customer_id", "type": "bigint", "nullable": False},
+                    ],
+                    "unique_constraints": [],
+                    "foreign_keys": [
+                        {
+                            "name": "fk_orders_customer",
+                            "columns": ["customer_id"],
+                            "references_table": "customers",
+                            "references_columns": ["id"],
+                        }
+                    ],
+                },
+                "evidence_ids": ["ev_2"],
+            },
+            # Table invoices referencing fully-qualified "billing.customers" (valid)
+            {
+                "id": "node_invoices",
+                "type": "table",
+                "name": "invoices",
+                "attributes": {
+                    "repository_id": "database",
+                    "table": "invoices",
+                    "primary_key": ["id"],
+                    "columns": [
+                        {"name": "id", "type": "bigint", "nullable": False, "primary_key": True},
+                        {"name": "customer_id", "type": "bigint", "nullable": False},
+                    ],
+                    "unique_constraints": [],
+                    "foreign_keys": [
+                        {
+                            "name": "fk_invoices_customer",
+                            "columns": ["customer_id"],
+                            "references_table": "billing.customers",
+                            "references_columns": ["id"],
+                        }
+                    ],
+                },
+                "evidence_ids": ["ev_3"],
+            },
+            # Table payments referencing "public.orders" (valid reference to public schema table)
+            {
+                "id": "node_payments",
+                "type": "table",
+                "name": "payments",
+                "attributes": {
+                    "repository_id": "database",
+                    "table": "payments",
+                    "primary_key": ["id"],
+                    "columns": [
+                        {"name": "id", "type": "bigint", "nullable": False, "primary_key": True},
+                        {"name": "order_id", "type": "bigint", "nullable": False},
+                    ],
+                    "unique_constraints": [],
+                    "foreign_keys": [
+                        {
+                            "name": "fk_payments_order",
+                            "columns": ["order_id"],
+                            "references_table": "public.orders",
+                            "references_columns": ["id"],
+                        }
+                    ],
+                },
+                "evidence_ids": ["ev_4"],
+            },
+        ],
+        "relationships": [],
+        "evidence": [
+            {"id": "ev_1", "repository_id": "database", "path": "billing.sql", "kind": "file"},
+            {"id": "ev_2", "repository_id": "database", "path": "orders.sql", "kind": "file"},
+            {"id": "ev_3", "repository_id": "database", "path": "invoices.sql", "kind": "file"},
+            {"id": "ev_4", "repository_id": "database", "path": "payments.sql", "kind": "file"},
+        ],
+    }
+
+    model = build_erd_model(ir)
+    assert model is not None
+
+    # billing.customers must NOT suppress the warning for the unresolved reference to customers
+    assert any(
+        "Table `orders` foreign key (customer_id) references `customers`, which is not defined in repository `database`." in warning
+        for warning in model.unsupported_relationships
+    )
+
+    # Valid reference to billing.customers must NOT trigger an unsupported relationship warning
+    assert not any("invoices" in warning for warning in model.unsupported_relationships)
+
+    # Valid reference to public.orders must NOT trigger an unsupported relationship warning
+    assert not any("payments" in warning for warning in model.unsupported_relationships)
+
+    erd_text = render_erd(ir)
+    assert erd_text is not None
+    assert 'billing_customers["billing.customers"] {' in erd_text
+    assert "%% - Unsupported relationship: Table `orders` foreign key (customer_id) references `customers`, which is not defined in repository `database`." in erd_text
+
+
 def test_self_referencing_relationship_erd(tmp_path: Path, capsys) -> None:
     root = tmp_path / "project"
     root.mkdir()

@@ -128,6 +128,22 @@ def sanitize_entity_id(name_str: str) -> str:
     return cleaned
 
 
+def canonical_table_name(schema: str | None, table_name: str) -> str:
+    """Canonical table identity following the PostgreSQL analyzer:
+    schema.table if schema and schema != 'public' else table.
+    """
+    if schema and schema != "public":
+        return f"{schema}.{table_name}"
+    return table_name
+
+
+def canonical_ref_name(ref: str) -> str:
+    """Canonical reference identity matching PostgreSQL analyzer's _qualified_name."""
+    if ref.startswith("public."):
+        return ref[len("public."):]
+    return ref
+
+
 def build_erd_model(ir: dict[str, Any]) -> ERDModel | None:
     nodes = {node["id"]: node for node in ir.get("nodes", [])}
     table_nodes = [node for node in ir.get("nodes", []) if node.get("type") == "table"]
@@ -145,19 +161,24 @@ def build_erd_model(ir: dict[str, Any]) -> ERDModel | None:
         )
     )
 
-    # Map tables per repository to prevent cross-repository suppression of missing foreign-key targets
+    # Map tables per repository following the PostgreSQL analyzer's canonical repository/schema identity.
+    # Schema-qualified tables (e.g. billing.customers) are registered exclusively under their qualified name
+    # and do not receive bare-name aliases, preventing cross-schema false suppression of missing foreign-key targets.
     repo_tables: dict[str, dict[str, dict[str, Any]]] = {}
     for node in table_nodes:
-        repo_id = node.get("attributes", {}).get("repository_id", "")
+        attrs = node.get("attributes", {})
+        repo_id = attrs.get("repository_id", "")
+        schema = attrs.get("schema")
+        table_attr = attrs.get("table") or node.get("name", "")
+        canon_name = canonical_table_name(schema, table_attr)
+
         names = repo_tables.setdefault(repo_id, {})
-        name = node.get("name", "")
-        names[name] = node
-        table_attr = node.get("attributes", {}).get("table")
-        if table_attr and table_attr not in names:
-            names[table_attr] = node
-        schema = node.get("attributes", {}).get("schema")
-        if schema and table_attr:
-            names[f"{schema}.{table_attr}"] = node
+        names[canon_name] = node
+        node_name = node.get("name", "")
+        if node_name:
+            names[canonical_ref_name(node_name)] = node
+        if not schema or schema == "public":
+            names[f"public.{table_attr}"] = node
 
     node_to_entity_id: dict[str, str] = {}
     used_ids: set[str] = set()
@@ -195,18 +216,20 @@ def build_erd_model(ir: dict[str, Any]) -> ERDModel | None:
         if not has_pk:
             missing_keys.append(f"Table `{qualified_name}` defines no primary key.")
 
-        # Check foreign keys strictly against the declaring table's repository
+        # Check foreign keys strictly against the declaring table's repository and canonical schema identity
         local_tables = repo_tables.get(repo_id, {})
         fk_columns: set[str] = set()
         for fk in foreign_keys:
             cols = fk.get("columns", [])
             fk_columns.update(cols)
             ref_table = fk.get("references_table")
-            if ref_table and ref_table not in local_tables:
-                unsupported_relationships.append(
-                    f"Table `{qualified_name}` foreign key ({', '.join(cols)}) references `{ref_table}`, "
-                    f"which is not defined in repository `{repo_id}`."
-                )
+            if ref_table:
+                canon_ref = canonical_ref_name(ref_table)
+                if canon_ref not in local_tables and ref_table not in local_tables:
+                    unsupported_relationships.append(
+                        f"Table `{qualified_name}` foreign key ({', '.join(cols)}) references `{ref_table}`, "
+                        f"which is not defined in repository `{repo_id}`."
+                    )
 
         unique_columns: set[str] = {
             uc["columns"][0]

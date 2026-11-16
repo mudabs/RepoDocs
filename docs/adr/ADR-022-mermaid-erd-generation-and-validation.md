@@ -39,7 +39,7 @@ The diagram pipeline must construct typed relational models rather than ad-hoc s
 
 ### Diagnostics and Evidence Reporting
 
-- Foreign key targets are resolved strictly within the declaring table's repository. A table with the same name in another repository does not suppress an unresolved foreign-key warning.
+- Foreign key targets are resolved strictly within the declaring table's repository and follow the PostgreSQL analyzer's canonical repository and schema identity. Schema-qualified tables (e.g. `billing.customers`) are registered exclusively under their qualified name and do not receive bare-name aliases, preventing cross-schema false suppression of unresolved foreign-key warnings.
 - Missing primary keys and unsupported relationships are reported as structured comments in `erd.mmd` and in a `Schema diagnostics` section in `architecture.md`.
 - `erd.mmd` explicitly preserves entity and relationship evidence mappings with repository, file path, line span, and evidence ID in a top-level `%% Evidence mappings:` block and inline `%% evidence:` comments immediately preceding each entity and relationship.
 - Generated `erd.mmd` files are tracked in `artifact-manifest.json`, protected against unexpected manual edits, and validated with exit code 0 when valid.
@@ -48,6 +48,6 @@ The diagram pipeline must construct typed relational models rather than ad-hoc s
 
 - PostgreSQL repositories automatically gain editable, renderer-validated ER diagrams (`erd.mmd`) in their generated documentation directory with full evidence traceability.
 - Attribute types remain strictly compatible with all Mermaid parser versions.
-- Missing-target warnings remain accurate in multi-repository projects.
+- Missing-target warnings remain accurate across multi-repository boundaries and distinct schema namespaces.
 - Projects without database facts remain unaffected and produce no extraneous diagram artifacts.
 - The manifest schema remains at version 1.0 because `erd.mmd` uses the existing `repodocs-deterministic` generator classification.
