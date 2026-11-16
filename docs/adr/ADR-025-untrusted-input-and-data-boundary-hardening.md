@@ -37,7 +37,7 @@ A manifest or analyzer input that cannot be parsed, including input nested deepe
 ### External AI boundary
 - Redaction rules are version 1.1. They add GitHub fine-grained, GitLab, npm, Slack, Google API, and Stripe keys, and they recognize secret assignments whose key has a prefix (`client_secret`, `DB_PASSWORD`, `x-api-key`). The prefix is bounded so a long unbroken word cannot make matching quadratic. Redaction is still pattern-based and not a completeness guarantee.
 - A request to a loopback host never goes through a proxy configured in the environment. No provider request follows a redirect.
-- Loopback detection is unchanged and is tested against hostnames that merely start with or contain `127.0.0.1` or `localhost`, credentials in the URL, decimal and mapped addresses, and a trailing dot. Anything not an exact loopback host is external and needs recorded consent.
+- Loopback detection is unchanged and is tested against hostnames that merely start with or contain `127.0.0.1` or `localhost`, credentials in the URL, decimal addresses, and a trailing dot. IPv4-mapped IPv6 addresses are not tested because Python versions disagree about them; older versions treat them as external, which fails closed. Anything not an exact loopback host is external and needs recorded consent.
 
 ## Consequences
 
