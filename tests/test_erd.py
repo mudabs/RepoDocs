@@ -50,6 +50,12 @@ def test_erd_generation_from_postgresql_tables(tmp_path: Path, capsys) -> None:
 
     assert content.startswith("erDiagram\n")
 
+    # Check evidence mappings header and inline comments
+    assert "%% Evidence mappings:" in content
+    assert "%% - entity customers (customers): database:db/migration/V1__init.sql" in content
+    assert "%% - relationship customers -> orders (customer_id): database:db/migration/V1__init.sql" in content
+    assert "%% evidence: database:db/migration/V1__init.sql" in content
+
     # Check entities
     assert "audit_entries {" in content
     assert 'billing_invoices["billing.invoices"] {' in content
@@ -59,14 +65,14 @@ def test_erd_generation_from_postgresql_tables(tmp_path: Path, capsys) -> None:
     assert "order_items {" in content
     assert "orders {" in content
 
-    # Check attribute types and keys
+    # Check attribute types and keys (normalized without commas)
     assert "bigserial id PK" in content
     assert "varchar(255) email_address UK" in content
     assert "bigint order_id PK, FK" in content
     assert "integer line_no PK" in content
     assert "bigint order_id UK, FK" in content
-    assert "numeric(12,2) unit_price" in content
-    assert "numeric(14,2) total_amount" in content
+    assert "numeric(12_2) unit_price" in content
+    assert "numeric(14_2) total_amount" in content
 
     # Check relationships
     assert 'customers ||..o{ orders : "customer_id"' in content
@@ -163,6 +169,7 @@ def test_validate_mermaid_er_diagram_valid() -> None:
         "    customers {\n"
         "        bigserial id PK\n"
         '        varchar(255) email UK "unique email"\n'
+        "        numeric(12_2) amount\n"
         "    }\n"
         '    billing_invoices["billing.invoices"] {\n'
         "        uuid id PK\n"
@@ -210,12 +217,21 @@ def test_validate_mermaid_er_diagram_errors() -> None:
             '    tbl1 xx--yy tbl2 : "rel"\n'
         )
 
-    # Malformed attribute
+    # Malformed attribute - non-letter start
     with pytest.raises(ValidationError, match="Unsupported or malformed Mermaid ERD attribute line"):
         validate_mermaid(
             "erDiagram\n"
             "    tbl1 {\n"
             "        123bad attribute name\n"
+            "    }\n"
+        )
+
+    # Attribute type with comma is rejected by the strict parser
+    with pytest.raises(ValidationError, match="Unsupported or malformed Mermaid ERD attribute line"):
+        validate_mermaid(
+            "erDiagram\n"
+            "    tbl1 {\n"
+            "        numeric(14,2) amount\n"
             "    }\n"
         )
 
@@ -244,7 +260,10 @@ def test_markdown_reports_schema_diagnostics(tmp_path: Path, capsys) -> None:
 
 
 def test_type_and_name_normalization() -> None:
-    assert normalize_type("NUMERIC(14, 2)") == "numeric(14,2)"
+    # Commas must be normalized to underscores for Mermaid compatibility
+    assert normalize_type("NUMERIC(14, 2)") == "numeric(14_2)"
+    assert normalize_type("NUMERIC(12,2)") == "numeric(12_2)"
+    assert normalize_type("DECIMAL(10, 2)") == "decimal(10_2)"
     assert normalize_type("CHARACTER VARYING(255)") == "varchar(255)"
     assert normalize_type("DOUBLE PRECISION") == "double_precision"
     assert normalize_type("TIMESTAMP WITH TIME ZONE") == "timestamptz"
@@ -261,6 +280,68 @@ def test_type_and_name_normalization() -> None:
     assert sanitize_entity_id("orders") == "orders"
     assert sanitize_entity_id("billing.invoices") == "billing_invoices"
     assert sanitize_entity_id("1table") == "tbl_1table"
+
+
+def test_missing_target_diagnostics_scope_to_repository() -> None:
+    """A table in repository B must not suppress a missing target warning in repository A."""
+    ir = {
+        "nodes": [
+            {
+                "id": "node_a_orders",
+                "type": "table",
+                "name": "orders",
+                "attributes": {
+                    "repository_id": "repoA",
+                    "table": "orders",
+                    "primary_key": ["id"],
+                    "columns": [
+                        {"name": "id", "type": "bigint", "nullable": False, "primary_key": True},
+                        {"name": "customer_id", "type": "bigint", "nullable": False},
+                    ],
+                    "unique_constraints": [],
+                    "foreign_keys": [
+                        {
+                            "name": "fk_orders_customer",
+                            "columns": ["customer_id"],
+                            "references_table": "customers",
+                            "references_columns": ["id"],
+                        }
+                    ],
+                },
+                "evidence_ids": ["ev_1"],
+            },
+            # customers table exists, but in repoB!
+            {
+                "id": "node_b_customers",
+                "type": "table",
+                "name": "customers",
+                "attributes": {
+                    "repository_id": "repoB",
+                    "table": "customers",
+                    "primary_key": ["id"],
+                    "columns": [
+                        {"name": "id", "type": "bigint", "nullable": False, "primary_key": True},
+                    ],
+                    "unique_constraints": [],
+                    "foreign_keys": [],
+                },
+                "evidence_ids": ["ev_2"],
+            },
+        ],
+        "relationships": [],
+        "evidence": [
+            {"id": "ev_1", "repository_id": "repoA", "path": "orders.sql", "kind": "file"},
+            {"id": "ev_2", "repository_id": "repoB", "path": "customers.sql", "kind": "file"},
+        ],
+    }
+
+    model = build_erd_model(ir)
+    assert model is not None
+    # Must report that customers is missing in repoA, even though customers exists in repoB
+    assert any(
+        "references `customers`, which is not defined in repository `repoA`" in warning
+        for warning in model.unsupported_relationships
+    )
 
 
 def test_self_referencing_relationship_erd(tmp_path: Path, capsys) -> None:

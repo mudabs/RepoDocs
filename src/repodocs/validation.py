@@ -275,7 +275,7 @@ def validate_ai_artifact(config: ProjectConfig, ir: dict[str, Any], item: dict[s
 
 
 ER_ATTR_PATTERN = re.compile(
-    r"^([A-Za-z][A-Za-z0-9_\-\(\)\[\],]*)\s+([A-Za-z_][A-Za-z0-9_\-]*)"
+    r"^([A-Za-z][A-Za-z0-9_\-\(\)\[\]]*)\s+([A-Za-z_][A-Za-z0-9_\-]*)"
     r"(?:\s+((?:(?:PK|FK|UK)(?:,\s*)?)+))?"
     r'(?:\s+"([^"]*)")?$'
 )

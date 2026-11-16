@@ -26,9 +26,11 @@ class ERDEntity:
     display_name: str
     attributes: tuple[ERDAttribute, ...]
     table_name: str
+    repository_id: str
     schema: str | None = None
     has_primary_key: bool = True
     evidence_ids: tuple[str, ...] = ()
+    evidence_refs: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -40,6 +42,7 @@ class ERDRelationship:
     identifying: bool        # True -> "--", False -> ".."
     label: str               # e.g. "order_id"
     evidence_ids: tuple[str, ...] = ()
+    evidence_refs: tuple[str, ...] = ()
 
     def render(self) -> str:
         line = "--" if self.identifying else ".."
@@ -58,6 +61,19 @@ def _escape_label(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
 
 
+def _format_evidence_ref(ev_id: str, evidence_map: dict[str, dict[str, Any]]) -> str:
+    ev = evidence_map.get(ev_id)
+    if not ev:
+        return ev_id
+    location = f"{ev.get('repository_id', '')}:{ev.get('path', '')}"
+    if ev.get("kind") == "span":
+        start = ev.get("line_start")
+        end = ev.get("line_end")
+        if start is not None and end is not None:
+            location += f":L{start}-L{end}"
+    return f"{location} ({ev_id})"
+
+
 def normalize_type(type_str: str) -> str:
     if not type_str:
         return "unknown"
@@ -73,9 +89,12 @@ def normalize_type(type_str: str) -> str:
     for phrase, replacement in multi_words.items():
         if normalized.startswith(phrase):
             normalized = normalized.replace(phrase, replacement, 1)
-    normalized = re.sub(r"\s*,\s*", ",", normalized)
+
+    # Commas are outside the documented Mermaid attribute-type grammar;
+    # replace them with underscores so precision/scale remain intact (e.g. numeric(14_2)).
+    normalized = re.sub(r"\s*,\s*", "_", normalized)
     normalized = re.sub(r"\s+", "_", normalized)
-    normalized = re.sub(r"[^a-z0-9_\-\(\)\[\],]", "", normalized)
+    normalized = re.sub(r"[^a-z0-9_\-\(\)\[\]]", "", normalized)
     if not normalized or not normalized[0].isalpha():
         normalized = f"t_{normalized}" if normalized else "unknown"
     return normalized
@@ -103,6 +122,8 @@ def build_erd_model(ir: dict[str, Any]) -> ERDModel | None:
     if not table_nodes:
         return None
 
+    evidence_map = {ev["id"]: ev for ev in ir.get("evidence", [])}
+
     table_nodes.sort(
         key=lambda n: (
             n.get("attributes", {}).get("repository_id", ""),
@@ -112,8 +133,21 @@ def build_erd_model(ir: dict[str, Any]) -> ERDModel | None:
         )
     )
 
+    # Map tables per repository to prevent cross-repository suppression of missing foreign-key targets
+    repo_tables: dict[str, dict[str, dict[str, Any]]] = {}
+    for node in table_nodes:
+        repo_id = node.get("attributes", {}).get("repository_id", "")
+        names = repo_tables.setdefault(repo_id, {})
+        name = node.get("name", "")
+        names[name] = node
+        table_attr = node.get("attributes", {}).get("table")
+        if table_attr and table_attr not in names:
+            names[table_attr] = node
+        schema = node.get("attributes", {}).get("schema")
+        if schema and table_attr:
+            names[f"{schema}.{table_attr}"] = node
+
     node_to_entity_id: dict[str, str] = {}
-    table_name_to_node: dict[str, dict[str, Any]] = {}
     used_ids: set[str] = set()
 
     for node in table_nodes:
@@ -126,10 +160,6 @@ def build_erd_model(ir: dict[str, Any]) -> ERDModel | None:
             suffix += 1
         used_ids.add(entity_id)
         node_to_entity_id[node["id"]] = entity_id
-        table_name_to_node[name] = node
-        table_attr = node.get("attributes", {}).get("table")
-        if table_attr and table_attr not in table_name_to_node:
-            table_name_to_node[table_attr] = node
 
     missing_keys: list[str] = []
     unsupported_relationships: list[str] = []
@@ -137,6 +167,7 @@ def build_erd_model(ir: dict[str, Any]) -> ERDModel | None:
 
     for node in table_nodes:
         attrs = node.get("attributes", {})
+        repo_id = attrs.get("repository_id", "")
         table_name = attrs.get("table", node.get("name", ""))
         schema = attrs.get("schema")
         qualified_name = node.get("name", table_name)
@@ -145,19 +176,23 @@ def build_erd_model(ir: dict[str, Any]) -> ERDModel | None:
         foreign_keys = attrs.get("foreign_keys", [])
         raw_columns = attrs.get("columns", [])
         evidence_ids = tuple(node.get("evidence_ids", []))
+        evidence_refs = tuple(_format_evidence_ref(eid, evidence_map) for eid in evidence_ids)
 
         has_pk = bool(primary_key)
         if not has_pk:
             missing_keys.append(f"Table `{qualified_name}` defines no primary key.")
 
+        # Check foreign keys strictly against the declaring table's repository
+        local_tables = repo_tables.get(repo_id, {})
         fk_columns: set[str] = set()
         for fk in foreign_keys:
             cols = fk.get("columns", [])
             fk_columns.update(cols)
             ref_table = fk.get("references_table")
-            if ref_table and ref_table not in table_name_to_node:
+            if ref_table and ref_table not in local_tables:
                 unsupported_relationships.append(
-                    f"Table `{qualified_name}` foreign key ({', '.join(cols)}) references `{ref_table}`, which is not defined in the extracted schema."
+                    f"Table `{qualified_name}` foreign key ({', '.join(cols)}) references `{ref_table}`, "
+                    f"which is not defined in repository `{repo_id}`."
                 )
 
         unique_columns: set[str] = {
@@ -198,9 +233,11 @@ def build_erd_model(ir: dict[str, Any]) -> ERDModel | None:
                 display_name=qualified_name,
                 attributes=tuple(erd_attrs),
                 table_name=table_name,
+                repository_id=repo_id,
                 schema=schema,
                 has_primary_key=has_pk,
                 evidence_ids=evidence_ids,
+                evidence_refs=evidence_refs,
             )
         )
 
@@ -243,6 +280,8 @@ def build_erd_model(ir: dict[str, Any]) -> ERDModel | None:
 
         is_identifying = bool(child_pk and fk_cols and set(fk_cols).issubset(set(child_pk)))
         label = ", ".join(fk_cols) if fk_cols else "references"
+        edge_evidence_ids = tuple(edge.get("evidence_ids", []))
+        edge_evidence_refs = tuple(_format_evidence_ref(eid, evidence_map) for eid in edge_evidence_ids)
 
         relationships.append(
             ERDRelationship(
@@ -252,7 +291,8 @@ def build_erd_model(ir: dict[str, Any]) -> ERDModel | None:
                 child_cardinality=child_cardinality,
                 identifying=is_identifying,
                 label=label,
-                evidence_ids=tuple(edge.get("evidence_ids", [])),
+                evidence_ids=edge_evidence_ids,
+                evidence_refs=edge_evidence_refs,
             )
         )
 
@@ -272,6 +312,16 @@ def render_erd(ir: dict[str, Any]) -> str | None:
         return None
 
     lines = ["erDiagram"]
+
+    # Header evidence mappings preserving entity and relationship traceability
+    lines.append("    %% Evidence mappings:")
+    for entity in model.entities:
+        refs_str = ", ".join(entity.evidence_refs) if entity.evidence_refs else ", ".join(entity.evidence_ids) or "none"
+        lines.append(f"    %% - entity {entity.id} ({entity.display_name}): {refs_str}")
+    for rel in model.relationships:
+        refs_str = ", ".join(rel.evidence_refs) if rel.evidence_refs else ", ".join(rel.evidence_ids) or "none"
+        lines.append(f"    %% - relationship {rel.parent_entity_id} -> {rel.child_entity_id} ({rel.label}): {refs_str}")
+
     if model.missing_keys or model.unsupported_relationships:
         lines.append("    %% Reported limitations and diagnostics:")
         for mk in model.missing_keys:
@@ -280,6 +330,9 @@ def render_erd(ir: dict[str, Any]) -> str | None:
             lines.append(f"    %% - Unsupported relationship: {ur}")
 
     for entity in model.entities:
+        refs_str = ", ".join(entity.evidence_refs) if entity.evidence_refs else ", ".join(entity.evidence_ids)
+        if refs_str:
+            lines.append(f"    %% evidence: {refs_str}")
         if entity.id != entity.display_name:
             header = f'{entity.id}["{_escape_label(entity.display_name)}"] {{'
         else:
@@ -290,6 +343,9 @@ def render_erd(ir: dict[str, Any]) -> str | None:
         lines.append("    }")
 
     for rel in model.relationships:
+        refs_str = ", ".join(rel.evidence_refs) if rel.evidence_refs else ", ".join(rel.evidence_ids)
+        if refs_str:
+            lines.append(f"    %% evidence: {refs_str}")
         lines.append(f"    {rel.render()}")
 
     return "\n".join(lines) + "\n"

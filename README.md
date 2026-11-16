@@ -96,10 +96,11 @@ Standalone unsupported DDL and procedural migrations are reported with evidence 
 
 When a project contains PostgreSQL table facts, `repodocs generate` produces **`erd.mmd`** alongside `architecture.md` and `architecture.mmd`:
 - Generated deterministically from a typed relational model (`repodocs.erd`) using Mermaid `erDiagram` syntax.
-- Entities declare attributes with normalized types and `PK`, `FK`, and `UK` key constraints. Schema-qualified table names use Mermaid alias labels (`entity_id["schema.table"]`).
+- Entities declare attributes with normalized types (commas replaced with underscores to strictly conform to Mermaid's documented attribute grammar) and `PK`, `FK`, and `UK` key constraints. Schema-qualified table names use Mermaid alias labels (`entity_id["schema.table"]`).
 - Foreign keys produce crow's-foot relationship lines with identifying (`--`) or non-identifying (`..`) styles depending on child primary keys, and cardinality (`||`, `|o`, `o{`, `o|`) reflecting column nullability and uniqueness.
-- Missing primary keys and unsupported relationships (such as references to unextracted external tables) are reported in `erd.mmd` diagram comments and under `### Schema diagnostics` in `architecture.md`.
-- `repodocs validate` performs documented renderer-compatible verification without requiring external Node.js or browser tooling.
+- Entity and relationship evidence mappings (file paths, line spans, and evidence IDs) are preserved in `erd.mmd` as structured comment blocks and inline declarations.
+- Missing primary keys and repository-scoped unsupported relationships (such as foreign keys referencing tables outside the declaring repository) are reported in `erd.mmd` diagram comments and under `### Schema diagnostics` in `architecture.md`.
+- `repodocs validate` performs documented renderer-compatible verification without requiring external Node.js or browser tooling, strictly enforcing attribute type syntax.
 - `erd.mmd` is tracked in `artifact-manifest.json`, protected against unexpected edits, and safely retired when database facts are no longer present. See ADR-022.
 
 ### Cross-repository candidates
