@@ -401,7 +401,8 @@ def test_malformed_cases_are_rejected(tmp_path) -> None:
     with pytest.raises(GoldenError, match="missing 'repositories'"):
         load_case(tmp_path / "golden.json")
     (tmp_path / "golden.json").write_text(
-        json.dumps({"schema_version": "1.0", "name": "x", "repositories": [{"id": "a", "path": "nowhere"}]}), encoding="utf-8"
+        json.dumps({"schema_version": "1.0", "name": "x", "description": "x", "repositories": [{"id": "a", "path": "nowhere"}]}),
+        encoding="utf-8",
     )
     with pytest.raises(GoldenError, match="not a directory"):
         load_case(tmp_path / "golden.json")
@@ -561,3 +562,229 @@ def test_zero_denominators_for_provenance_stay_valid(runs) -> None:
     assert provenance["evidence_records"] == 0 and provenance["references"] == 0
     assert provenance["resolution"] is None and provenance["reference_resolution"] is None
     assert not {"evidence-does-not-resolve-to-files", "evidence-reference-unresolved"} & set(result["failures"])
+
+
+# ------------------------------------------------------------------ checks that could pass vacuously
+def write_case(tmp_path: Path, name: str, edit=None) -> Path:
+    """A copy of a real golden case in a temporary directory, with absolute fixture paths."""
+
+    data = json.loads((CASES_DIR / name / "golden.json").read_text(encoding="utf-8"))
+    for repository in data["repositories"]:
+        repository["path"] = str((CASES_DIR / name / repository["path"]).resolve())
+    if "ai" in data:
+        data["ai"]["claims"] = str((CASES_DIR / name / data["ai"]["claims"]).resolve())
+    if edit:
+        edit(data)
+    folder = tmp_path / name
+    folder.mkdir(exist_ok=True)
+    (folder / "golden.json").write_text(json.dumps(data), encoding="utf-8")
+    return folder / "golden.json"
+
+
+def test_a_misspelled_selector_key_is_rejected_instead_of_dropping_the_constraint(tmp_path) -> None:
+    def typo(data: dict) -> None:
+        data["nodes"][0]["repo"] = data["nodes"][0].pop("repository")  # would silently match any repository
+
+    with pytest.raises(GoldenError, match="does not match schemas/golden-case-1.0.json"):
+        load_case(write_case(tmp_path, "spring-boot", typo))
+
+
+@pytest.mark.parametrize("edit", [
+    lambda data: data.update(extra_section=[]),
+    lambda data: data["limitations"][0].update(kind="not-a-kind"),
+    lambda data: data["nodes"].append({"type": "endpoint"}),
+    lambda data: data["evidence"][0].update(line=0),
+    lambda data: data.update(closed={"limitation": True}),
+])
+def test_cases_are_validated_against_the_published_schema(tmp_path, edit) -> None:
+    with pytest.raises(GoldenError, match="does not match schemas/golden-case-1.0.json"):
+        load_case(write_case(tmp_path, "spring-boot", edit))
+
+
+def test_a_missing_validator_or_schema_is_a_loud_error_not_a_skipped_check(tmp_path, monkeypatch) -> None:
+    path = write_case(tmp_path, "spring-boot")
+    monkeypatch.setitem(sys.modules, "jsonschema", None)
+    with pytest.raises(GoldenError, match="needs the jsonschema package"):
+        load_case(path)
+    monkeypatch.undo()
+    monkeypatch.setattr(golden, "SCHEMA_PATH", tmp_path / "missing" / "golden-case-1.0.json")
+    with pytest.raises(GoldenError, match="schema .* is unavailable"):
+        load_case(path)
+
+
+def test_a_selector_naming_an_unknown_repository_is_rejected(tmp_path) -> None:
+    def wrong(data: dict) -> None:
+        data["relationships"][0]["target"]["repository"] = "backnd"
+
+    with pytest.raises(GoldenError, match="unknown repository 'backnd'"):
+        load_case(write_case(tmp_path, "spring-boot", wrong))
+
+
+@pytest.mark.parametrize("name, edit, message", [
+    ("spring-boot", lambda d: d["relationships"].append(copy.deepcopy(d["relationships"][0])), "duplicate expected relationships"),
+    ("spring-boot", lambda d: d["nodes"].append(copy.deepcopy(d["nodes"][0])), "duplicate expected nodes"),
+    ("spring-boot", lambda d: d["evidence"].append(copy.deepcopy(d["evidence"][0])), "duplicate expected evidence"),
+    ("spring-boot", lambda d: d["limitations"].append(copy.deepcopy(d["limitations"][0])), "duplicate expected limitations"),
+    ("smartcart-correlation", lambda d: d["candidates"]["expected"].append(copy.deepcopy(d["candidates"]["expected"][0])), "duplicate expected candidates"),
+    ("smartcart-correlation", lambda d: d["candidates"]["absent"].append(copy.deepcopy(d["candidates"]["absent"][0])), "duplicate absent candidates"),
+])
+def test_duplicate_expectations_are_rejected_rather_than_collapsed(tmp_path, name, edit, message) -> None:
+    with pytest.raises(GoldenError, match=message):
+        load_case(write_case(tmp_path, name, edit))
+
+
+@pytest.mark.parametrize("edit", [
+    # the same pair both expected and forbidden
+    lambda d: d["candidates"]["absent"].append({"request": d["candidates"]["expected"][0]["request"], "endpoint": d["candidates"]["expected"][0]["endpoint"]}),
+    # every candidate for a request forbidden, though one is expected
+    lambda d: d["candidates"]["absent"].append({"request": d["candidates"]["expected"][0]["request"], "endpoint": None}),
+])
+def test_a_candidate_cannot_be_both_expected_and_forbidden(tmp_path, edit) -> None:
+    with pytest.raises(GoldenError, match="both expected and forbidden"):
+        load_case(write_case(tmp_path, "smartcart-correlation", edit))
+
+
+def test_a_forbidden_candidate_selector_that_matches_nothing_is_a_failure_not_a_skip(runs) -> None:
+    def typo(case: dict) -> None:
+        case["candidates"]["absent"].append(
+            {"request": {"type": "http_request", "repository": "frontend", "name": "DELETE /ordres"}, "endpoint": None}
+        )
+
+    result = scored(runs, "smartcart-correlation", edit_case=typo)
+    assert result["candidates"]["unresolved_absent"] == [
+        {"request": {"type": "http_request", "repository": "frontend", "name": "DELETE /ordres"}, "endpoint": None}
+    ]
+    assert "absent-selector-unresolved" in result["failures"]
+
+
+def test_duplicate_observed_facts_are_unexpected_not_swallowed(runs) -> None:
+    def twice(o: Observed) -> None:
+        edge = next(e for e in o.ir["relationships"] if e["type"] == "exposes")
+        o.ir["relationships"].append({**edge, "id": "relationship:duplicate"})
+
+    spring = scored(runs, "spring-boot", twice)
+    assert spring["relationships"]["observed"] == 8 and spring["relationships"]["matched"] == 7
+    assert [item.get("duplicate") for item in spring["relationships"]["unexpected"]] == [True]
+
+    def twice_candidate(o: Observed) -> None:
+        o.ir["candidates"].append({**copy.deepcopy(o.ir["candidates"][0]), "id": "candidate:duplicate"})
+
+    correlation = scored(runs, "smartcart-correlation", twice_candidate)
+    assert correlation["candidates"]["observed"] == 6 and correlation["candidates"]["matched"] == 5
+    assert [item.get("duplicate") for item in correlation["candidates"]["unexpected"]] == [True]
+    assert correlation["candidates"]["precision"] < 1
+
+
+# ------------------------------------------------------------------ the AI replay
+def shared_text_claims(case: dict) -> None:
+    """Two different claims with the same wording: one about an endpoint, one about an unconfirmed candidate."""
+
+    labels = case["ai"]["labels"]
+    labels["claims"] += [
+        {"text": "Shared wording.", "classification": "inferred", "subject": "endpoint", "evidence": "endpoint",
+         "expected": "proposed", "supported": True},  # mislabelled: the replay will accept it as inferred
+        {"text": "Shared wording.", "classification": "inferred", "subject": "candidate", "evidence": "candidate",
+         "expected": "proposed", "supported": False},
+    ]
+    labels["expected"]["ai_inferred_claims"] += 1
+    labels["expected"]["ai_proposed_claims"] += 1
+
+
+def test_distinct_ai_claims_with_the_same_text_are_scored_separately(runs) -> None:
+    result = scored(runs, "smartcart-correlation", edit_case=shared_text_claims)
+    ai = result["ai"]
+
+    # Keyed by text, the second claim's proposal would stand in for the first and hide the mislabel.
+    assert [item["expected"] for item in ai["wrong_outcomes"]] == ["proposed"]
+    assert ai["wrong_outcomes"][0]["observed"] == "inferred"
+    assert "ai-replay-differs-from-review" in result["failures"]
+
+
+def test_ai_labels_must_state_every_expected_metric_and_describe_distinct_claims(runs) -> None:
+    def drop_expected(case: dict) -> None:
+        case["ai"]["labels"]["expected"] = {}
+
+    with pytest.raises(GoldenError, match="expected metrics"):
+        scored(runs, "smartcart-correlation", edit_case=drop_expected)
+
+    def repeat(case: dict) -> None:
+        case["ai"]["labels"]["claims"].append(copy.deepcopy(case["ai"]["labels"]["claims"][0]))
+
+    with pytest.raises(GoldenError, match="describe the same claim"):
+        scored(runs, "smartcart-correlation", edit_case=repeat)
+
+    def malformed(case: dict) -> None:
+        case["ai"]["labels"]["claims"][0]["subject"] = "endpoit"
+
+    with pytest.raises(GoldenError, match="invalid subject"):
+        scored(runs, "smartcart-correlation", edit_case=malformed)
+
+
+# ------------------------------------------------------------------ provenance and binding
+def test_evidence_cannot_resolve_to_a_file_outside_its_repository(runs) -> None:
+    case, observed = runs["postgres"]
+    outside = observed.repositories["database"].parent / "outside.txt"
+    outside.write_text("not part of the repository\n", encoding="utf-8")
+
+    def escape(o: Observed) -> None:
+        record = next(item for item in o.ir["evidence"] if item["kind"] == "file")
+        record["path"] = "../outside.txt"
+        record["content_hash"] = golden.sha256_bytes(outside.read_bytes())
+
+    try:
+        result = scored(runs, "postgres", escape)
+    finally:
+        outside.unlink()
+    assert [item["reason"] for item in result["provenance"]["unresolved"]] == ["path-escapes-repository"]
+    assert "evidence-does-not-resolve-to-files" in result["failures"]
+
+
+@pytest.mark.parametrize("path", ["/etc/hostname", "C:/Windows/win.ini", "db\\migration\\V1__init.sql", "", "."])
+def test_malformed_evidence_paths_do_not_resolve(runs, path) -> None:
+    def hurt(o: Observed) -> None:
+        next(item for item in o.ir["evidence"] if item["kind"] == "file")["path"] = path
+
+    result = scored(runs, "postgres", hurt)
+    assert [item["reason"] for item in result["provenance"]["unresolved"]] == ["path-escapes-repository"]
+
+
+def test_evidence_must_carry_the_snapshots_revision_kind(runs) -> None:
+    def swap(o: Observed) -> None:
+        record = o.ir["evidence"][0]
+        record["revision_kind"] = "commit" if record["revision_kind"] == "content" else "content"
+
+    result = scored(runs, "postgres", swap)
+    assert [item["reason"] for item in result["provenance"]["unresolved"]] == ["revision-kind-mismatch"]
+    assert "evidence-does-not-resolve-to-files" in result["failures"]
+
+
+def other_repository_evidence(o: Observed) -> None:
+    """The backend endpoint cites competing's openapi.json: same path, different repository."""
+
+    ours = node(o.ir, "endpoint", "GET /orders", "backend")
+    theirs = node(o.ir, "endpoint", "GET /orders", "competing")
+    ours["evidence_ids"] = list(theirs["evidence_ids"])
+
+
+def test_evidence_in_another_repository_with_the_same_path_does_not_satisfy_an_assertion(runs) -> None:
+    result = scored(runs, "smartcart-correlation", other_repository_evidence)
+
+    assert result["evidence"]["recall"] < 1  # openapi.json exists in both repositories; only the path matched
+    assert result["provenance"]["misbound_references"] >= 1
+    assert "evidence-bound-to-another-repository" in result["failures"]
+
+
+def test_a_limitation_cited_from_another_repository_does_not_match(runs) -> None:
+    def foreign(o: Observed) -> None:
+        theirs = node(o.ir, "endpoint", "GET /orders", "competing")
+        o.ir["limitations"].append({
+            "id": "limitation:x", "repository_id": "backend", "analyzer": "test", "kind": "unsupported-construct",
+            "message": "cited from another repository", "evidence_ids": list(theirs["evidence_ids"]),
+        })
+
+    def expect(case: dict) -> None:
+        case["limitations"] = [{"repository": "backend", "kind": "unsupported-construct", "path": "openapi.json"}]
+
+    result = scored(runs, "smartcart-correlation", foreign, expect)
+    assert result["limitations"]["recall"] == 0.0 and result["limitations"]["matched"] == 0
+    assert result["provenance"]["misbound_references"] >= 1

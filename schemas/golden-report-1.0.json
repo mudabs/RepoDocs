@@ -51,7 +51,7 @@
         "limitations": {"$ref": "#/$defs/setScore"},
         "candidates": {
           "type": "object",
-          "required": ["observed", "non_authoritative_violations", "cross_repository_relationships", "expected", "matched", "precision", "recall", "accuracy", "missing", "unexpected", "forbidden_present", "confidence_mismatches"],
+          "required": ["observed", "non_authoritative_violations", "cross_repository_relationships", "expected", "matched", "precision", "recall", "accuracy", "missing", "unexpected", "forbidden_present", "confidence_mismatches", "unresolved_absent"],
           "additionalProperties": false,
           "properties": {
             "observed": {"type": "integer", "minimum": 0},
@@ -65,14 +65,15 @@
             "missing": {"$ref": "#/$defs/facts"},
             "unexpected": {"$ref": "#/$defs/facts"},
             "forbidden_present": {"$ref": "#/$defs/facts"},
-            "confidence_mismatches": {"$ref": "#/$defs/facts"}
+            "confidence_mismatches": {"$ref": "#/$defs/facts"},
+            "unresolved_absent": {"$ref": "#/$defs/facts", "description": "Forbidden-candidate selectors that match no node. They would check nothing, so each is a failure."}
           }
         },
         "provenance": {
           "type": "object",
-          "required": ["evidence_records", "evidence_resolved", "resolution", "references", "references_resolved", "reference_resolution", "unresolved"],
+          "required": ["evidence_records", "evidence_resolved", "resolution", "references", "references_resolved", "reference_resolution", "unresolved", "misbound_references", "misbound"],
           "additionalProperties": false,
-          "description": "Evidence is checked against the files on disk: the file exists, its hash matches, the span lies inside it, and the revision matches the snapshot.",
+          "description": "Evidence is checked against the files on disk: the path stays inside the repository, the file exists, its hash matches, the span lies inside it, and the revision and revision kind match the snapshot. Pass or fail uses the exact counts; the ratios are rounded for display.",
           "properties": {
             "evidence_records": {"type": "integer", "minimum": 0},
             "evidence_resolved": {"type": "integer", "minimum": 0},
@@ -80,7 +81,9 @@
             "references": {"type": "integer", "minimum": 0},
             "references_resolved": {"type": "integer", "minimum": 0},
             "reference_resolution": {"$ref": "#/$defs/ratio"},
-            "unresolved": {"$ref": "#/$defs/facts"}
+            "unresolved": {"$ref": "#/$defs/facts"},
+            "misbound_references": {"type": "integer", "minimum": 0, "description": "Evidence references from a node or limitation that cites another repository's evidence. Must be 0."},
+            "misbound": {"$ref": "#/$defs/facts"}
           }
         },
         "claims": {

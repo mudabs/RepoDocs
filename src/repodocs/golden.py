@@ -28,11 +28,11 @@ import shutil
 import sys
 import tempfile
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 from .ai.bundle import build_bundle
-from .ai.claims import interpret
+from .ai.claims import interpret, validate_claims
 from .ai.evaluation import contribution
 from .ai.providers import ProviderResponse
 from .common import canonical_json, sha256_bytes
@@ -48,6 +48,7 @@ CASE_VERSION = "1.0"
 REPORT_VERSION = "1.0"
 CASE_FILENAME = "golden.json"
 MAX_LISTED = 25
+SCHEMA_PATH = Path(__file__).resolve().parents[2] / "schemas" / "golden-case-1.0.json"
 
 
 class GoldenError(Exception):
@@ -64,6 +65,81 @@ class Observed:
 
 
 # --------------------------------------------------------------------------- loading
+def _validate_schema(case: dict[str, Any], path: Path) -> None:
+    """Check a case against the published schema, so a misspelled key cannot silently drop a constraint.
+
+    The published schema is the contract, and the `jsonschema` package is the established way to apply it.
+    Neither is optional: if either is missing the evaluation stops instead of skipping the check.
+    """
+
+    try:
+        from jsonschema import Draft202012Validator
+    except ImportError as exc:
+        raise GoldenError(
+            'Validating golden cases needs the jsonschema package; install it with: pip install "repodocs[test]"'
+        ) from exc
+    try:
+        schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise GoldenError(
+            f"The published schema {SCHEMA_PATH} is unavailable ({exc}); run the evaluation from a source checkout"
+        ) from exc
+    errors = sorted(Draft202012Validator(schema).iter_errors(case), key=lambda error: [str(part) for part in error.absolute_path])
+    if errors:
+        shown = "; ".join(f"{'/'.join(str(part) for part in error.absolute_path) or '$'}: {error.message}" for error in errors[:5])
+        raise GoldenError(f"Golden case {path} does not match schemas/golden-case-1.0.json: {shown}")
+
+
+def _selectors(case: dict[str, Any]):
+    """Every selector in a case with where it came from."""
+
+    for item in case.get("nodes", []):
+        yield item
+    for item in case.get("relationships", []):
+        yield item["source"]
+        yield item["target"]
+    for item in case.get("evidence", []):
+        yield item["subject"]
+    for group in ("expected", "absent"):
+        for item in case.get("candidates", {}).get(group, []):
+            yield item["request"]
+            if item.get("endpoint"):
+                yield item["endpoint"]
+
+
+def _check_consistency(case: dict[str, Any], path: Path) -> None:
+    ids = {item["id"] for item in case["repositories"]}
+    if len(ids) != len(case["repositories"]):
+        raise GoldenError(f"Golden case {path} lists a repository id twice")
+    for selector in _selectors(case):
+        if "repository" in selector and selector["repository"] not in ids:
+            raise GoldenError(f"Golden case {path} names unknown repository {selector['repository']!r} in a selector")
+    for item in case.get("limitations", []):
+        if item["repository"] not in ids:
+            raise GoldenError(f"Golden case {path} names unknown repository {item['repository']!r} in a limitation")
+
+    def key(value: Any) -> str:
+        return json.dumps(value, sort_keys=True)
+
+    groups = {
+        "expected nodes": case.get("nodes", []),
+        "expected relationships": case.get("relationships", []),
+        "expected evidence": case.get("evidence", []),
+        "expected limitations": case.get("limitations", []),
+        "expected candidates": case.get("candidates", {}).get("expected", []),
+        "absent candidates": case.get("candidates", {}).get("absent", []),
+    }
+    for label, items in groups.items():
+        keys = [key({k: v for k, v in item.items() if k != "confidence"}) for item in items]
+        if len(keys) != len(set(keys)):
+            raise GoldenError(f"Golden case {path} has duplicate {label}; each fact is listed once")
+    expected = [(key(item["request"]), key(item["endpoint"])) for item in groups["expected candidates"]]
+    for item in groups["absent candidates"]:
+        request, endpoint = key(item["request"]), None if item.get("endpoint") is None else key(item["endpoint"])
+        if any(r == request and (endpoint is None or e == endpoint) for r, e in expected):
+            raise GoldenError(f"Golden case {path} lists a candidate as both expected and forbidden")
+
+
 def load_case(path: Path) -> dict[str, Any]:
     try:
         case = json.loads(path.read_text(encoding="utf-8"))
@@ -74,6 +150,8 @@ def load_case(path: Path) -> dict[str, Any]:
     for key in ("name", "repositories"):
         if key not in case:
             raise GoldenError(f"Golden case {path} is missing {key!r}")
+    _validate_schema(case, path)
+    _check_consistency(case, path)
     case = copy.deepcopy(case)
     base = path.parent
     for repository in case["repositories"]:
@@ -199,25 +277,30 @@ def score_relationships(case: dict[str, Any], ir: dict[str, Any]) -> dict[str, A
         source, target = find(item["source"], ir["nodes"]), find(item["target"], ir["nodes"])
         if not source or not target:
             missing.append(item)
-        else:
-            wanted[(item["type"], source[0]["id"], target[0]["id"])] = item
+            continue
+        key = (item["type"], source[0]["id"], target[0]["id"])
+        if key in wanted:
+            raise GoldenError(f"Two expected relationships resolve to the same {item['type']} edge; list it once")
+        wanted[key] = item
     observed = [edge for edge in ir["relationships"] if edge["type"] in closed]
     matched: set[tuple[str, str, str]] = set()
     unexpected: list[dict[str, Any]] = []
     for edge in observed:
         key = (edge["type"], edge["source"], edge["target"])
         item = wanted.get(key)
-        if item is not None and item.get("classification", edge["classification"]) == edge["classification"]:
+        duplicate = key in matched
+        if item is not None and not duplicate and item.get("classification", edge["classification"]) == edge["classification"]:
             matched.add(key)
         else:
-            unexpected.append(
-                {
-                    "type": edge["type"],
-                    "source": selector_of(nodes[edge["source"]]),
-                    "target": selector_of(nodes[edge["target"]]),
-                    "classification": edge["classification"],
-                }
-            )
+            entry = {
+                "type": edge["type"],
+                "source": selector_of(nodes[edge["source"]]),
+                "target": selector_of(nodes[edge["target"]]),
+                "classification": edge["classification"],
+            }
+            if duplicate:
+                entry["duplicate"] = True  # a second edge with the same identity is never silently absorbed
+            unexpected.append(entry)
     missing += [item for key, item in wanted.items() if key not in matched]
     return _score_sets(len(expected), len(observed), len(matched), missing, unexpected)
 
@@ -227,7 +310,14 @@ def _spans(ir: dict[str, Any], evidence_ids: list[str]) -> list[dict[str, Any]]:
     return [by_id[key] for key in evidence_ids if key in by_id]
 
 
-def _covers(record: dict[str, Any], path: str, line: int | None) -> bool:
+def _covers(record: dict[str, Any], path: str, line: int | None, repository: str | None = None) -> bool:
+    """Whether evidence is in the named file, and the named repository when one is given.
+
+    A path alone is not enough: the same relative path, such as openapi.json, exists in several repositories.
+    """
+
+    if repository is not None and record["repository_id"] != repository:
+        return False
     if record["path"] != path:
         return False
     if line is None:
@@ -241,7 +331,8 @@ def score_evidence(case: dict[str, Any], ir: dict[str, Any]) -> dict[str, Any]:
     for item in expected:
         found = find(item["subject"], ir["nodes"])
         records = _spans(ir, found[0]["evidence_ids"]) if found else []
-        if not any(_covers(record, item["path"], item.get("line")) for record in records):
+        repository = (_repository_of(found[0]) if found else None) or item["subject"].get("repository")
+        if not any(_covers(record, item["path"], item.get("line"), repository) for record in records):
             missing.append(item)
     return {
         "expected": len(expected),
@@ -262,7 +353,10 @@ def score_limitations(case: dict[str, Any], ir: dict[str, Any]) -> dict[str, Any
             if (
                 candidate["repository_id"] == item["repository"]
                 and candidate["kind"] == item["kind"]
-                and any(_covers(record, item["path"], item.get("line")) for record in _spans(ir, candidate["evidence_ids"]))
+                and any(
+                    _covers(record, item["path"], item.get("line"), item["repository"])
+                    for record in _spans(ir, candidate["evidence_ids"])
+                )
             ):
                 unmatched.remove(candidate)
                 matched += 1
@@ -291,7 +385,13 @@ def _candidate_ref(candidate: dict[str, Any], nodes: dict[str, dict[str, Any]]) 
 def score_candidates(case: dict[str, Any], ir: dict[str, Any]) -> dict[str, Any]:
     nodes = {node["id"]: node for node in ir["nodes"]}
     observed = list(ir.get("candidates", []))
-    by_pair = {(item["source"], item["target"]): item for item in observed}
+    by_pair: dict[tuple[str, str], dict[str, Any]] = {}
+    duplicates: list[dict[str, Any]] = []
+    for item in observed:  # a repeated pair is reported, not absorbed into the first one
+        if (item["source"], item["target"]) in by_pair:
+            duplicates.append(item)
+        else:
+            by_pair[(item["source"], item["target"])] = item
     repository_of = {node["id"]: _repository_of(node) for node in ir["nodes"]}
     result: dict[str, Any] = {
         "observed": len(observed),
@@ -308,7 +408,8 @@ def score_candidates(case: dict[str, Any], ir: dict[str, Any]) -> dict[str, Any]
     spec = case.get("candidates")
     if spec is None:
         return {**result, "expected": None, "matched": None, "precision": None, "recall": None, "accuracy": None,
-                "missing": [], "unexpected": [], "forbidden_present": [], "confidence_mismatches": []}
+                "missing": [], "unexpected": [], "forbidden_present": [], "confidence_mismatches": [],
+                "unresolved_absent": []}
     matched: set[tuple[str, str]] = set()
     missing: list[dict[str, Any]] = []
     mismatches: list[dict[str, Any]] = []
@@ -318,16 +419,22 @@ def score_candidates(case: dict[str, Any], ir: dict[str, Any]) -> dict[str, Any]
         if pair is None or pair not in by_pair:
             missing.append({"request": item["request"], "endpoint": item["endpoint"]})
             continue
+        if pair in matched:
+            raise GoldenError("Two expected candidates resolve to the same request and endpoint; list the pair once")
         matched.add(pair)
         if "confidence" in item and by_pair[pair]["confidence"] != item["confidence"]:
             mismatches.append({**_candidate_ref(by_pair[pair], nodes), "expected": item["confidence"], "observed": by_pair[pair]["confidence"]})
-    unexpected = [_candidate_ref(item, nodes) for item in observed if (item["source"], item["target"]) not in matched]
+    unexpected = [_candidate_ref(item, nodes) for item in by_pair.values() if (item["source"], item["target"]) not in matched]
+    unexpected += [{**_candidate_ref(item, nodes), "duplicate": True} for item in duplicates]
     forbidden: list[dict[str, Any]] = []
+    unresolved_absent: list[dict[str, Any]] = []
     for item in spec.get("absent", []):
         request = find(item["request"], ir["nodes"])
-        if not request:
-            continue
         target = find(item["endpoint"], ir["nodes"]) if item.get("endpoint") else None
+        if not request or (item.get("endpoint") and not target):
+            # A forbidden pair whose selector matches nothing checks nothing, so it is reported as a failure.
+            unresolved_absent.append(item)
+            continue
         for candidate in observed:
             if candidate["source"] == request[0]["id"] and (item.get("endpoint") is None or (target and candidate["target"] == target[0]["id"])):
                 forbidden.append(_candidate_ref(candidate, nodes))
@@ -337,7 +444,28 @@ def score_candidates(case: dict[str, Any], ir: dict[str, Any]) -> dict[str, Any]
     result["accuracy"] = _ratio(len(matched), union)
     result["forbidden_present"] = _listed(forbidden)
     result["confidence_mismatches"] = _listed(mismatches)
+    result["unresolved_absent"] = _listed(unresolved_absent)
     return result
+
+
+def _inside(root: Path, relative: str) -> Path | None:
+    """The file a recorded evidence path names, or None when it is not a plain path inside the repository.
+
+    Evidence paths are relative and use forward slashes. An absolute path, a drive, a backslash, or a `..`
+    segment could resolve to a real file outside the repository copy and make bad evidence look good.
+    """
+
+    posix, windows = PurePosixPath(relative), PureWindowsPath(relative)
+    if not relative or "\\" in relative or posix.is_absolute() or windows.drive or windows.root:
+        return None
+    if ".." in posix.parts or posix == PurePosixPath("."):
+        return None
+    target = (root / posix).resolve()
+    try:
+        target.relative_to(root.resolve())
+    except ValueError:
+        return None
+    return target
 
 
 def score_provenance(observed: Observed) -> dict[str, Any]:
@@ -362,14 +490,19 @@ def score_provenance(observed: Observed) -> dict[str, Any]:
         problem = None
         if root is None or record["repository_id"] not in snapshots:
             problem = "unknown-repository"
+        elif (target := _inside(root, record["path"])) is None:
+            problem = "path-escapes-repository"
         else:
-            facts = file_facts(root / record["path"])
+            facts = file_facts(target)
+            snapshot = snapshots[record["repository_id"]]
             if facts is None:
                 problem = "file-missing"
             elif facts[0] != record["content_hash"]:
                 problem = "hash-mismatch"
-            elif record["revision"] != snapshots[record["repository_id"]]["revision"]:
+            elif record["revision"] != snapshot["revision"]:
                 problem = "revision-mismatch"
+            elif record.get("revision_kind") != snapshot["revision_kind"]:
+                problem = "revision-kind-mismatch"
             elif record["kind"] == "span" and not 1 <= record["line_start"] <= record["line_end"] <= facts[1]:
                 problem = "span-out-of-range"
         if problem:
@@ -383,7 +516,20 @@ def score_provenance(observed: Observed) -> dict[str, Any]:
     ]
     resolved_references = sum(1 for key in references if key in known)
     total = len(ir["evidence"])
+    # A node or limitation that names its repository may only cite that repository's evidence.
+    # Candidates are exempt because they join two repositories by design.
+    by_id = {item["id"]: item for item in ir["evidence"]}
+    misbound: list[dict[str, Any]] = []
+    for label, group in (("node", ir["nodes"]), ("limitation", ir.get("limitations", []))):
+        for item in group:
+            owner = _repository_of(item) if label == "node" else item.get("repository_id")
+            for key in item.get("evidence_ids", []):
+                record = by_id.get(key)
+                if owner and record is not None and record["repository_id"] != owner:
+                    misbound.append({"subject": label, "repository": owner, "evidence_repository": record["repository_id"], "path": record["path"]})
     return {
+        "misbound_references": len(misbound),
+        "misbound": _listed(misbound),
         "evidence_records": total,
         "evidence_resolved": total - len(unresolved),
         "resolution": _ratio(total - len(unresolved), total),
@@ -482,23 +628,67 @@ def _raw_claims(labels: dict[str, Any], bundle: dict[str, Any]) -> list[dict[str
     ]
 
 
+LABEL_KINDS = ("none", "unknown", "endpoint", "candidate", "request")
+LABEL_OUTCOMES = ("inferred", "proposed", "rejected")
+EXPECTED_METRICS = (
+    "ai_inferred_claims", "ai_proposed_claims", "ai_rejected_claims", "unsupported_accepted", "reviewed_unsupported_inferred",
+)
+
+
+def _check_labels(labels: Any) -> None:
+    """The reviewed-claims file has no published schema, so its shape is checked here and any gap is an error."""
+
+    claims = labels.get("claims") if isinstance(labels, dict) else None
+    if not isinstance(claims, list) or not claims:
+        raise GoldenError("The AI labels need a non-empty claims list")
+    for index, item in enumerate(claims):
+        for key in ("text", "classification", "subject", "evidence", "expected", "supported"):
+            if not isinstance(item, dict) or key not in item:
+                raise GoldenError(f"AI label {index} is missing {key!r}")
+        if not isinstance(item["text"], str) or not item["text"].strip():
+            raise GoldenError(f"AI label {index} has no text")
+        for key in ("subject", "evidence"):
+            if item[key] not in LABEL_KINDS:
+                raise GoldenError(f"AI label {index} has invalid {key} {item[key]!r}; expected one of {', '.join(LABEL_KINDS)}")
+        if item["expected"] not in LABEL_OUTCOMES:
+            raise GoldenError(f"AI label {index} has invalid expected outcome {item['expected']!r}")
+        if not isinstance(item["supported"], bool):
+            raise GoldenError(f"AI label {index} must say whether it is supported with true or false")
+    expected = labels.get("expected")
+    if not isinstance(expected, dict) or any(
+        isinstance(expected.get(key), bool) or not isinstance(expected.get(key), int) for key in EXPECTED_METRICS
+    ):
+        raise GoldenError("The AI labels must state integer expected metrics for: " + ", ".join(EXPECTED_METRICS))
+
+
 def score_ai(case: dict[str, Any], ir: dict[str, Any], deterministic: dict[str, Any]) -> dict[str, Any] | None:
     if "ai" not in case:
         return None
     labels = case["ai"]["labels"]
+    _check_labels(labels)
     bundle = build_bundle(ir)
-    document = interpret(bundle, _Recorded({"claims": _raw_claims(labels, bundle)}))
+    raw = _raw_claims(labels, bundle)
+    # Each label is judged on its own. Keying outcomes by claim text would let two different claims that share
+    # wording stand in for each other and hide a wrong outcome.
+    outcomes: list[str] = []
+    signatures: dict[str, int] = {}
+    for index, claim in enumerate(raw):
+        signature = json.dumps([claim["text"], sorted(claim["subject_ids"]), sorted(claim["evidence_ids"])])
+        if signature in signatures:
+            raise GoldenError(f"AI labels {signatures[signature]} and {index} describe the same claim; list it once")
+        signatures[signature] = index
+        checked, _ = validate_claims({"claims": [claim]}, bundle)
+        outcomes.append(checked[0]["classification"] if checked else "rejected")
+    document = interpret(bundle, _Recorded({"claims": raw}))
     report = contribution(ir, document)
-    accepted = {item["text"]: item for item in document["accepted"]}
     reviewed_unsupported = sum(
-        1 for item in labels["claims"] if not item["supported"] and accepted.get(item["text"], {}).get("classification") == "inferred"
+        1 for label, outcome in zip(labels["claims"], outcomes) if not label["supported"] and outcome == "inferred"
     )
-    wrong_outcome = []
-    rejected = {item["text"] for item in document["rejected"]}
-    for item in labels["claims"]:
-        outcome = "rejected" if item["text"] in rejected else accepted.get(item["text"], {}).get("classification")
-        if outcome != item["expected"]:
-            wrong_outcome.append({"claim": item["text"], "expected": item["expected"], "observed": outcome})
+    wrong_outcome = [
+        {"claim": label["text"], "expected": label["expected"], "observed": outcome}
+        for label, outcome in zip(labels["claims"], outcomes)
+        if outcome != label["expected"]
+    ]
     expected = {**labels["expected"]}
     observed_counts = {**report, "reviewed_unsupported_inferred": reviewed_unsupported}
     mismatches = [
@@ -565,6 +755,10 @@ def failures_of(report: dict[str, Any]) -> list[str]:
         failed.append("evidence-does-not-resolve-to-files")
     if provenance["references_resolved"] != provenance["references"]:
         failed.append("evidence-reference-unresolved")
+    if provenance["misbound_references"]:
+        failed.append("evidence-bound-to-another-repository")
+    if candidates["unresolved_absent"]:
+        failed.append("absent-selector-unresolved")
     if report["claims"]["unsupported"]:
         failed.append("unsupported-deterministic-claim")
     if diagrams["missing"]:

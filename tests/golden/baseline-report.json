@@ -15,7 +15,8 @@
         "observed": 0,
         "precision": null,
         "recall": null,
-        "unexpected": []
+        "unexpected": [],
+        "unresolved_absent": []
       },
       "claims": {
         "deterministic": 13,
@@ -69,6 +70,8 @@
       "provenance": {
         "evidence_records": 28,
         "evidence_resolved": 28,
+        "misbound": [],
+        "misbound_references": 0,
         "reference_resolution": 1.0,
         "references": 97,
         "references_resolved": 97,
@@ -136,7 +139,8 @@
         "observed": 5,
         "precision": 1.0,
         "recall": 1.0,
-        "unexpected": []
+        "unexpected": [],
+        "unresolved_absent": []
       },
       "claims": {
         "deterministic": 13,
@@ -183,6 +187,8 @@
       "provenance": {
         "evidence_records": 16,
         "evidence_resolved": 16,
+        "misbound": [],
+        "misbound_references": 0,
         "reference_resolution": 1.0,
         "references": 91,
         "references_resolved": 91,
@@ -217,7 +223,8 @@
         "observed": 0,
         "precision": null,
         "recall": null,
-        "unexpected": []
+        "unexpected": [],
+        "unresolved_absent": []
       },
       "claims": {
         "deterministic": 35,
@@ -264,6 +271,8 @@
       "provenance": {
         "evidence_records": 55,
         "evidence_resolved": 55,
+        "misbound": [],
+        "misbound_references": 0,
         "reference_resolution": 1.0,
         "references": 176,
         "references_resolved": 176,
