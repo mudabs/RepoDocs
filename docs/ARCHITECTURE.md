@@ -78,7 +78,7 @@ Store repository-local docs in owning repos and system-wide docs in one configur
 
 ## Deployment modes
 - CLI: local core engine, local config/cache/IR; no mandatory server or GitHub login; versioned JSON output and explicit exit codes.
-- GitHub Action: runs the same CLI on a runner; multi-repo access requires explicit credentials and the coordination repository. CI fails when required relationship confirmations remain unresolved.
+- GitHub Action: runs the same CLI on a runner; multi-repo access requires explicit credentials and the coordination repository. CI fails when required relationship confirmations remain unresolved. Implemented as a composite action over `scan --snapshot-mode pinned`, `generate`, `validate`, and `publish` (ADR-023): sources are checked out by SHA, the artifact manifest is committed, and publication builds one commit on a bot-owned branch, skipping any run whose output equals the base.
 - Coding agents: noninteractive CLI/JSON; skills first, MCP later.
 - Future web: React/TypeScript UI, proposed FastAPI orchestration, background workers, PostgreSQL, optional Redis, Docker Compose self-hosting; hosted SaaS later. It is not part of the current implementation.
 

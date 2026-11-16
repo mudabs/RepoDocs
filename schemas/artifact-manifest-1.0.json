@@ -9,16 +9,13 @@
     "ownership": {"const": "repodocs-generated"},
     "destination": {
       "type": "object",
-      "description": "The repository that owns the generated output, as configured at generation time.",
-      "required": ["repository_id", "role", "path", "output_directory", "vcs", "git_revision", "working_tree_state", "pinned_revision"],
+      "description": "The repository that owns the generated output, as configured at generation time. It omits the destination's own Git revision and tree state, which change with every documentation commit.",
+      "required": ["repository_id", "role", "path", "output_directory", "pinned_revision"],
       "properties": {
         "repository_id": {"type": "string", "minLength": 1},
         "role": {"enum": ["source", "destination"]},
         "path": {"type": "string", "minLength": 1},
         "output_directory": {"type": "string", "minLength": 1},
-        "vcs": {"enum": ["git", null]},
-        "git_revision": {"type": ["string", "null"]},
-        "working_tree_state": {"enum": ["clean", "dirty", "non-git"]},
         "pinned_revision": {"type": ["string", "null"]}
       },
       "additionalProperties": false
