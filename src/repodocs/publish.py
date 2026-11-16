@@ -42,6 +42,13 @@ STATUS_PUBLISHED = "published"
 PR_CREATED = "created"
 PR_UPDATED = "updated"
 PR_EXISTING = "existing"
+PR_CLOSED = "closed"
+
+# Fixed text, never built from repository content.
+NO_OP_COMMENT = (
+    "Closing automatically: the generated documentation now equals what the base branch already contains, "
+    "so this proposal is obsolete. RepoDocs opens a new pull request if the output changes again."
+)
 
 _BOT_IDENTITY = {
     "GIT_AUTHOR_NAME": "RepoDocs",
@@ -59,6 +66,8 @@ class PullRequests(Protocol):
     def create(self, head: str, base: str, title: str, body: str) -> int: ...
 
     def update(self, number: int, title: str, body: str) -> None: ...
+
+    def close(self, number: int, comment: str) -> None: ...
 
 
 def _redact(text: str, token: str | None) -> str:
@@ -173,6 +182,10 @@ class GhPullRequests:
         finally:
             os.unlink(body_file)
 
+    def close(self, number: int, comment: str) -> None:
+        # The branch is deleted separately, under a lease, so a moved branch is never removed.
+        self._gh("pr", "close", str(number), "--comment", comment)
+
 
 def render_pull_request_body(ir: dict[str, Any], changes: list[tuple[str, str]], branch: str, base: str) -> str:
     """The pull request description, built only from the IR and the list of changed files."""
@@ -239,6 +252,64 @@ def _outside_changes(root: Path, owned: list[str]) -> list[str]:
         if not any(path == item or path.startswith(item + "/") for item in owned):
             found.append(path)
     return found
+
+
+def _remote_heads(
+    root: Path, remote: str, names: list[str], environment: dict[str, str], token: str | None
+) -> dict[str, str | None]:
+    """The remote's tip for each branch name, or None where the branch does not exist."""
+
+    refs = [f"refs/heads/{name}" for name in names]
+    output = _git(root, "ls-remote", "--heads", remote, *refs, environment=environment, token=token).stdout
+    found = {}
+    for line in output.splitlines():
+        sha, _, ref = line.partition("\t")
+        found[ref.strip()] = sha.strip()
+    return {name: found.get(ref) for name, ref in zip(names, refs)}
+
+
+def _require_base_on_remote(local: str, base: str, remote: str, remote_tip: str | None) -> None:
+    """The documentation commit is built on the checkout, so the checkout must be the remote's base."""
+
+    if remote_tip is None:
+        raise PublicationError(f"The remote {remote!r} has no branch {base!r}, so there is nothing to open a pull request against")
+    if local != remote_tip:
+        raise PublicationError(
+            f"The checked-out {base!r} is at {local[:12]} but {remote!r} has {base!r} at {remote_tip[:12]}. "
+            "The documentation commit is built on the checkout, so publishing would put commits the remote does not "
+            "have, or leave out ones it does, in the pull request. Check out the remote's current base (a fresh "
+            "checkout of it, with no local commits) and run again"
+        )
+
+
+def _retire(
+    root: Path,
+    remote: str,
+    branch: str,
+    base: str,
+    tip: str | None,
+    environment: dict[str, str],
+    token: str | None,
+    pull_requests: PullRequests,
+) -> dict[str, Any]:
+    """The output equals the base, so an earlier proposal is obsolete: close it and remove its branch."""
+
+    result: dict[str, Any] = {
+        "status": STATUS_NO_OP, "branch": branch, "base": base, "changes": [], "pull_request": None, "branch_deleted": False,
+    }
+    if tip is None:
+        return result  # without the branch there can be no open pull request from it
+    number = pull_requests.find_open(branch, base)
+    if number is not None:
+        pull_requests.close(number, NO_OP_COMMENT)
+        result["pull_request"] = {"number": number, "action": PR_CLOSED}
+    # A lease on the tip that was read means a branch someone else moved meanwhile is never deleted.
+    _git(
+        root, "push", f"--force-with-lease=refs/heads/{branch}:{tip}", remote, f":refs/heads/{branch}",
+        environment=environment, token=token,
+    )
+    result["branch_deleted"] = True
+    return result
 
 
 def _commit_message(ir: dict[str, Any]) -> str:
@@ -309,10 +380,25 @@ def publish(
         if existing:
             _git(root, "add", "-A", "-f", "--", *existing, environment=environment)
         changes = _parse_name_status(_git(root, "diff", "--cached", "--name-status", "-z", "HEAD", environment=environment).stdout)
+        tree = commit = ""
+        if changes:
+            tree = _git(root, "write-tree", environment=environment).stdout.strip()
+            commit = _git(root, "commit-tree", tree, "-p", "HEAD", "-m", _commit_message(ir), environment=environment).stdout.strip()
+
+    if not dry_run:
+        # Before anything else, prove the checkout is the remote's base. Matching the branch name proves nothing:
+        # unpublished local commits would otherwise become part of the documentation pull request.
+        if pull_requests is None:
+            raise ConfigError("A pull request client is required to publish")
+        url = _git(root, "remote", "get-url", remote).stdout.strip()
+        remote_environment = auth_environment(url, token)
+        heads = _remote_heads(root, remote, [base, branch], remote_environment, token)
+        _require_base_on_remote(git.revision, base, remote, heads[base])
+        tip = heads[branch]
         if not changes:
-            return {"status": STATUS_NO_OP, "branch": branch, "base": base, "changes": [], "pull_request": None}
-        tree = _git(root, "write-tree", environment=environment).stdout.strip()
-        commit = _git(root, "commit-tree", tree, "-p", "HEAD", "-m", _commit_message(ir), environment=environment).stdout.strip()
+            return _retire(root, remote, branch, base, tip, remote_environment, token, pull_requests)
+    elif not changes:
+        return {"status": STATUS_NO_OP, "branch": branch, "base": base, "changes": [], "pull_request": None, "branch_deleted": False}
 
     result: dict[str, Any] = {
         "status": STATUS_WOULD_PUBLISH,
@@ -326,10 +412,6 @@ def publish(
     if dry_run:
         return result
 
-    url = _git(root, "remote", "get-url", remote).stdout.strip()
-    remote_environment = auth_environment(url, token)
-    listing = _git(root, "ls-remote", "--heads", remote, f"refs/heads/{branch}", environment=remote_environment, token=token).stdout
-    tip = listing.split()[0] if listing.strip() else None
     pushed = True
     if tip:
         # A depth-limited fetch would make a complete clone shallow, so only a shallow clone gets one.
@@ -345,8 +427,6 @@ def publish(
         )
     result["status"] = STATUS_PUBLISHED if pushed else STATUS_UNCHANGED
 
-    if pull_requests is None:
-        raise ConfigError("A pull request client is required to publish")
     title, body = PR_TITLE, render_pull_request_body(ir, changes, branch, base)
     number = pull_requests.find_open(branch, base)
     if number is None:

@@ -29,13 +29,14 @@ An experiment with a coordination repository, two source repositories, and fresh
 
 ### `repodocs publish`
 - `publish` validates the output first, requires every cross-repository candidate to be resolved (exit code 5 otherwise), and then builds one commit on top of the checked-out base that contains only the output directory and the manifest. It uses a throwaway index, so the working tree, the checked-out branch, and the base are never changed.
-- If that commit's tree equals the base, the run is a `no-op` and never contacts the remote or GitHub. This is the no-op rule of ADR-008.
+- A real run first reads the remote's base branch and requires its tip to equal the checked-out HEAD. A matching branch name proves nothing: the commit is parented on HEAD, so unpublished local commits would otherwise be published inside the documentation pull request, and a base that moved would be missed. A mismatch, or a remote without the base branch, is refused with exit code 8, including when the output looks unchanged, because a no-op measured against a stale base could close a pull request that is still right.
+- If that commit's tree equals the base, the run is a `no-op` (ADR-008) and opens nothing. Because an earlier run may have left a proposal that is now obsolete, for example when sources revert to the state the base documents, a no-op run also retires it: it closes the open pull request for the bot branch with a fixed comment, then deletes the bot branch with a lease on the tip it read. A branch someone else moved in between is not deleted. With no bot branch there is nothing to retire and no GitHub call is made.
 - Otherwise it reads the bot branch (`repodocs/docs-update` by default), and if the branch already holds an identical tree it pushes nothing (`unchanged`). It pushes with `--force-with-lease` against the tip it read, so a branch moved by someone else in between is never overwritten.
 - It finds an open pull request for the branch and base. It creates one if none exists and updates the existing one only when it pushed new content, so reruns are idempotent. A failure after the push is recovered by the next run, which sees the same tree and creates the missing pull request.
 - The branch is bot-owned and one commit ahead of the base. A rejected pull request should be closed and its branch deleted, otherwise the next run opens it again.
 - The documentation commit is built on the checkout, so publication requires the base branch to be checked out by name and refuses a detached HEAD or any other branch; otherwise another branch's commits would enter the pull request. The example passes the branch the run started on, which is the default branch for schedule, `repository_dispatch`, and pushes. Fetching the bot branch is depth-limited only when the clone is already shallow, so a complete clone is never made shallow.
 - Publication refuses to run when the destination has changes outside the generated paths, and when the manifest is not inside the destination repository, so that documentation changes always target the configured destination.
-- Exit code 8 reports a publication failure. `--dry-run` computes the change without contacting anything.
+- Exit code 8 reports a publication failure. `--dry-run` computes the change without contacting anything, so it cannot check the remote base or pull requests and is a local preview only.
 - The pull request description is built from the IR and the list of changed files and passed to `gh` by file. Nothing from source repositories reaches a command line or a workflow expression.
 
 ### Credentials
@@ -57,6 +58,8 @@ These are least-privilege defaults, not settled choices. O05 stays open until th
 - A single token secret for both reading sources and writing the coordination repository, rather than a GitHub App installation token minted per run.
 - The name of the bot branch and the title of the pull request.
 - Stale or absent AI claims delete `architecture-ai.md` from the pull request instead of being preserved.
+- A no-op run closes an obsolete documentation pull request and deletes its bot branch automatically. The alternative is to leave both for a person to clean up, which keeps an outdated proposal open.
+- A documentation pull request closed by hand is recreated by the next run that still has changes while its branch exists, because that is what recovers a failed creation after a push. A no-op run deletes the branch instead.
 
 ## Consequences
 

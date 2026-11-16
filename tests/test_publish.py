@@ -41,6 +41,12 @@ class FakePullRequests:
         self.created: list[dict] = []
         self.updated: list[dict] = []
         self.fail_create = 0
+        self.closed: list[tuple[int, str]] = []
+
+    def close(self, number, comment):
+        self.calls.append(("close", number))
+        self.closed.append((number, comment))
+        self.open = {key: value for key, value in self.open.items() if value != number}
 
     def find_open(self, head, base):
         self.calls.append(("find", head, base))
@@ -84,9 +90,13 @@ class Project:
         assert code == 0, response
         return response
 
-    def commit_docs(self, message: str = "docs") -> None:
+    def commit_docs(self, message: str = "docs", push: bool = True) -> None:
+        """Commit the generated docs to the base, and by default publish it, as merging the docs PR would."""
+
         git(self.root, "add", "-A")
         git(self.root, "commit", "-q", "-m", message)
+        if push:
+            git(self.root, "push", "-q", "origin", "main")
 
     def config_and_ir(self) -> tuple[ProjectConfig, dict]:
         config = ProjectConfig.load(self.root)
@@ -169,12 +179,14 @@ def test_publish_is_a_noop_when_the_base_already_contains_the_output(basic) -> N
     basic.generate()
     client = FakePullRequests()
 
-    # A remote that does not exist proves nothing was contacted.
-    result = basic.publish(client, remote="no-such-remote")
+    # A dry run contacts nothing: a remote that does not exist proves it.
+    dry = basic.publish(client, dry_run=True, remote="no-such-remote")
+    assert dry == {"status": "no-op", "branch": DEFAULT_BRANCH, "base": "main", "changes": [], "pull_request": None, "branch_deleted": False}
 
-    assert result == {"status": "no-op", "branch": DEFAULT_BRANCH, "base": "main", "changes": [], "pull_request": None}
-    assert client.calls == []
-    assert basic.remote_tip() is None
+    # A real run reads the remote, finds no bot branch, and so has nothing to retire.
+    result = basic.publish(client)
+    assert result == dry
+    assert client.calls == [] and basic.remote_tip() is None
 
 
 def test_manifest_must_be_committed_for_a_clean_clone_to_regenerate(basic, tmp_path) -> None:
@@ -288,9 +300,12 @@ def test_a_remote_branch_moved_since_it_was_read_is_never_overwritten(basic, mon
     real_git = publication._git
 
     def stale_listing(root, *args, **kwargs):
+        done = real_git(root, *args, **kwargs)
         if args[0] == "ls-remote":
-            return subprocess.CompletedProcess(args, 0, stdout=f"{stale_tip}\t{BOT_REF}\n", stderr="")
-        return real_git(root, *args, **kwargs)
+            # Keep the real base line and report the bot branch where it was before it moved.
+            lines = [f"{stale_tip}\t{BOT_REF}" if line.endswith(BOT_REF) else line for line in done.stdout.splitlines()]
+            return subprocess.CompletedProcess(args, 0, stdout="\n".join(lines) + "\n", stderr="")
+        return done
 
     monkeypatch.setattr(publication, "_git", stale_listing)
     change_source(basic, "backend", "value = 3\n")
@@ -618,3 +633,183 @@ def test_github_client_failures_are_publication_errors_without_the_token(tmp_pat
     monkeypatch.setattr(publication.subprocess, "run", missing)
     with pytest.raises(PublicationError, match="`gh` is required"):
         GhPullRequests(tmp_path, "t").find_open("bot", "main")
+
+
+# ------------------------------------------------------------------ the checkout must be the remote's base
+def test_unpublished_local_commits_never_enter_the_documentation_pull_request(basic) -> None:
+    basic.generate()
+    (basic.root / "feature.txt").write_text("unreviewed application change\n", encoding="utf-8")
+    git(basic.root, "add", "feature.txt")
+    git(basic.root, "commit", "-q", "-m", "an unpublished local commit")
+    client = FakePullRequests()
+
+    with pytest.raises(PublicationError, match="has 'main' at"):
+        basic.publish(client)
+
+    assert basic.remote_tip() is None and client.calls == []
+    assert "feature.txt" not in basic.remote_files("main")
+
+
+def test_a_remote_base_that_moved_is_refused(basic, tmp_path) -> None:
+    basic.generate()
+    other = tmp_path / "other"
+    git(tmp_path, "clone", "-q", basic.origin.as_uri(), str(other))
+    (other / "newer.txt").write_text("a newer base\n", encoding="utf-8")
+    git(other, "add", "-A")
+    git(other, "commit", "-q", "-m", "someone published to the base")
+    git(other, "push", "-q", "origin", "main")
+    client = FakePullRequests()
+
+    with pytest.raises(PublicationError, match="Check out the remote's current base"):
+        basic.publish(client)
+
+    assert basic.remote_tip() is None and client.calls == []
+
+
+def test_a_local_only_base_branch_is_refused(basic) -> None:
+    basic.generate()
+    git(basic.root, "checkout", "-q", "-b", "release")
+    with pytest.raises(PublicationError, match="no branch 'release'"):
+        basic.publish(FakePullRequests(), base="release")
+    assert basic.remote_tip() is None
+
+
+def test_an_unpublished_commit_is_not_mistaken_for_a_no_op(basic) -> None:
+    """Output equal to an unpublished local base must not close a pull request that is still right."""
+
+    basic.generate()
+    basic.commit_docs(push=False)
+    basic.generate()
+    client = FakePullRequests()
+
+    with pytest.raises(PublicationError, match="has 'main' at"):
+        basic.publish(client)
+
+    assert client.calls == []
+
+
+def test_a_dry_run_cannot_check_the_remote_and_says_nothing_about_it(basic) -> None:
+    basic.generate()
+    (basic.root / "feature.txt").write_text("unreviewed\n", encoding="utf-8")
+    git(basic.root, "add", "feature.txt")
+    git(basic.root, "commit", "-q", "-m", "local only")
+
+    result = basic.publish(FakePullRequests(), dry_run=True, remote="no-such-remote")
+
+    assert result["status"] == "would-publish"  # a dry run never contacts the remote, so it cannot know
+
+
+# ------------------------------------------------------------------ obsolete proposals are retired
+def reverted_to_documented_state(basic) -> str:
+    """Publish a change, then return the sources to the state the base already documents."""
+
+    source = basic.root / "sources" / "backend"
+    original = git(source, "rev-parse", "HEAD")
+    change_source(basic, "backend", "value = 5\n")
+    basic.generate()
+    return original
+
+
+def test_a_no_op_run_closes_an_obsolete_pull_request_and_deletes_its_branch(basic) -> None:
+    basic.generate()
+    basic.commit_docs()
+    original = reverted_to_documented_state(basic)
+    client = FakePullRequests()
+    first = basic.publish(client)
+    assert first["status"] == "published" and client.open == {(DEFAULT_BRANCH, "main"): 1}
+    assert basic.remote_tip() is not None
+
+    git(basic.root / "sources" / "backend", "reset", "-q", "--hard", original)
+    basic.generate()
+    result = basic.publish(client)
+
+    assert result["status"] == "no-op"
+    assert result["pull_request"] == {"number": 1, "action": "closed"}
+    assert result["branch_deleted"] is True
+    assert client.closed == [(1, publication.NO_OP_COMMENT)] and client.open == {}
+    assert basic.remote_tip() is None
+    assert "src/extra.py" not in basic.remote_files("main")
+    # The comment is fixed text: nothing from the repositories reaches it.
+    assert "backend" not in publication.NO_OP_COMMENT and "extra.py" not in publication.NO_OP_COMMENT
+
+    # A later change opens a fresh proposal rather than reviving the retired one.
+    change_source(basic, "backend", "value = 6\n")
+    basic.generate()
+    again = basic.publish(client)
+    assert again["status"] == "published" and again["pull_request"]["action"] == "created"
+
+
+def test_a_no_op_run_deletes_a_stale_branch_whose_pull_request_was_closed_by_hand(basic) -> None:
+    basic.generate()
+    basic.commit_docs()
+    original = reverted_to_documented_state(basic)
+    client = FakePullRequests()
+    basic.publish(client)
+    client.open.clear()  # a maintainer closed the pull request
+
+    git(basic.root / "sources" / "backend", "reset", "-q", "--hard", original)
+    basic.generate()
+    result = basic.publish(client)
+
+    assert result["status"] == "no-op" and result["pull_request"] is None and result["branch_deleted"] is True
+    assert client.closed == [] and basic.remote_tip() is None
+
+
+def test_a_no_op_run_with_nothing_to_retire_changes_nothing(basic) -> None:
+    basic.generate()
+    basic.commit_docs()
+    basic.generate()
+    client = FakePullRequests()
+
+    result = basic.publish(client)
+
+    assert result["status"] == "no-op" and result["pull_request"] is None and result["branch_deleted"] is False
+    assert client.calls == [] and basic.remote_tip() is None
+
+
+def test_a_bot_branch_that_moved_is_not_deleted_by_a_no_op_run(basic, monkeypatch, tmp_path) -> None:
+    basic.generate()
+    basic.commit_docs()
+    original = reverted_to_documented_state(basic)
+    client = FakePullRequests()
+    basic.publish(client)
+    stale_tip = basic.remote_tip()
+
+    other = tmp_path / "other"
+    git(tmp_path, "clone", "-q", basic.origin.as_uri(), str(other))
+    git(other, "checkout", "-q", "-b", "scratch", "origin/" + DEFAULT_BRANCH)
+    (other / "note.txt").write_text("manual\n", encoding="utf-8")
+    git(other, "add", "-A")
+    git(other, "commit", "-q", "-m", "manual edit")
+    git(other, "push", "-q", "origin", f"scratch:{DEFAULT_BRANCH}", "--force")
+    moved_tip = basic.remote_tip()
+    real_git = publication._git
+
+    def stale_listing(root, *args, **kwargs):
+        done = real_git(root, *args, **kwargs)
+        if args[0] == "ls-remote":
+            lines = [f"{stale_tip}\t{BOT_REF}" if line.endswith(BOT_REF) else line for line in done.stdout.splitlines()]
+            return subprocess.CompletedProcess(args, 0, stdout="\n".join(lines) + "\n", stderr="")
+        return done
+
+    monkeypatch.setattr(publication, "_git", stale_listing)
+    git(basic.root / "sources" / "backend", "reset", "-q", "--hard", original)
+    basic.generate()
+    with pytest.raises(PublicationError, match="git push failed"):
+        basic.publish(client)
+
+    assert basic.remote_tip() == moved_tip
+
+
+def test_the_github_client_closes_with_fixed_text_and_the_token_in_the_environment(tmp_path, monkeypatch) -> None:
+    seen: list[dict] = []
+
+    def fake_run(command, **kwargs):
+        seen.append({"command": command, "env": kwargs["env"]})
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(publication.subprocess, "run", fake_run)
+    GhPullRequests(tmp_path, "secret-token").close(12, publication.NO_OP_COMMENT)
+
+    assert seen[0]["command"] == ["gh", "pr", "close", "12", "--comment", publication.NO_OP_COMMENT]
+    assert seen[0]["env"]["GH_TOKEN"] == "secret-token" and "secret-token" not in " ".join(seen[0]["command"])
