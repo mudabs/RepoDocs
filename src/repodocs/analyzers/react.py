@@ -161,7 +161,7 @@ class ReactAnalyzer:
                 continue
             try:
                 data = json.loads(text)
-            except json.JSONDecodeError:
+            except (ValueError, RecursionError):
                 continue
             if not isinstance(data, dict):
                 continue

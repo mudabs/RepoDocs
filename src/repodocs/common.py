@@ -28,6 +28,32 @@ def write_json(path: Path, value: Any) -> None:
     path.write_text(canonical_json(value), encoding="utf-8", newline="\n")
 
 
+CONTROL = re.compile("[\x00-\x1f\x7f\u0085\u2028\u2029]+")
+_MARKDOWN_SPECIAL = re.compile(r"([\\`\[\]<>|!&])")
+
+
+def scrub(value: Any) -> str:
+    """Text with line breaks and other control characters turned into spaces."""
+
+    return CONTROL.sub(" ", str(value))
+
+
+def markdown_text(value: Any) -> str:
+    """Untrusted text as plain Markdown: it cannot start a link, image, tag, code span, or table cell."""
+
+    return _MARKDOWN_SPECIAL.sub(r"\\\1", scrub(value))
+
+
+def markdown_code(value: Any) -> str:
+    """Untrusted text as an inline code span that nothing inside it can close."""
+
+    text = scrub(value).replace("|", "\\|")
+    longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
+    fence = "`" * (longest + 1)
+    padding = " " if text.startswith(("`", " ")) or text.endswith(("`", " ")) else ""
+    return f"{fence}{padding}{text}{padding}{fence}"
+
+
 def slugify(value: str) -> str:
     slug = re.sub(r"[^a-zA-Z0-9]+", "-", value.strip().lower()).strip("-")
     return slug or "project"

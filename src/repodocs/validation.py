@@ -20,6 +20,7 @@ from .generator import (
     MANIFEST_SCHEMA_VERSION,
     _all_files,
     _read_manifest,
+    owned_path,
     describe_destination,
     describe_destination_change,
     destination_identity,
@@ -244,7 +245,7 @@ def validate_artifacts(config: ProjectConfig, ir: dict[str, Any]) -> list[str]:
         relative_path = item.get("path")
         if not relative_path:
             raise ValidationError("Artifact manifest contains an entry without a path")
-        path = output_dir / relative_path
+        path = owned_path(output_dir, relative_path)
         if not path.exists():
             raise ValidationError(f"Generated artifact is missing: {path}")
         content = path.read_text(encoding="utf-8")
@@ -277,19 +278,19 @@ def validate_ai_artifact(config: ProjectConfig, ir: dict[str, Any], item: dict[s
 ER_ATTR_PATTERN = re.compile(
     r"^([A-Za-z][A-Za-z0-9_\-\(\)\[\]]*)\s+([A-Za-z_][A-Za-z0-9_\-]*)"
     r"(?:\s+((?:(?:PK|FK|UK)(?:,\s*)?)+))?"
-    r'(?:\s+"([^"]*)")?$'
+    r'(?:\s+"([^"<>]*)")?$'
 )
 ER_REL_PATTERN = re.compile(
     r"^([A-Za-z_][A-Za-z0-9_]*)\s+"
     r"(\|\||\|o|o\||\}\||\}o|o\{)(\-\-|\.\.)(\|\||o\||\|o|\|\{|o\{|\}o)\s+"
-    r"([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(?:\"([^\"]*)\"|([A-Za-z0-9_\-]+))$"
+    r"([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(?:\"([^\"<>]*)\"|([A-Za-z0-9_\-]+))$"
 )
-ER_ENTITY_START_PATTERN = re.compile(r'^([A-Za-z_][A-Za-z0-9_]*)(?:\["([^"]+)"\])?\s*\{$')
-ER_ENTITY_DECL_PATTERN = re.compile(r'^([A-Za-z_][A-Za-z0-9_]*)(?:\["([^"]+)"\])?$')
+ER_ENTITY_START_PATTERN = re.compile(r'^([A-Za-z_][A-Za-z0-9_]*)(?:\["([^"<>]+)"\])?\s*\{$')
+ER_ENTITY_DECL_PATTERN = re.compile(r'^([A-Za-z_][A-Za-z0-9_]*)(?:\["([^"<>]+)"\])?$')
 
 
 def validate_flowchart(lines: list[str]) -> None:
-    node_pattern = re.compile(r'^([A-Za-z_][A-Za-z0-9_]*)\[".*"\]$')
+    node_pattern = re.compile(r'^([A-Za-z_][A-Za-z0-9_]*)\["[^"<>]*"\]$')
     edge_pattern = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\s+-->\s+([A-Za-z_][A-Za-z0-9_]*)$")
     defined: set[str] = set()
     references: list[str] = []
@@ -351,6 +352,9 @@ def validate_mermaid(content: str) -> None:
     lines = [line.strip() for line in content.splitlines() if line.strip()]
     if not lines:
         raise ValidationError("Mermaid artifact cannot be empty")
+    for line in lines:
+        if line.startswith("%%{"):
+            raise ValidationError(f"Mermaid directives are not allowed in generated diagrams: {line}")
     header = lines[0]
     if header == "flowchart TD":
         validate_flowchart(lines)
@@ -362,9 +366,34 @@ def validate_mermaid(content: str) -> None:
         )
 
 
+# One left-to-right pass, as a Markdown reader sees the line: a backslash escape or a code span, whichever starts first.
+_INERT = re.compile(r"\\.|(`+)(?!`).*?(?<!`)\1(?!`)")
+
+_ACTIVE_MARKDOWN = (
+    (re.compile(r"<"), "raw HTML"),
+    (re.compile(r"\]\("), "a link or image"),
+    (re.compile(r"\]\["), "a reference link"),
+)
+
+
+def validate_markdown_is_inert(content: str) -> None:
+    """Generated text must not carry active Markdown that came from analyzed source.
+
+    Untrusted values are written as code spans or escaped text, so outside code spans there must be
+    no raw HTML and no link or image syntax. Fenced code blocks are not generated.
+    """
+
+    for number, line in enumerate(content.splitlines(), start=1):
+        plain = _INERT.sub("", line)
+        for pattern, description in _ACTIVE_MARKDOWN:
+            if pattern.search(plain):
+                raise ValidationError(f"Markdown line {number} contains {description} outside a code span: {line[:80]}")
+
+
 def validate_markdown(content: str, ir: dict[str, Any]) -> None:
     if not content.startswith("# "):
         raise ValidationError("Markdown artifact must begin with a level-one heading")
+    validate_markdown_is_inert(content)
     for claim in ir.get("claims", []):
         for evidence_id in claim.get("evidence_ids", []):
             if evidence_id not in content:

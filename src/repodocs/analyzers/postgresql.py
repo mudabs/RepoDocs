@@ -1261,7 +1261,7 @@ def _node_postgres_dependency(text: str | None) -> str | None:
         return None
     try:
         data = json.loads(text)
-    except ValueError:
+    except (ValueError, RecursionError):
         return None
     if not isinstance(data, dict):
         return None
@@ -1291,7 +1291,7 @@ def _python_postgres_dependency(text: str | None, project: bool = False) -> str 
     if project:
         try:
             data = tomllib.loads(text)
-        except tomllib.TOMLDecodeError:
+        except (tomllib.TOMLDecodeError, RecursionError):
             return None
         names: list[str] = []
         section = data.get("project")
