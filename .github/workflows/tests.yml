@@ -48,3 +48,21 @@ jobs:
         shell: bash
         run: |
           python -m repodocs.golden tests/golden --baseline tests/golden/baseline-report.json --summary | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # Proves, in this shell and with this pipe, that a failing evaluation fails the step. Without
+      # `shell: bash` (so without pipefail) the pipe into tee would report success. The baseline here
+      # is deliberately wrong, and the output goes to a scratch file so the job summary stays clean.
+      - name: A failing evaluation must fail the step
+        id: failing-evaluation
+        continue-on-error: true
+        shell: bash
+        run: |
+          echo '{}' > "$RUNNER_TEMP/wrong-baseline.json"
+          python -m repodocs.golden tests/golden --baseline "$RUNNER_TEMP/wrong-baseline.json" --summary | tee -a "$RUNNER_TEMP/negative-summary.md"
+
+      - name: The failing evaluation must have been reported as a failure
+        if: steps.failing-evaluation.outcome != 'failure'
+        shell: bash
+        run: |
+          echo "The evaluation step reported success although the evaluation failed."
+          exit 1

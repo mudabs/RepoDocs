@@ -6,6 +6,7 @@ import copy
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -788,3 +789,50 @@ def test_a_limitation_cited_from_another_repository_does_not_match(runs) -> None
     result = scored(runs, "smartcart-correlation", foreign, expect)
     assert result["limitations"]["recall"] == 0.0 and result["limitations"]["matched"] == 0
     assert result["provenance"]["misbound_references"] >= 1
+
+
+# ------------------------------------------------------------------ line endings and the CI step
+def converted_copy(tmp_path: Path, newline: bytes) -> Path:
+    """The fixtures and golden cases copied with every text file rewritten to the given line ending."""
+
+    for name in ("fixtures", "golden"):
+        shutil.copytree(ROOT / name, tmp_path / name)
+    for path in (tmp_path / "fixtures").rglob("*"):
+        if path.is_file():
+            path.write_bytes(path.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", newline))
+    return tmp_path / "golden"
+
+
+@pytest.mark.parametrize("newline", [b"\n", b"\r\n"], ids=["lf", "crlf"])
+def test_the_report_is_identical_for_lf_and_crlf_checkouts(tmp_path, newline) -> None:
+    cases = converted_copy(tmp_path, newline)
+    source = next((tmp_path / "fixtures" / "spring-boot-repo" / "src").rglob("OrderController.java")).read_bytes()
+    assert (b"\r\n" in source) == (newline == b"\r\n"), "the copy was not converted"
+
+    report = evaluate_cases(cases)
+
+    assert report == json.loads(BASELINE.read_text(encoding="utf-8"))
+    # Hashes differ between the two copies, yet the report holds none, and evidence still resolves to the files.
+    assert all(item["provenance"]["evidence_resolved"] == item["provenance"]["evidence_records"] for item in report["cases"])
+
+
+def test_the_metrics_step_keeps_the_shell_that_makes_a_failure_fail_the_job() -> None:
+    """On Linux a step without `shell:` runs `bash -e` with no pipefail, and a pipe into tee reports success."""
+
+    workflow = (ROOT.parent / ".github" / "workflows" / "tests.yml").read_text(encoding="utf-8")
+    steps = {}
+    for block in workflow.split("      - name: ")[1:]:
+        steps[block.splitlines()[0]] = block
+    metrics = steps["Report golden-fixture quality metrics"]
+    assert "shell: bash" in metrics and "python -m repodocs.golden" in metrics and "| tee" in metrics
+    assert "--baseline tests/golden/baseline-report.json" in metrics
+
+    negative = steps["A failing evaluation must fail the step"]
+    assert "continue-on-error: true" in negative and "shell: bash" in negative and "| tee" in negative
+    guard = steps["The failing evaluation must have been reported as a failure"]
+    assert "steps.failing-evaluation.outcome != 'failure'" in guard and "exit 1" in guard
+
+
+def test_long_values_in_baseline_differences_are_shortened() -> None:
+    lines = diff_reports({"cases": ["x" * 5000]}, {})
+    assert len(lines) == 1 and len(lines[0]) < 260 and "5" in lines[0] and "characters" in lines[0]

@@ -810,11 +810,16 @@ def evaluate_cases(directory: Path) -> dict[str, Any]:
     }
 
 
+def _short(value: Any, limit: int = 100) -> str:
+    text = repr(value)
+    return text if len(text) <= limit else text[:limit] + f"... ({len(text)} characters)"
+
+
 def diff_reports(expected: Any, observed: Any, path: str = "") -> list[str]:
     """Where two reports differ, as dotted paths, so a changed baseline is easy to review."""
 
     if type(expected) is not type(observed):
-        return [f"{path or '$'}: {expected!r} != {observed!r}"]
+        return [f"{path or '$'}: {_short(expected)} != {_short(observed)}"]
     if isinstance(expected, dict):
         keys = sorted(set(expected) | set(observed))
         return [line for key in keys for line in diff_reports(expected.get(key), observed.get(key), f"{path}.{key}" if path else key)]
@@ -822,7 +827,7 @@ def diff_reports(expected: Any, observed: Any, path: str = "") -> list[str]:
         if len(expected) != len(observed):
             return [f"{path}: length {len(expected)} != {len(observed)}"]
         return [line for index, (a, b) in enumerate(zip(expected, observed)) for line in diff_reports(a, b, f"{path}[{index}]")]
-    return [] if expected == observed else [f"{path}: {expected!r} != {observed!r}"]
+    return [] if expected == observed else [f"{path}: {_short(expected)} != {_short(observed)}"]
 
 
 def _cell(value: Any) -> str:
