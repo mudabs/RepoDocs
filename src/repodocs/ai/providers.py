@@ -105,6 +105,26 @@ def is_loopback(host_url: str) -> bool:
         return False
 
 
+class _NoRedirects(urllib.request.HTTPRedirectHandler):
+    """A provider answers the request it was sent; a redirect would send the bundle somewhere unchecked."""
+
+    def redirect_request(self, *args, **kwargs):  # noqa: D102
+        return None
+
+
+def _opener(external: bool) -> urllib.request.OpenerDirector:
+    """An opener that never redirects, and never routes a loopback request through a proxy.
+
+    ``HTTP_PROXY`` in the environment would otherwise carry a bundle meant for this machine to
+    another host without the consent that sending it there requires.
+    """
+
+    handlers: list[Any] = [_NoRedirects]
+    if not external:
+        handlers.append(urllib.request.ProxyHandler({}))
+    return urllib.request.build_opener(*handlers)
+
+
 class OllamaProvider:
     """A local Ollama server. A non-loopback host leaves the machine and counts as external."""
 
@@ -133,9 +153,14 @@ class OllamaProvider:
             f"{self.host}/api/chat", data=body, headers={"Content-Type": "application/json"}, method="POST"
         )
         try:
-            with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:  # noqa: S310 - scheme checked above
+            with _opener(self.external).open(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:  # noqa: S310 - scheme checked above
                 payload = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
+            if 300 <= exc.code < 400:
+                raise ProviderError(
+                    f"Ollama at {self.host} answered with a redirect (HTTP {exc.code}), which is not followed so the "
+                    "bundle is not sent anywhere else; set ollama_host to the final address"
+                ) from exc
             raise ProviderError(f"Ollama error (HTTP {exc.code}); is the model `{self.model}` pulled?") from exc
         except (urllib.error.URLError, OSError, ValueError) as exc:
             raise ProviderError(f"Unable to reach Ollama at {self.host}") from exc

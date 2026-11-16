@@ -153,7 +153,11 @@ def test_ai_artifact_ownership_is_enforced_before_overwriting_or_retiring(tmp_pa
 
 def test_model_markdown_is_inert_and_rejected_text_is_not_rendered(tmp_path, capsys, monkeypatch) -> None:
     root = scanned(tmp_path, capsys)
-    claim = dict(example(read_ir(root)), text='<script>alert(1)</script> [run](javascript:evil) password=DoNotLeak')
+    claim = dict(
+        example(read_ir(root)),
+        text='<script>alert(1)</script> [run](javascript:evil) ![beacon](https://example.invalid/p.png) '
+        "<img src=x onerror=alert(1)> ``a`b`` `<b>` password=DoNotLeak",
+    )
     rejected = dict(claim, text="Rejected text must not appear", evidence_ids=["evidence:missing"])
     interpreted(root, capsys, monkeypatch, [claim, rejected])
     generate(root, capsys)
@@ -161,6 +165,10 @@ def test_model_markdown_is_inert_and_rejected_text_is_not_rendered(tmp_path, cap
     assert "<script>" not in markdown and "[run](" not in markdown and "DoNotLeak" not in markdown
     assert "Rejected text must not appear" not in markdown
     assert "unknown-evidence" in markdown
+    # The same rule `validate` applies to the deterministic documents holds for model text.
+    from repodocs.validation import validate_markdown_is_inert
+
+    validate_markdown_is_inert(markdown)
     assert invoke(root, capsys, "validate", "--allow-unresolved")[0] == 0
 
 
