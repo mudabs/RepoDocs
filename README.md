@@ -199,11 +199,12 @@ results, not a real-model factuality benchmark. See ADR-021.
 
 - It builds a single commit of the output directory and the artifact manifest on top of the checked-out base, without touching the working tree. If that equals the base, nothing is pushed and no pull request is opened.
 - The commit goes to a bot-owned branch (`repodocs/docs-update` by default) with `--force-with-lease`. A branch already holding identical content is not pushed again, and an open pull request is updated instead of duplicated. To reject a documentation pull request, close it and delete the branch, or the next run opens it again.
+- The base branch must be checked out by name, because the commit is built on the checkout; a detached HEAD or another branch is refused.
 - It refuses to publish while any cross-repository candidate is unresolved (exit code 5), when the destination has changes outside the generated paths, or when the artifact manifest is not inside the destination repository.
 - Commit `.repodocs/artifact-manifest.json`: a clone without it cannot regenerate. Ignore the rest of `.repodocs/` and the `sources/` checkouts. The manifest no longer records the destination's own revision, so merging a documentation pull request does not change the next run's output.
 - `--dry-run` reports the change without contacting the remote. A real run needs `GH_TOKEN` with contents and pull request write access to the destination, and the GitHub CLI.
 - `repodocs scan --pins-json '{"frontend": "<sha>"}'` supplies pins from a workflow, merged with `--pin`. Check sources out by that exact SHA, which leaves them detached, so the output does not depend on a branch name.
-- AI interpretation does not run in CI. If stored claims no longer match the sources, `architecture-ai.md` is removed from the documentation pull request, which says so.
+- AI interpretation does not run in CI. Where no current claims match the pinned sources, `architecture-ai.md` is removed from the documentation pull request, which says so. Keeping AI documentation through CI publication is not supported yet.
 - Decisions in `repodocs.confirmations.json` bind to file content hashes. Record them from a checkout whose line endings were not converted, or they go stale on a Linux runner and fail the gate.
 
 The reusable action is `.github/actions/publish`; `docs/examples/repodocs-publish.yml` is a complete example for a coordination repository, including the one-time token and `.gitignore` setup. See ADR-023 for the design and for the choices that still await the owner's approval.

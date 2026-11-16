@@ -333,12 +333,61 @@ def test_removed_ai_document_is_explained_in_the_pull_request(basic) -> None:
     ir = {"snapshots": [], "candidates": []}
     body = render_pull_request_body(ir, [("D", "docs/generated/architecture-ai.md"), ("M", "docs/generated/architecture.md")], "bot", "main")
     assert "removed: `docs/generated/architecture-ai.md`" in body
-    assert "ai-interpret" in body
+    assert "does not run AI interpretation" in body
+    assert "commit" not in body.split("AI-assisted document")[1]  # no unproven remediation advice
     plain = render_pull_request_body(ir, [("M", "docs/generated/architecture.md")], "bot", "main")
-    assert "ai-interpret" not in plain
+    assert "AI-assisted" not in plain
 
 
 # ------------------------------------------------------------------ refusals
+def test_publication_requires_the_base_branch_to_be_checked_out(basic) -> None:
+    basic.generate()
+    client = FakePullRequests()
+
+    git(basic.root, "checkout", "-q", "-b", "feature")
+    with pytest.raises(PublicationError, match="checked-out branch is feature, not the base 'main'"):
+        basic.publish(client)
+
+    git(basic.root, "checkout", "-q", "--detach", "main")
+    with pytest.raises(PublicationError, match="detached HEAD"):
+        basic.publish(client)
+
+    git(basic.root, "checkout", "-q", "main")
+    with pytest.raises(ConfigError, match="--base must name"):
+        basic.publish(client, base="  ")
+    assert client.calls == [] and basic.remote_tip() is None
+
+
+def test_publication_does_not_make_a_complete_clone_shallow(basic) -> None:
+    basic.generate()
+    client = FakePullRequests()
+    assert git(basic.root, "rev-parse", "--is-shallow-repository") == "false"
+    basic.publish(client)
+    change_source(basic, "backend", "value = 4\n")
+    basic.generate()
+    basic.publish(client)  # reads the existing bot branch, which is where a fetch happens
+    assert git(basic.root, "rev-parse", "--is-shallow-repository") == "false"
+
+
+def test_a_shallow_clone_fetches_the_bot_branch_with_limited_depth(basic, tmp_path) -> None:
+    basic.generate()
+    basic.publish(FakePullRequests())
+    shallow = tmp_path / "shallow"
+    git(tmp_path, "clone", "-q", "--depth=1", "--branch", "main", basic.origin.as_uri(), str(shallow))
+    assert git(shallow, "rev-parse", "--is-shallow-repository") == "true"
+    shutil.copytree(basic.root / "sources", shallow / "sources")
+    shutil.copy(basic.root / "repodocs.json", shallow / "repodocs.json")
+    shallow_project = Project(shallow, basic.origin, basic.sources, basic.capsys)
+    shallow_project.generate()
+    client = FakePullRequests()
+    client.open[(DEFAULT_BRANCH, "main")] = 1
+
+    result = shallow_project.publish(client)
+
+    assert result["status"] == "unchanged"
+    assert git(shallow, "rev-parse", "--is-shallow-repository") == "true"
+
+
 def test_changes_outside_the_generated_paths_stop_publication(basic) -> None:
     basic.generate()
     (basic.root / "notes.txt").write_text("unrelated\n", encoding="utf-8")

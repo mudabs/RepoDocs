@@ -58,16 +58,23 @@ jobs:
       # the checkout, so it is a real pin rather than a copy of whatever was checked out.
       - name: Resolve source revisions
         id: revisions
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.REPODOCS_TOKEN }}
         run: |
           resolve() {
-            sha=$(gh api "repos/$1/commits/$2" --jq .sha)
-            [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "Unexpected revision for $1"; exit 1; }
-            echo "$sha"
+            local sha
+            sha=$(gh api "repos/$1/commits/$2" --jq .sha) || { echo "Could not resolve $1 at $2" >&2; return 1; }
+            [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "Unexpected revision for $1" >&2; return 1; }
+            printf '%s' "$sha"
           }
-          echo "frontend=$(resolve your-org/smartcart-frontend main)" >> "$GITHUB_OUTPUT"   # CHANGE
-          echo "backend=$(resolve your-org/smartcart-backend main)" >> "$GITHUB_OUTPUT"     # CHANGE
+          # Assign first so a failure stops the step instead of writing an empty output.
+          frontend=$(resolve your-org/smartcart-frontend main)   # CHANGE
+          backend=$(resolve your-org/smartcart-backend main)     # CHANGE
+          {
+            echo "frontend=$frontend"
+            echo "backend=$backend"
+          } >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -88,5 +95,7 @@ jobs:
       - uses: mudabs/RepoDocs/.github/actions/publish@0000000000000000000000000000000000000000 # CHANGE: pin a reviewed commit
         with:
           revisions: ${{ format('{{"frontend":"{0}","backend":"{1}"}}', steps.revisions.outputs.frontend, steps.revisions.outputs.backend) }}
-          base-branch: ${{ github.event.repository.default_branch }}
+          # The branch this run started on: the default branch for schedule, repository_dispatch,
+          # and pushes. The action refuses to run unless that branch is the one checked out.
+          base-branch: ${{ github.ref_name }}
           token: ${{ secrets.REPODOCS_TOKEN }}
