@@ -92,6 +92,16 @@ Standalone index, table-drop, schema, extension, and enum-type migrations are in
 
 Standalone unsupported DDL and procedural migrations are reported with evidence too. Index names are scoped to the owning table's schema; qualified index drops target that schema, while ambiguous unqualified drops are reported without changing state. Runtime search paths are not guessed.
 
+### Entity-relationship diagrams (ERD)
+
+When a project contains PostgreSQL table facts, `repodocs generate` produces **`erd.mmd`** alongside `architecture.md` and `architecture.mmd`:
+- Generated deterministically from a typed relational model (`repodocs.erd`) using Mermaid `erDiagram` syntax.
+- Entities declare attributes with normalized types and `PK`, `FK`, and `UK` key constraints. Schema-qualified table names use Mermaid alias labels (`entity_id["schema.table"]`).
+- Foreign keys produce crow's-foot relationship lines with identifying (`--`) or non-identifying (`..`) styles depending on child primary keys, and cardinality (`||`, `|o`, `o{`, `o|`) reflecting column nullability and uniqueness.
+- Missing primary keys and unsupported relationships (such as references to unextracted external tables) are reported in `erd.mmd` diagram comments and under `### Schema diagnostics` in `architecture.md`.
+- `repodocs validate` performs documented renderer-compatible verification without requiring external Node.js or browser tooling.
+- `erd.mmd` is tracked in `artifact-manifest.json`, protected against unexpected edits, and safely retired when database facts are no longer present. See ADR-022.
+
 ### Cross-repository candidates
 
 After analysis, `scan` matches React `http_request` findings to endpoints in

@@ -274,10 +274,21 @@ def validate_ai_artifact(config: ProjectConfig, ir: dict[str, Any], item: dict[s
         )
 
 
-def validate_mermaid(content: str) -> None:
-    lines = [line.strip() for line in content.splitlines() if line.strip()]
-    if not lines or lines[0] != "flowchart TD":
-        raise ValidationError("Mermaid artifact must begin with `flowchart TD`")
+ER_ATTR_PATTERN = re.compile(
+    r"^([A-Za-z][A-Za-z0-9_\-\(\)\[\],]*)\s+([A-Za-z_][A-Za-z0-9_\-]*)"
+    r"(?:\s+((?:(?:PK|FK|UK)(?:,\s*)?)+))?"
+    r'(?:\s+"([^"]*)")?$'
+)
+ER_REL_PATTERN = re.compile(
+    r"^([A-Za-z_][A-Za-z0-9_]*)\s+"
+    r"(\|\||\|o|o\||\}\||\}o|o\{)(\-\-|\.\.)(\|\||o\||\|o|\|\{|o\{|\}o)\s+"
+    r"([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(?:\"([^\"]*)\"|([A-Za-z0-9_\-]+))$"
+)
+ER_ENTITY_START_PATTERN = re.compile(r'^([A-Za-z_][A-Za-z0-9_]*)(?:\["([^"]+)"\])?\s*\{$')
+ER_ENTITY_DECL_PATTERN = re.compile(r'^([A-Za-z_][A-Za-z0-9_]*)(?:\["([^"]+)"\])?$')
+
+
+def validate_flowchart(lines: list[str]) -> None:
     node_pattern = re.compile(r'^([A-Za-z_][A-Za-z0-9_]*)\[".*"\]$')
     edge_pattern = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\s+-->\s+([A-Za-z_][A-Za-z0-9_]*)$")
     defined: set[str] = set()
@@ -295,6 +306,60 @@ def validate_mermaid(content: str) -> None:
     missing = sorted(set(references) - defined)
     if missing:
         raise ValidationError("Mermaid references undefined nodes: " + ", ".join(missing))
+
+
+def validate_er_diagram(lines: list[str]) -> None:
+    defined: set[str] = set()
+    references: list[str] = []
+    inside_entity = False
+
+    for line in lines[1:]:
+        if line.startswith("%%"):
+            continue
+        if not inside_entity:
+            start_match = ER_ENTITY_START_PATTERN.match(line)
+            if start_match:
+                defined.add(start_match.group(1))
+                inside_entity = True
+                continue
+            decl_match = ER_ENTITY_DECL_PATTERN.match(line)
+            if decl_match:
+                defined.add(decl_match.group(1))
+                continue
+            rel_match = ER_REL_PATTERN.match(line)
+            if rel_match:
+                references.extend([rel_match.group(1), rel_match.group(5)])
+                continue
+            raise ValidationError(f"Unsupported or malformed Mermaid ERD line: {line}")
+        else:
+            if line == "}":
+                inside_entity = False
+                continue
+            attr_match = ER_ATTR_PATTERN.match(line)
+            if attr_match:
+                continue
+            raise ValidationError(f"Unsupported or malformed Mermaid ERD attribute line: {line}")
+
+    if inside_entity:
+        raise ValidationError("Unclosed entity block in Mermaid ERD")
+    missing = sorted(set(references) - defined)
+    if missing:
+        raise ValidationError("Mermaid ERD references undefined entities: " + ", ".join(missing))
+
+
+def validate_mermaid(content: str) -> None:
+    lines = [line.strip() for line in content.splitlines() if line.strip()]
+    if not lines:
+        raise ValidationError("Mermaid artifact cannot be empty")
+    header = lines[0]
+    if header == "flowchart TD":
+        validate_flowchart(lines)
+    elif header == "erDiagram":
+        validate_er_diagram(lines)
+    else:
+        raise ValidationError(
+            f"Unsupported Mermaid diagram header: {header!r}; expected `flowchart TD` or `erDiagram`"
+        )
 
 
 def validate_markdown(content: str, ir: dict[str, Any]) -> None:
