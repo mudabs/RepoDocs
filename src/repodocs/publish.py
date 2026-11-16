@@ -183,8 +183,19 @@ class GhPullRequests:
             os.unlink(body_file)
 
     def close(self, number: int, comment: str) -> None:
-        # The branch is deleted separately, under a lease, so a moved branch is never removed.
-        self._gh("pr", "close", str(number), "--comment", comment)
+        """Explain, then close. Safe to repeat, and to call after GitHub already closed the pull request.
+
+        The branch is deleted separately and first, under a lease. The comment goes first because
+        `gh pr close --comment` posts nothing when the pull request is already closed, which is the
+        usual state after its branch was deleted.
+        """
+
+        self._gh("pr", "comment", str(number), "--body", comment)
+        try:
+            self._gh("pr", "close", str(number))
+        except PublicationError as exc:
+            if "already closed" not in str(exc).lower():
+                raise
 
 
 def render_pull_request_body(ir: dict[str, Any], changes: list[tuple[str, str]], branch: str, base: str) -> str:
@@ -292,23 +303,38 @@ def _retire(
     token: str | None,
     pull_requests: PullRequests,
 ) -> dict[str, Any]:
-    """The output equals the base, so an earlier proposal is obsolete: close it and remove its branch."""
+    """The output equals the base, so an earlier proposal is obsolete: remove its branch, then close it.
+
+    The order is what makes this safe. The leased branch deletion is the only step that can fail because
+    someone else moved the branch, so it comes first and nothing about the pull request changes before it
+    succeeds. The open pull request is only read beforehand, because deleting its branch can make GitHub
+    close it and hide it from a later lookup. Closing afterwards is idempotent, and a run repeated after
+    a partial failure finds whatever is left: a deleted branch with a pull request still open is closed,
+    and a branch with no pull request is simply deleted.
+    """
 
     result: dict[str, Any] = {
         "status": STATUS_NO_OP, "branch": branch, "base": base, "changes": [], "pull_request": None, "branch_deleted": False,
     }
-    if tip is None:
-        return result  # without the branch there can be no open pull request from it
-    number = pull_requests.find_open(branch, base)
+    number = pull_requests.find_open(branch, base)  # read only: nothing has changed if this fails
+    if tip is not None:
+        # A lease on the tip that was read means a branch someone else moved meanwhile is never deleted,
+        # and the pull request is then left open and untouched, because this raises first.
+        _git(
+            root, "push", f"--force-with-lease=refs/heads/{branch}:{tip}", remote, f":refs/heads/{branch}",
+            environment=environment, token=token,
+        )
+        result["branch_deleted"] = True
     if number is not None:
-        pull_requests.close(number, NO_OP_COMMENT)
+        try:
+            pull_requests.close(number, NO_OP_COMMENT)
+        except PublicationError as exc:
+            raise PublicationError(
+                f"The obsolete bot branch {'was deleted' if result['branch_deleted'] else 'is already gone'}, but closing "
+                f"pull request #{number} failed: {exc}. Nothing else is needed beyond running again; GitHub normally "
+                "closes a pull request whose branch was deleted"
+            ) from exc
         result["pull_request"] = {"number": number, "action": PR_CLOSED}
-    # A lease on the tip that was read means a branch someone else moved meanwhile is never deleted.
-    _git(
-        root, "push", f"--force-with-lease=refs/heads/{branch}:{tip}", remote, f":refs/heads/{branch}",
-        environment=environment, token=token,
-    )
-    result["branch_deleted"] = True
     return result
 
 

@@ -42,14 +42,25 @@ class FakePullRequests:
         self.updated: list[dict] = []
         self.fail_create = 0
         self.closed: list[tuple[int, str]] = []
+        self.fail_close = 0
+        self.fail_find = 0
+        self.on_close = None  # called as the close request arrives, to observe what exists at that moment
 
     def close(self, number, comment):
         self.calls.append(("close", number))
+        if self.on_close:
+            self.on_close()
+        if self.fail_close:
+            self.fail_close -= 1
+            raise PublicationError("gh pr close failed: simulated outage")
         self.closed.append((number, comment))
         self.open = {key: value for key, value in self.open.items() if value != number}
 
     def find_open(self, head, base):
         self.calls.append(("find", head, base))
+        if self.fail_find:
+            self.fail_find -= 1
+            raise PublicationError("gh pr list failed: simulated outage")
         return self.open.get((head, base))
 
     def create(self, head, base, title, body):
@@ -186,7 +197,8 @@ def test_publish_is_a_noop_when_the_base_already_contains_the_output(basic) -> N
     # A real run reads the remote, finds no bot branch, and so has nothing to retire.
     result = basic.publish(client)
     assert result == dry
-    assert client.calls == [] and basic.remote_tip() is None
+    # The only GitHub call is a read: a retry after a partial failure must still find an open pull request.
+    assert client.mutations() == [] and basic.remote_tip() is None
 
 
 def test_manifest_must_be_committed_for_a_clean_clone_to_regenerate(basic, tmp_path) -> None:
@@ -764,7 +776,7 @@ def test_a_no_op_run_with_nothing_to_retire_changes_nothing(basic) -> None:
     result = basic.publish(client)
 
     assert result["status"] == "no-op" and result["pull_request"] is None and result["branch_deleted"] is False
-    assert client.calls == [] and basic.remote_tip() is None
+    assert client.mutations() == [] and basic.remote_tip() is None
 
 
 def test_a_bot_branch_that_moved_is_not_deleted_by_a_no_op_run(basic, monkeypatch, tmp_path) -> None:
@@ -795,13 +807,19 @@ def test_a_bot_branch_that_moved_is_not_deleted_by_a_no_op_run(basic, monkeypatc
     monkeypatch.setattr(publication, "_git", stale_listing)
     git(basic.root / "sources" / "backend", "reset", "-q", "--hard", original)
     basic.generate()
+    client.calls.clear()
     with pytest.raises(PublicationError, match="git push failed"):
         basic.publish(client)
 
+    # The failed lease leaves the moved branch and the active pull request exactly as they were.
     assert basic.remote_tip() == moved_tip
+    assert client.open == {(DEFAULT_BRANCH, "main"): 1}
+    assert client.closed == []
+    assert not any(call[0] == "close" for call in client.calls), "a stale run must not even attempt to close the pull request"
+    assert client.mutations() == []
 
 
-def test_the_github_client_closes_with_fixed_text_and_the_token_in_the_environment(tmp_path, monkeypatch) -> None:
+def test_the_github_client_comments_then_closes_with_fixed_text_and_the_token_in_the_environment(tmp_path, monkeypatch) -> None:
     seen: list[dict] = []
 
     def fake_run(command, **kwargs):
@@ -811,5 +829,112 @@ def test_the_github_client_closes_with_fixed_text_and_the_token_in_the_environme
     monkeypatch.setattr(publication.subprocess, "run", fake_run)
     GhPullRequests(tmp_path, "secret-token").close(12, publication.NO_OP_COMMENT)
 
-    assert seen[0]["command"] == ["gh", "pr", "close", "12", "--comment", publication.NO_OP_COMMENT]
-    assert seen[0]["env"]["GH_TOKEN"] == "secret-token" and "secret-token" not in " ".join(seen[0]["command"])
+    # The comment goes first: `gh pr close --comment` posts nothing when GitHub has already closed the pull request.
+    assert [item["command"] for item in seen] == [
+        ["gh", "pr", "comment", "12", "--body", publication.NO_OP_COMMENT],
+        ["gh", "pr", "close", "12"],
+    ]
+    for item in seen:
+        assert item["env"]["GH_TOKEN"] == "secret-token" and "secret-token" not in " ".join(item["command"])
+
+
+def test_closing_a_pull_request_that_is_already_closed_is_not_an_error(tmp_path, monkeypatch) -> None:
+    def run(stderr: str):
+        def fake_run(command, **kwargs):
+            failing = command[2] == "close"
+            return subprocess.CompletedProcess(command, 1 if failing else 0, stdout="", stderr=stderr if failing else "")
+
+        return fake_run
+
+    monkeypatch.setattr(publication.subprocess, "run", run("! Pull request #12 is already closed"))
+    GhPullRequests(tmp_path, "t").close(12, "comment")  # tolerated: GitHub closed it when the branch was deleted
+
+    monkeypatch.setattr(publication.subprocess, "run", run("HTTP 403: resource not accessible"))
+    with pytest.raises(PublicationError, match="HTTP 403"):
+        GhPullRequests(tmp_path, "t").close(12, "comment")
+
+
+# ------------------------------------------------------------------ retirement order and recovery
+def open_proposal_then_revert(basic, client) -> None:
+    """A documentation PR is open on the remote, and the sources have since returned to the documented state."""
+
+    basic.generate()
+    basic.commit_docs()
+    original = reverted_to_documented_state(basic)
+    assert basic.publish(client)["status"] == "published" and client.open == {(DEFAULT_BRANCH, "main"): 1}
+    git(basic.root / "sources" / "backend", "reset", "-q", "--hard", original)
+    basic.generate()
+    client.calls.clear()
+
+
+def test_retirement_deletes_the_branch_before_it_asks_github_to_close(basic) -> None:
+    client = FakePullRequests()
+    open_proposal_then_revert(basic, client)
+    seen: list[str | None] = []
+    client.on_close = lambda: seen.append(basic.remote_tip())
+
+    result = basic.publish(client)
+
+    assert result["pull_request"] == {"number": 1, "action": "closed"} and result["branch_deleted"] is True
+    # When the close request arrived the leased deletion had already succeeded.
+    assert seen == [None]
+    assert [call[0] for call in client.calls] == ["find", "close"]  # one read, then the close
+
+
+def test_a_failed_lookup_changes_nothing(basic) -> None:
+    client = FakePullRequests()
+    open_proposal_then_revert(basic, client)
+    tip = basic.remote_tip()
+    client.fail_find = 1
+
+    with pytest.raises(PublicationError, match="gh pr list failed"):
+        basic.publish(client)
+
+    # The read comes first, so a failure leaves both the branch and the pull request alone.
+    assert basic.remote_tip() == tip and client.open == {(DEFAULT_BRANCH, "main"): 1} and client.mutations() == []
+
+
+def test_a_close_that_fails_after_the_branch_is_gone_is_finished_by_the_next_run(basic) -> None:
+    client = FakePullRequests()
+    open_proposal_then_revert(basic, client)
+    client.fail_close = 1
+
+    with pytest.raises(PublicationError, match=r"bot branch was deleted, but closing pull request #1 failed"):
+        basic.publish(client)
+
+    # Partial state: the branch is gone but the stand-in kept the pull request open.
+    assert basic.remote_tip() is None and client.open == {(DEFAULT_BRANCH, "main"): 1}
+
+    retry = basic.publish(client)
+
+    assert retry["status"] == "no-op" and retry["branch_deleted"] is False
+    assert retry["pull_request"] == {"number": 1, "action": "closed"}
+    assert client.closed == [(1, publication.NO_OP_COMMENT)] and client.open == {}
+
+
+def test_a_pull_request_github_closed_with_its_branch_needs_nothing_more_on_retry(basic) -> None:
+    client = FakePullRequests()
+    open_proposal_then_revert(basic, client)
+    client.fail_close = 1
+    with pytest.raises(PublicationError, match="closing pull request #1 failed"):
+        basic.publish(client)
+
+    client.open.clear()  # GitHub closes a pull request when its head branch is deleted
+    client.calls.clear()
+    retry = basic.publish(client)
+
+    assert retry == {"status": "no-op", "branch": DEFAULT_BRANCH, "base": "main", "changes": [], "pull_request": None, "branch_deleted": False}
+    assert client.mutations() == [] and basic.remote_tip() is None
+
+
+def test_repeating_a_completed_retirement_is_safe(basic) -> None:
+    client = FakePullRequests()
+    open_proposal_then_revert(basic, client)
+    assert basic.publish(client)["pull_request"] == {"number": 1, "action": "closed"}
+    client.calls.clear()
+
+    for _ in range(2):
+        again = basic.publish(client)
+        assert again["status"] == "no-op" and again["pull_request"] is None and again["branch_deleted"] is False
+
+    assert client.mutations() == [] and basic.remote_tip() is None
