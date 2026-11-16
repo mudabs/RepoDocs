@@ -21,6 +21,11 @@ ROLE_SOURCE = "source"
 ROLE_DESTINATION = "destination"
 REPOSITORY_ROLES = (ROLE_SOURCE, ROLE_DESTINATION)
 
+AI_PROVIDER_NONE = "none"
+AI_PROVIDER_ANTHROPIC = "anthropic"
+AI_PROVIDER_OLLAMA = "ollama"
+AI_PROVIDERS = (AI_PROVIDER_NONE, AI_PROVIDER_ANTHROPIC, AI_PROVIDER_OLLAMA)
+
 FULL_REVISION_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 
 
@@ -49,6 +54,42 @@ class RepositorySpec:
         return data
 
 
+@dataclass(frozen=True)
+class AiSettings:
+    """Optional AI interpretation. The default is disabled and local-only.
+
+    Credentials are never stored here; providers read them from the environment.
+    """
+
+    provider: str = AI_PROVIDER_NONE
+    model: str | None = None
+    external_consent: bool = False
+    ollama_host: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        data: dict[str, Any] = {"provider": self.provider, "external_consent": self.external_consent}
+        if self.model:
+            data["model"] = self.model
+        if self.ollama_host:
+            data["ollama_host"] = self.ollama_host
+        return data
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "AiSettings":
+        if not isinstance(data, dict):
+            raise ConfigError("ai must be a JSON object")
+        provider = data.get("provider", AI_PROVIDER_NONE)
+        if provider not in AI_PROVIDERS:
+            raise ConfigError(f"Unsupported ai.provider {provider!r}; expected one of: " + ", ".join(AI_PROVIDERS))
+        consent = data.get("external_consent", False)
+        if not isinstance(consent, bool):
+            raise ConfigError("ai.external_consent must be true or false")
+        for key in ("model", "ollama_host"):
+            if data.get(key) is not None and (not isinstance(data[key], str) or not data[key]):
+                raise ConfigError(f"ai.{key} must be a non-empty string")
+        return cls(provider=provider, model=data.get("model"), external_consent=consent, ollama_host=data.get("ollama_host"))
+
+
 @dataclass
 class ProjectConfig:
     root: Path
@@ -57,6 +98,7 @@ class ProjectConfig:
     repositories: list[RepositorySpec]
     output_directory: str = DEFAULT_OUTPUT_DIRECTORY
     destination_repository_id: str | None = None
+    ai: AiSettings = AiSettings()
 
     @property
     def config_path(self) -> Path:
@@ -156,12 +198,15 @@ class ProjectConfig:
         documentation: dict[str, Any] = {"output_directory": self.output_directory}
         if self.destination_repository_id:
             documentation["destination"] = {"repository_id": self.destination_repository_id}
-        return {
+        data: dict[str, Any] = {
             "schema_version": CONFIG_SCHEMA_VERSION,
             "project": {"id": self.project_id, "name": self.project_name},
             "repositories": [spec.to_dict() for spec in sorted(self.repositories, key=lambda item: item.id)],
             "documentation": documentation,
         }
+        if self.ai != AiSettings():
+            data["ai"] = self.ai.to_dict()
+        return data
 
     def save(self) -> None:
         write_json(self.config_path, self.to_dict())
@@ -232,6 +277,7 @@ class ProjectConfig:
             repositories=repositories,
             output_directory=output_directory,
             destination_repository_id=destination_id,
+            ai=AiSettings.from_dict(data["ai"]) if "ai" in data else AiSettings(),
         )
 
 

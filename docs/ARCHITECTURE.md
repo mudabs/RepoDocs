@@ -55,6 +55,8 @@ The implemented HTTP correlator (ADR-018) runs after repository analysis and sto
 ### AI
 Provider-neutral adapter. Supply curated, redacted evidence bundles only after explicit consent for external providers; local-only mode never sends repository content externally. Request schema-constrained outputs and validate evidence references and claims before documentation generation. The MVP supports one cloud BYO provider and Ollama. Managed RepoDocs AI is deferred and requires separate service costs, identity, quota, and privacy decisions.
 
+Implemented (ADR-020): `ai-bundle` builds a deterministic, schema-versioned evidence bundle from the IR alone, with no source text and with secret redaction; `ai-interpret` sends it to Anthropic (official SDK, optional extra) or Ollama through one provider protocol and stores validated claims with provider and model provenance beside the IR, never inside it. External use requires recorded consent, so a project without it is local-only. Claims citing unknown evidence or subjects are rejected, and claims without evidence or about unconfirmed candidates are only ever `proposed`.
+
 ### Documentation planning
 Choose artifact type, scope, required evidence, coverage, destination, and generator. Do not generate unsupported views as if complete. Maintain dependencies from IR facts to artifacts. Generated files live in dedicated paths and are tracked by a manifest; unexpected edits fail validation rather than being overwritten.
 

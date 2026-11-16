@@ -11,6 +11,14 @@ class ConfigError(RepoDocsError):
     """Invalid or missing project configuration."""
 
 
+class ConsentError(ConfigError):
+    """An external AI provider was requested without recorded consent."""
+
+
+class ProviderError(RepoDocsError):
+    """An AI provider was unavailable or returned unusable output."""
+
+
 class ScanError(RepoDocsError):
     """A repository could not be scanned safely."""
 
@@ -37,3 +45,4 @@ EXIT_VALIDATION = 3
 EXIT_OWNERSHIP = 4
 EXIT_CONFIRMATION = 5
 EXIT_SNAPSHOT = 6
+EXIT_AI_PROVIDER = 7

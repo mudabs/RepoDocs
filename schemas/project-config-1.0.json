@@ -53,6 +53,21 @@
         }
       },
       "additionalProperties": false
+    },
+    "ai": {
+      "type": "object",
+      "description": "Optional AI interpretation. Absent means disabled. Credentials are never stored here.",
+      "required": ["provider", "external_consent"],
+      "properties": {
+        "provider": {"enum": ["none", "anthropic", "ollama"]},
+        "model": {"type": "string", "minLength": 1},
+        "external_consent": {
+          "type": "boolean",
+          "description": "Explicit consent to send the redacted evidence bundle off this machine. False keeps the project local-only."
+        },
+        "ollama_host": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
     }
   },
   "additionalProperties": false
