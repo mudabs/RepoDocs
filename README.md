@@ -138,6 +138,17 @@ CI failures belong to #18 and are not implemented here.
 3. Work on a feature branch and submit all changes through a pull request to `main`.
 4. Run the test suite with `python -m pytest`.
 
+## Testing and CI
+
+The `Tests` workflow (`.github/workflows/tests.yml`) runs the complete pytest suite on every pull request targeting `main`, on every new commit to such a pull request, on pushes to `main`, and on manual dispatch. It tests Ubuntu and Windows on Python 3.11 (the declared minimum) and Python 3.14, and it always runs the tests present in the commit under test, so tests added by a pull request run automatically. The check names are `test (ubuntu-latest, 3.11)`, `test (ubuntu-latest, 3.14)`, `test (windows-latest, 3.11)`, and `test (windows-latest, 3.14)`.
+
+- A change in behavior needs tests that cover it. A bug fix needs a regression test that fails without the fix.
+- Run `python -m pytest` locally before pushing. Local runs supplement the GitHub checks; they do not replace them.
+- The workflow has read-only permissions, uses no secrets, and pins its actions to commit SHAs. Update a pin by replacing the SHA and the version comment together.
+- This is development CI for RepoDocs itself. Documentation-publication automation for user projects is separate work in Milestone 4.
+
+The suite does not measure coverage and is not comprehensive. Known untested areas include the Poetry and Maven manifest dependency paths outside the framework fixtures and behavior on macOS.
+
 ## License
 
 RepoDocs is licensed under the Apache License, Version 2.0. The complete license text is in `LICENSE`, and attribution notices are in `NOTICE`. The decision is recorded in `docs/DECISIONS.md` (D28) and `docs/adr/ADR-013-open-source-license.md`. See `docs/RELEASE.md` for release notes on licensing.
