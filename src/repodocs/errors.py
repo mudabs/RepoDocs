@@ -19,6 +19,10 @@ class ProviderError(RepoDocsError):
     """An AI provider was unavailable or returned unusable output."""
 
 
+class MalformedProviderOutput(ProviderError):
+    """The provider answered, but not with a JSON object. One repair attempt is allowed."""
+
+
 class PublicationError(RepoDocsError):
     """Documentation could not be published safely."""
 

@@ -44,13 +44,31 @@ MAX_LINES = 200
 BINARY_PROBE = 8192
 
 
+def is_denied(path: str, extra: tuple[str, ...] = ()) -> bool:
+    """Whether a path is a name or place the context never reads: secrets, keys, locks, version control."""
+
+    parts = PurePosixPath(path).parts
+    if any(part.lower() in DENIED_DIRECTORIES for part in parts[:-1]):
+        return True
+    name = parts[-1].lower() if parts else ""
+    return any(fnmatch.fnmatchcase(name, pattern.lower()) for pattern in DENIED_NAMES + tuple(extra))
+
+
+def well_formed_path(path: str) -> bool:
+    """A repository-relative POSIX path with no traversal, drive, or control characters."""
+
+    if not isinstance(path, str) or not path or path != path.strip() or "\\" in path or ":" in path or path.startswith("/"):
+        return False
+    return all(part not in ("", ".", "..") for part in path.split("/")) and all(ord(char) >= 32 for char in path)
+
+
 class ContextResolver:
     """Selects and serves bounded, redacted excerpts of one scan's snapshot."""
 
     def __init__(self, config: ProjectConfig, ir: dict[str, Any]) -> None:
         settings = config.architecture
         self.budgets = {**ARCHITECTURE_BUDGET_DEFAULTS, **settings.budgets}
-        self.denied = DENIED_NAMES + tuple(name.lower() for name in settings.deny_names)
+        self.extra_deny = settings.deny_names
         self.ir = ir
         self.repositories: dict[str, tuple[Path, dict[str, dict[str, Any]]]] = {}
         for snapshot in ir["snapshots"]:
@@ -87,19 +105,9 @@ class ContextResolver:
         self.omitted[(repository_id, path, reason)] = {"repository_id": repository_id, "path": path, "reason": reason}
 
     def is_denied(self, path: str) -> bool:
-        parts = PurePosixPath(path).parts
-        if any(part.lower() in DENIED_DIRECTORIES for part in parts[:-1]):
-            return True
-        name = parts[-1].lower() if parts else ""
-        return any(fnmatch.fnmatchcase(name, pattern) for pattern in self.denied)
+        return is_denied(path, self.extra_deny)
 
-    @staticmethod
-    def well_formed(path: str) -> bool:
-        """A repository-relative POSIX path with no traversal, drive, or control characters."""
-
-        if not path or path != path.strip() or "\\" in path or ":" in path or "\x00" in path or path.startswith("/"):
-            return False
-        return all(part not in ("", ".", "..") for part in path.split("/")) and all(ord(char) >= 32 for char in path)
+    well_formed = staticmethod(lambda path: well_formed_path(path))
 
     def _read(self, root: Path, relative: str) -> bytes | None:
         """The file's bytes, only when no path component is a link and it stays inside the repository."""

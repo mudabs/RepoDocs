@@ -16,7 +16,7 @@ from typing import Any, Protocol
 from urllib.parse import urlsplit
 
 from ..config import AI_PROVIDER_ANTHROPIC, AI_PROVIDER_NONE, AI_PROVIDER_OLLAMA, AiSettings
-from ..errors import ConfigError, ConsentError, ProviderError
+from ..errors import ConfigError, ConsentError, MalformedProviderOutput, ProviderError
 
 
 DEFAULT_ANTHROPIC_MODEL = "claude-opus-5-5"
@@ -44,9 +44,9 @@ def _parse_object(text: str, provider: str) -> dict[str, Any]:
     try:
         data = json.loads(text)
     except (TypeError, ValueError) as exc:
-        raise ProviderError(f"{provider} returned output that is not valid JSON") from exc
+        raise MalformedProviderOutput(f"{provider} returned output that is not valid JSON") from exc
     if not isinstance(data, dict):
-        raise ProviderError(f"{provider} returned JSON that is not an object")
+        raise MalformedProviderOutput(f"{provider} returned JSON that is not an object")
     return data
 
 
