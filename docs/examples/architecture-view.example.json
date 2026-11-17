@@ -108,8 +108,8 @@
       "evidence": [
         "ctx:409bcf5bb6718f5b"
       ],
-      "classification": "inferred",
-      "confidence": "high",
+      "classification": "proposed",
+      "confidence": "medium",
       "cross_repository": false
     }
   ],

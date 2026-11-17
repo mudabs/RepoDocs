@@ -44,6 +44,31 @@ def test_every_example_citation_resolves_to_a_context_excerpt_of_the_same_snapsh
         assert set(connection["evidence"]) <= set(documents)
 
 
+def test_an_inferred_example_item_cites_a_member_file_of_each_component_it_names() -> None:
+    """Classification is about evidence tied to the components, not only about citations that exist."""
+
+    view, context = example("architecture-view.example.json"), example("architecture-context.example.json")
+    paths = {item["id"]: (item["repository_id"], item["path"]) for item in context["documents"]}
+    components = {item["id"]: item for item in view["components"]}
+
+    def tied(component: dict) -> bool:
+        return any(paths[key] == (component["repository_id"], member) for key in component["evidence"] for member in component["members"])
+
+    def tied_to(connection: dict, component: dict) -> bool:
+        return any(paths[key] == (component["repository_id"], member) for key in connection["evidence"] for member in component["members"])
+
+    inferred_components = [item for item in view["components"] if item["classification"] == "inferred"]
+    inferred_connections = [item for item in view["connections"] if item["classification"] == "inferred"]
+    assert inferred_components and inferred_connections
+    for component in inferred_components:
+        assert tied(component), component["name"]
+    for connection in inferred_connections:
+        assert tied_to(connection, components[connection["source"]]) and tied_to(connection, components[connection["target"]]), connection["label"]
+    # The one connection with evidence from a single side is shown as proposed, not inferred.
+    one_sided = [item for item in view["connections"] if not (tied_to(item, components[item["source"]]) and tied_to(item, components[item["target"]]))]
+    assert one_sided and all(item["classification"] == "proposed" for item in one_sided)
+
+
 def mutate(name: str, edit) -> dict:
     data = copy.deepcopy(example(name))
     edit(data)
@@ -71,6 +96,26 @@ VIEW_BREAKS = [
 
 @pytest.mark.parametrize("edit", VIEW_BREAKS, ids=[str(index) for index in range(len(VIEW_BREAKS))])
 def test_the_view_schema_refuses_authority_it_must_not_grant(edit) -> None:
+    assert list(schema(VIEW).iter_errors(mutate("architecture-view.example.json", edit)))
+
+
+def test_a_complete_and_a_partial_view_are_both_valid() -> None:
+    complete = mutate("architecture-view.example.json", lambda d: None)
+    partial = mutate("architecture-view.example.json", lambda d: d.update(status="partial", partial_reason="round-budget"))
+
+    assert complete["status"] == "complete" and "partial_reason" not in complete
+    for view in (complete, partial):
+        assert not list(schema(VIEW).iter_errors(view))
+    for reason in ("request-budget", "context-budget", "response-budget", "timeout", "provider-error", "incomplete-response", "empty-response", "no-progress"):
+        assert not list(schema(VIEW).iter_errors({**partial, "partial_reason": reason}))
+
+
+@pytest.mark.parametrize("edit", [
+    lambda d: d.update(status="partial"),
+    lambda d: d.update(status="complete", partial_reason="round-budget"),
+    lambda d: d.update(status="partial", partial_reason="because"),
+], ids=["partial without a reason", "complete with a reason", "partial with an unknown reason"])
+def test_status_and_partial_reason_must_agree(edit) -> None:
     assert list(schema(VIEW).iter_errors(mutate("architecture-view.example.json", edit)))
 
 
