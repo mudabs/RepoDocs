@@ -7,8 +7,8 @@ name: Publication self-test
 # required check names do not change.
 
 on:
+  # No branch filter: pull requests stacked on other pull requests (base is not main) get the same checks.
   pull_request:
-    branches: [main]
   push:
     branches: [main]
   workflow_dispatch:
