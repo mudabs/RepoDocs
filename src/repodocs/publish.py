@@ -22,7 +22,8 @@ from urllib.parse import urlsplit
 from . import __version__
 from .config import ProjectConfig
 from .errors import ConfigError, PublicationError
-from .generator import manifest_path
+from .ir import ir_hash
+from .generator import ARCHITECTURE_GENERATOR_NAME, manifest_path
 from .snapshot import read_git_state
 
 
@@ -198,8 +199,25 @@ class GhPullRequests:
                 raise
 
 
-def render_pull_request_body(ir: dict[str, Any], changes: list[tuple[str, str]], branch: str, base: str) -> str:
-    """The pull request description, built only from the IR and the list of changed files."""
+def unverified_architecture_files(config: ProjectConfig, ir: dict[str, Any]) -> list[str]:
+    """Architecture-view files the manifest records as generated from a different System IR than this one.
+
+    They were kept, not regenerated, because this checkout has no stored view to render from, so their
+    freshness against these revisions is unknown.
+    """
+
+    try:
+        entries = json.loads(manifest_path(config).read_text(encoding="utf-8")).get("artifacts", [])
+    except (OSError, ValueError, AttributeError):
+        return []
+    current = ir_hash(ir)
+    return sorted(item["path"] for item in entries if item.get("generator") == ARCHITECTURE_GENERATOR_NAME and item.get("source_ir_hash") != current)
+
+
+def render_pull_request_body(
+    ir: dict[str, Any], changes: list[tuple[str, str]], branch: str, base: str, unverified: list[str] | None = None
+) -> str:
+    """The pull request description, built only from the IR, the list of changed files, and the kept files."""
 
     lines = [
         "Automated update of the generated system documentation.",
@@ -234,10 +252,20 @@ def render_pull_request_body(ir: dict[str, Any], changes: list[tuple[str, str]],
     if any(status == "D" and Path(path).name.startswith("architecture-view") for status, path in changes):
         lines += [
             "",
-            "Architecture-view files are removed because publication from CI does not run architecture discovery"
-            " and no stored view matches these pinned source revisions. Refresh it locally with"
-            " `repodocs architecture discover --refresh`, then generate again. The deterministic documentation"
-            " does not depend on it.",
+            "Architecture-view files are removed because a stored view exists here and no longer matches these pinned"
+            " source revisions, or because they were retired on purpose with `repodocs generate --retire-architecture`."
+            " Refresh the view locally with `repodocs architecture discover --refresh`, then generate again. The"
+            " deterministic documentation does not depend on it.",
+        ]
+    if unverified:
+        lines += [
+            "",
+            "Architecture-view files are kept unchanged from an earlier run, because publication from CI has no stored"
+            " view and does not run discovery. Their freshness against the source revisions above was **not verified**,"
+            " and their manifest entries still name the System IR they were generated from: "
+            + ", ".join(f"`{name}`" for name in unverified)
+            + ". Refresh them locally with `repodocs architecture discover --refresh`, or retire them with"
+            " `repodocs generate --retire-architecture`.",
         ]
     if any(status == "D" and Path(path).name == AI_ARTIFACT_NAME for status, path in changes):
         lines += [
@@ -461,7 +489,7 @@ def publish(
         )
     result["status"] = STATUS_PUBLISHED if pushed else STATUS_UNCHANGED
 
-    title, body = PR_TITLE, render_pull_request_body(ir, changes, branch, base)
+    title, body = PR_TITLE, render_pull_request_body(ir, changes, branch, base, unverified_architecture_files(config, ir))
     number = pull_requests.find_open(branch, base)
     if number is None:
         number = pull_requests.create(branch, base, title, body)

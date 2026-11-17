@@ -664,13 +664,27 @@ def _manifest(ir: dict[str, Any], destination: dict[str, Any], artifact_contents
     }
 
 
+def retained_architecture_entries(manifest: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """The manifest entries of architecture-view files from an earlier run, exactly as recorded."""
+
+    return [dict(item) for item in (manifest or {}).get("artifacts", []) if item.get("generator") == ARCHITECTURE_GENERATOR_NAME]
+
+
 def generate_docs(
-    config: ProjectConfig, ir: dict[str, Any], optional: dict[str, str] | None = None
+    config: ProjectConfig,
+    ir: dict[str, Any],
+    optional: dict[str, str] | None = None,
+    *,
+    retain_architecture: bool = False,
 ) -> GenerationResult:
     """Write the deterministic artifacts plus any optional ones supplied for this run.
 
     An optional artifact that was generated before and is not supplied now is removed, so
-    output never keeps a document whose input is gone or out of date.
+    output never keeps a document whose input is gone or out of date. The one exception is
+    ``retain_architecture``, for a run that has no stored architecture view at all (a clean clone):
+    the architecture-view files from an earlier run are kept as they are, after the usual check that
+    they are unedited, and keep the manifest entry they were recorded with, so they are never
+    labelled as generated from this System IR.
     """
 
     destination = describe_destination(config)
@@ -699,10 +713,12 @@ def generate_docs(
     _preflight(output_dir, manifest, set(contents))
     output_dir.mkdir(parents=True, exist_ok=True)
     new_manifest = _manifest(ir, destination, contents)
+    retained = [item for item in retained_architecture_entries(manifest) if item["path"] not in contents and owned_path(output_dir, item["path"]).exists()] if retain_architecture else []
+    new_manifest["artifacts"] = sorted(new_manifest["artifacts"] + retained, key=lambda item: item["path"])
     changed = False
     # _preflight has verified that owned files are unedited, so a retired one is safe to remove.
     retired = set(OPTIONAL_ARTIFACT_GENERATORS) | {item["path"] for item in (manifest or {}).get("artifacts", []) if optional_generator(item["path"])}
-    for name in sorted(retired - set(contents)):
+    for name in sorted(retired - set(contents) - {item["path"] for item in retained}):
         if owned_path(output_dir, name).exists():
             owned_path(output_dir, name).unlink()
             changed = True
@@ -715,4 +731,4 @@ def generate_docs(
     if not path_to_manifest.exists() or path_to_manifest.read_text(encoding="utf-8") != manifest_text:
         write_json(path_to_manifest, new_manifest)
         changed = True
-    return GenerationResult(changed=changed, artifacts=sorted(contents), destination=destination)
+    return GenerationResult(changed=changed, artifacts=sorted(set(contents) | {item["path"] for item in retained}), destination=destination)

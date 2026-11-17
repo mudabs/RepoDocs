@@ -245,15 +245,30 @@ def _cmd_generate(args: argparse.Namespace) -> int:
 
         ai_status, optional = ai_artifact(config.internal_path, ir)
     # Stored architecture views are rendered from disk only: generate never contacts a provider.
-    if (config.internal_path / "architecture-view.json").exists():
+    # With no stored view at all (a clean clone: the view is local state) earlier architecture files are kept
+    # and reported as unverified rather than deleted. `--retire-architecture` removes them on purpose.
+    retain_architecture = False
+    if args.retire_architecture:
+        architecture_status = "retired"
+    elif (config.internal_path / "architecture-view.json").exists():
         from .architecture.discovery import load_view
         from .architecture.export import architecture_artifacts
 
         architecture_status = load_view(config, ir)[0]
         architecture, architecture_warnings = architecture_artifacts(config, ir)
         optional = {**optional, **architecture}
-    result = generate_docs(config, ir, optional)
+    else:
+        retain_architecture = True
+    result = generate_docs(config, ir, optional, retain_architecture=retain_architecture)
     warnings = list(architecture_warnings)
+    kept = [name for name in result.artifacts if name.startswith("architecture-view") and name not in optional]
+    if kept:
+        architecture_status = "unverified"
+        warnings.append(
+            "No stored architecture view is available here, so these earlier files were kept and their freshness was not "
+            "verified against the current source revisions: " + ", ".join(kept) + ". Run `repodocs architecture discover` "
+            "to refresh them, or `repodocs generate --retire-architecture` to remove them"
+        )
     if ai_status in ("stale", "invalid"):
         warnings.append(
             f"Stored AI claims are {ai_status} for the current System IR and were not rendered; "
@@ -298,6 +313,13 @@ def _cmd_validate(args: argparse.Namespace) -> int:
         view_status, _, reason = load_view(config, ir)
         if view_status != STATUS_CURRENT:
             warnings.append(f"The stored architecture view is {view_status}: {reason}")
+    else:
+        kept = [name for name in artifacts if name.startswith("architecture-view")]
+        if kept:
+            warnings.append(
+                "No stored architecture view is available here; these files are unedited but their freshness against the "
+                "current source revisions was not verified: " + ", ".join(kept)
+            )
     _emit(
         "validate",
         ok=True,
@@ -672,6 +694,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
     generate_parser = subparsers.add_parser(
         "generate", help="Generate deterministic documentation into the destination"
+    )
+    generate_parser.add_argument(
+        "--retire-architecture",
+        action="store_true",
+        help="Remove the generated architecture-view files (owned and unedited only) instead of keeping or rendering them",
     )
     generate_parser.set_defaults(handler=_cmd_generate)
 
