@@ -498,8 +498,19 @@ def _cmd_architecture_discover(args: argparse.Namespace) -> int:
         )
     preview, _ = build_context(config, ir)
     write_json(config.internal_path / CONTEXT_FILENAME, preview)
-    view, context = discover(config, ir, provider)
-    save_view(config, view, context)
+    new_view, context = discover(config, ir, provider)
+    # A replacement that ended early never displaces a current, complete view the user can still rely on.
+    if status == STATUS_CURRENT and view is not None and view["status"] == "complete" and new_view["status"] != "complete":
+        _emit(
+            "architecture-discover", ok=True, data={**_discovery_summary(config, view, reused=True), "replacement_discarded": new_view["partial_reason"]},
+            warnings=[f"The new discovery ended early ({new_view['partial_reason']}); the previous complete view was kept"],
+        )
+        return EXIT_OK
+    try:
+        save_view(config, new_view, context)
+    except OSError as exc:
+        raise RepoDocsError(f"The architecture view could not be stored ({exc}); the previous view, if any, was left unchanged") from exc
+    view = new_view
     warnings = []
     if status in ("stale", "invalid"):
         warnings.append(f"The previous architecture view was {status} and has been replaced")
