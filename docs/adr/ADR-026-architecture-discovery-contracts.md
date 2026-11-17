@@ -88,11 +88,12 @@ Model file requests: the model may ask for `{repository, path, line range}`. The
 - With provider `none`, discovery is unavailable and says so.
 - Neither provider follows redirects (ADR-025), and credentials come from the environment.
 
-### 5. Commands, configuration, and persisted state (proposed; none exists yet)
+### 5. Commands, configuration, and persisted state (implemented in #53)
 
 - `repodocs architecture context` builds and writes the context bundle and prints a summary. It contacts nothing. It is the review step before consent.
-- `repodocs architecture discover [--refresh]` runs the bounded exploration with the configured provider and writes the view. Without `--refresh`, a current view is reused and no provider is contacted.
-- `repodocs generate` renders architecture documents from a current stored view and never calls a provider. A missing, stale, or invalid view produces a warning and the deterministic documents only.
+- `repodocs architecture discover [--refresh]` runs the bounded exploration with the configured provider and writes the view. Without `--refresh`, a current view is reused and no provider is contacted. The context preview (`architecture context`) is a separate file, so previewing again never touches a stored view or the context behind it, and cannot invalidate an existing multi-round discovery. A provider failure, an unusable reply, or a write failure during `--refresh` leaves the previous view and its own context in place and usable, and later `generate` and `validate` keep working from them (a write failure is reported as such, exit 2, with the previous view unchanged). A refresh that ends early (`status: partial`) does not displace a current, complete view; the response says the replacement was discarded and why.
+- `repodocs generate` renders architecture documents from a current stored view and never calls a provider. A stale or invalid stored view produces a warning, retires its owned, unedited files, and leaves the deterministic documents only.
+- **A clean clone has no stored view, and that alone never deletes published files.** The view is local state: it depends on source excerpts and is not committed. When no stored view exists at all, `generate` keeps the existing `architecture-view*` files after the usual check that they are owned and unedited, and keeps each one's manifest entry exactly as recorded, so a kept file is never labelled as generated from the current System IR. `generate` and `validate` report that their freshness was not verified, and the publication pull request lists them as kept and unverified. `validate` accepts a kept file when its hash matches the manifest and it passes the structural checks; it does not claim it is current. Edited files still stop both commands (exit code 4). A known-stale or invalid stored view still retires its files. To remove them on purpose, without a prompt, run `repodocs generate --retire-architecture` (owned, unedited files only); delete the stored view files as well if they should not return on the next run. Source excerpt bundles and secrets are never committed to make this work.
 - `repodocs ai-configure` gains `--consent-source-excerpts` and `--revoke-source-consent`. The project config gains `ai.source_excerpts_consent` and an optional `architecture` block holding lower budgets and extra deny names.
 - Exit codes are the existing ones: 2 for configuration or missing consent, 5 for unresolved confirmations, 7 for provider failure. No new code is added.
 - All responses use the existing versioned JSON envelope.
@@ -127,7 +128,7 @@ Implemented in #52 (`architecture/navigation.py`, `export.py`, `viewer_script.py
 - A real renderer check uses `@mermaid-js/mermaid-cli`, pinned to an exact version in an optional tooling directory. It is required in CI and optional for users. A missing renderer is reported as "not checked", never as success.
 - Source links are generated only for `github.com` repositories (the host comes from the repository's configured remote), pinned to the exact commit SHA, with encoded paths and line anchors. A snapshot whose `revision_kind` is `content` never gets a commit link and is labeled with its fingerprint.
 - The static HTML export contains the diagram, an evidence map, zoom, pan, and fit-to-view. It has no backend, no remote assets, and no editor. All text is escaped, and URLs are validated against the allowlist.
-- All new files are tracked in the artifact manifest with the label `repodocs-architecture`, so ownership, retirement, no-op detection, and publication (ADR-023) apply unchanged.
+- All new files are tracked in the artifact manifest with the label `repodocs-architecture`, so ownership, retirement, no-op detection, and publication (ADR-023) apply. Publication with no stored view keeps earlier architecture files as unverified instead of deleting them (section 5). The manifest's top-level `source_ir_hash` is the current one and each kept file keeps its own recorded per-artifact value, which is how mixed provenance is represented. Nothing in the manifest or the pull request describes a kept file as current.
 
 ### 8. Deterministic mode and its actual depth
 
@@ -158,6 +159,7 @@ Schemas are `1.0` while unreleased (ADR-014). A project without the new settings
 
 - **ADR-020 / D35.** "No source text" now applies to the evidence bundle and claims. Architecture discovery uses a separate context bundle that may contain bounded, redacted excerpts, under the consent and budgets above. IR-only consent never covers it.
 - **ADR-021 / D36.** "AI cannot change diagrams" now applies to the deterministic documents and the IR. A separate, validated, inferred architecture view may drive separate diagram files. It still cannot add to or alter any observed fact, candidate, or confirmation.
+- **ADR-023 / D38.** Publication from a clone with no stored architecture view keeps existing, owned, unedited `architecture-view*` files and says they are unverified, instead of removing them. A known-stale view and `repodocs generate --retire-architecture` still remove them. The owner authorized this policy for the hardening pass on 2026-11-17; the ADR text itself has not been reviewed yet.
 - **ADR-004 / D19.** Unchanged: explicit consent, redaction, and local-only mode. This ADR extends consent to a second, named scope.
 
 ## Consequences
