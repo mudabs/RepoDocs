@@ -231,6 +231,14 @@ def render_pull_request_body(ir: dict[str, Any], changes: list[tuple[str, str]],
         lines.append(f"- {labels.get(status, status)}: `{path}`")
     if len(changes) > MAX_LISTED_CHANGES:
         lines.append(f"- and {len(changes) - MAX_LISTED_CHANGES} more")
+    if any(status == "D" and Path(path).name.startswith("architecture-view") for status, path in changes):
+        lines += [
+            "",
+            "Architecture-view files are removed because publication from CI does not run architecture discovery"
+            " and no stored view matches these pinned source revisions. Refresh it locally with"
+            " `repodocs architecture discover --refresh`, then generate again. The deterministic documentation"
+            " does not depend on it.",
+        ]
     if any(status == "D" and Path(path).name == AI_ARTIFACT_NAME for status, path in changes):
         lines += [
             "",

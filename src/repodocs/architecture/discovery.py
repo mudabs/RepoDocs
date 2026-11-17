@@ -294,6 +294,7 @@ def discover(config: ProjectConfig, ir: dict[str, Any], provider: Provider) -> t
     resolver.select_initial()
     best: tuple[Validation, str] | None = None
     partial: str | None = None
+    failure = ""
     repair = False
     repaired = False
     while True:
@@ -303,14 +304,14 @@ def discover(config: ProjectConfig, ir: dict[str, Any], provider: Provider) -> t
             break
         try:
             response = provider.generate(SYSTEM_PROMPT, _user_message(resolver, context, round_number=resolver.rounds, repair=repair), RESPONSE_SCHEMA)
-        except MalformedProviderOutput:
+        except MalformedProviderOutput as exc:
             if not repaired:
                 repaired = repair = True
                 continue
-            partial = "provider-error"
+            partial, failure = "provider-error", str(exc)
             break
-        except ProviderError:
-            partial = "provider-error"
+        except ProviderError as exc:
+            partial, failure = "provider-error", str(exc)
             break
         repair = False
         if len(canonical_json(response.data).encode("utf-8")) > resolver.budgets["max_response_bytes"]:
@@ -335,7 +336,7 @@ def discover(config: ProjectConfig, ir: dict[str, Any], provider: Provider) -> t
     if best is None:
         raise ProviderError(
             "The model returned no architecture component that passed validation"
-            + (f" ({partial})" if partial else "")
+            + (f" ({partial}" + (": " + failure if failure else "") + ")" if partial else "")
         )
     validation, served_model = best
     final_context = resolver.bundle()

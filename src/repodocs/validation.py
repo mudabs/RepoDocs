@@ -17,6 +17,7 @@ from .errors import OwnershipError, ValidationError
 from .generator import (
     AI_ARTIFACT,
     AI_GENERATOR_NAME,
+    ARCHITECTURE_GENERATOR_NAME,
     MANIFEST_SCHEMA_VERSION,
     _all_files,
     _read_manifest,
@@ -251,13 +252,32 @@ def validate_artifacts(config: ProjectConfig, ir: dict[str, Any]) -> list[str]:
         content = path.read_text(encoding="utf-8")
         if sha256_text(content) != item.get("content_hash"):
             raise OwnershipError(f"Generated file was edited unexpectedly: {path}")
-        if relative_path == AI_ARTIFACT or item.get("generator") == AI_GENERATOR_NAME:
+        if item.get("generator") == ARCHITECTURE_GENERATOR_NAME:
+            validate_architecture_artifact(config, ir, relative_path, content)
+        elif relative_path == AI_ARTIFACT or item.get("generator") == AI_GENERATOR_NAME:
             validate_ai_artifact(config, ir, item, content)
         elif path.suffix == ".mmd":
             validate_mermaid(content)
         elif path.suffix == ".md":
             validate_markdown(content, ir)
     return sorted(expected)
+
+
+def validate_architecture_artifact(config: ProjectConfig, ir: dict[str, Any], name: str, content: str) -> None:
+    """Architecture files must be exactly what the current stored view produces, and diagrams must parse."""
+
+    from .architecture.export import architecture_artifacts, validate_export_page
+
+    if name.endswith(".html"):
+        validate_export_page(content)
+    else:
+        expected, _ = architecture_artifacts(config, ir, include_html=False)
+        if expected.get(name) != content:
+            raise ValidationError(
+                f"{name} does not match the current architecture view for the current System IR; run `repodocs generate` again"
+            )
+    if name.endswith(".mmd"):
+        validate_mermaid(content)
 
 
 def validate_ai_artifact(config: ProjectConfig, ir: dict[str, Any], item: dict[str, Any], content: str) -> None:
