@@ -55,8 +55,15 @@ def project(tmp_path: Path, capsys) -> tuple[Path, ProjectConfig, dict]:
     return root, ProjectConfig.load(root), read_ir(root)
 
 
+def at(ir: dict[str, Any], expected: dict[str, Any]) -> dict[str, Any]:
+    """The expected set bound to the revision the fixture was scanned at, as a real one is bound to its commit."""
+
+    return {**expected, "source": {**expected["source"], "revision": ir["snapshots"][0]["revision"]}}
+
+
 def report(tmp_path: Path, capsys, *defects: str, expected: dict[str, Any] = SHOP) -> dict[str, Any]:
     root, config, ir = project(tmp_path, capsys)
+    expected = at(ir, expected)
     view, context = discover(config, ir, ReferenceProvider(expected, defects))
     return evaluate(config, ir, view, context, expected)
 
@@ -85,6 +92,67 @@ def test_each_injected_fault_is_noticed(tmp_path: Path, capsys, defect: str, che
     result = report(tmp_path, capsys, defect)
 
     assert check(result), result
+
+
+def test_a_connection_of_the_wrong_kind_is_unsupported_and_recovers_nothing(tmp_path: Path, capsys) -> None:
+    result = report(tmp_path, capsys, "wrong-kind")["connections"]
+
+    assert result["supported"] == 0 and result["precision"] == 0.0
+    assert result["covered"] == 0 and result["recall"] == 0.0
+    assert len(result["unsupported_for_review"]["wrong-kind"]) == 3, "including the deployment relationship, which is scored apart from recall"
+    assert result["missing"] == ["Orders API -> Order file", "Web page -> Orders API"]
+
+
+def test_a_second_connection_between_the_same_components_adds_no_coverage(tmp_path: Path, capsys) -> None:
+    result = report(tmp_path, capsys, "duplicate-connection")["connections"]
+
+    assert result["supported"] == 3 and result["covered"] == 2 and result["recall"] == 1.0
+    assert len(result["unsupported_for_review"]["duplicate"]) == 1
+    assert result["precision"] == 0.75, "the duplicate counts against precision, never for recall"
+
+
+def test_an_expected_set_that_would_distort_the_scores_is_refused_with_every_problem_named(tmp_path: Path, capsys) -> None:
+    root, config, ir = project(tmp_path, capsys)
+    good = at(ir, SHOP)
+    view, context = discover(config, ir, ReferenceProvider(good))
+    broken = copy.deepcopy(good)
+    broken["components"].append(copy.deepcopy(broken["components"][0]))
+    broken["relationships"].append(copy.deepcopy(broken["relationships"][0]))
+    broken["relationships"].append({"source": "Web page", "target": "Ghost", "kinds": ["calls"]})
+    broken["relationships"].append({"source": "Orders API", "target": "Order file", "kinds": ["teleports"]})
+    broken["not_established"].append({"source": "Web page", "target": "Orders API", "why": "contradiction"})
+
+    with pytest.raises(evaluation.EvaluationInputError) as caught:
+        evaluate(config, ir, view, context, broken)
+
+    text = str(caught.value)
+    for fragment in ("component 'Web page' is listed more than once", "'Web page' -> 'Orders API' is listed more than once", "names a component that is not listed",
+                     "needs `kinds` from", "both expected and not established"):
+        assert fragment in text, fragment
+    for bad in (None, [], {"name": "x"}):
+        with pytest.raises(evaluation.EvaluationInputError):
+            evaluate(config, ir, view, context, bad)
+
+
+def test_the_expected_set_must_describe_the_revision_that_was_scanned(tmp_path: Path, capsys) -> None:
+    root, config, ir = project(tmp_path, capsys)
+    view, context = discover(config, ir, ReferenceProvider(at(ir, SHOP)))
+
+    with pytest.raises(evaluation.EvaluationInputError, match="written from revision local.*scanned at shop: content"):
+        evaluate(config, ir, view, context, SHOP)
+
+
+def test_the_command_reports_unusable_inputs_with_exit_2_and_a_diagnostic(tmp_path: Path, capsys) -> None:
+    root, config, ir = project(tmp_path, capsys)
+    save_view(config, *discover(config, ir, ReferenceProvider(at(ir, SHOP))))
+    expected = tmp_path / "expected.json"
+    expected.write_text(json.dumps(SHOP), encoding="utf-8")
+
+    assert main(["--root", str(root), "--expected", str(expected)]) == 2
+    assert "Cannot score" in capsys.readouterr().err
+    expected.write_text("{not json", encoding="utf-8")
+    assert main(["--root", str(root), "--expected", str(expected)]) == 2
+    assert main(["--root", str(root), "--expected", str(tmp_path / "missing.json")]) == 2
 
 
 def test_components_are_matched_by_the_files_they_claim_not_by_name() -> None:
@@ -126,7 +194,7 @@ def test_the_summary_is_a_readable_table(tmp_path: Path, capsys) -> None:
 def test_the_command_scores_a_stored_current_view_and_refuses_a_stale_one(tmp_path: Path, capsys) -> None:
     root, config, ir = project(tmp_path, capsys)
     expected = tmp_path / "expected.json"
-    expected.write_text(json.dumps(SHOP), encoding="utf-8")
+    expected.write_text(json.dumps(at(ir, SHOP)), encoding="utf-8")
     view, context = discover(config, ir, ReferenceProvider(SHOP))
     save_view(config, view, context)
 

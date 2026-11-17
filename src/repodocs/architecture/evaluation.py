@@ -22,11 +22,83 @@ from ..ai.providers import ProviderResponse
 from ..config import ProjectConfig
 from ..validation import load_ir
 from .context import is_denied
-from .discovery import STATUS_CURRENT, load_view
+from .discovery import CONNECTION_KINDS, STATUS_CURRENT, load_view, saved_context_path
 from .navigation import evidence_map, repository_remotes
 
 REPORT_VERSION = "1.0"
 STRUCTURE_TYPES = {"project", "repository", "language", "manifest", "dependency"}
+
+
+class EvaluationInputError(ValueError):
+    """The expected set or the scanned project cannot be scored, with what to fix."""
+
+
+def check_expected(expected: Any) -> None:
+    """Refuse an expected set that would make the scores meaningless, naming every problem found."""
+
+    problems: list[str] = []
+    if not isinstance(expected, dict):
+        raise EvaluationInputError("The expected file must be a JSON object")
+    source = expected.get("source")
+    if not isinstance(expected.get("name"), str) or not expected["name"]:
+        problems.append("`name` is missing")
+    if not isinstance(source, dict) or not all(isinstance(source.get(key), str) and source[key] for key in ("repository", "revision", "license")):
+        problems.append("`source` must give `repository`, `revision`, and `license`")
+    components = expected.get("components")
+    names: list[str] = []
+    if not isinstance(components, list) or not components:
+        problems.append("`components` must be a non-empty list")
+        components = []
+    for index, entry in enumerate(components):
+        if not isinstance(entry, dict) or not isinstance(entry.get("name"), str) or not entry["name"]:
+            problems.append(f"components[{index}] needs a `name`")
+            continue
+        names.append(entry["name"])
+        members = entry.get("members")
+        if not isinstance(members, list) or not members or not all(isinstance(item, str) and item for item in members):
+            problems.append(f"component {entry['name']!r} needs a non-empty list of `members` patterns")
+    for name in sorted({name for name in names if names.count(name) > 1}):
+        problems.append(f"component {name!r} is listed more than once")
+    if components and not any(isinstance(item, dict) and item.get("required", True) and not item.get("deployment") for item in components):
+        problems.append("at least one component must be required and not a deployment component")
+    pairs: list[tuple[Any, Any]] = []
+    for index, item in enumerate(expected.get("relationships", [])):
+        if not isinstance(item, dict):
+            problems.append(f"relationships[{index}] must be an object")
+            continue
+        pair = (item.get("source"), item.get("target"))
+        pairs.append(pair)
+        if pair[0] not in names or pair[1] not in names:
+            problems.append(f"relationship {pair[0]!r} -> {pair[1]!r} names a component that is not listed")
+        if pair[0] == pair[1]:
+            problems.append(f"relationship {pair[0]!r} -> {pair[1]!r} connects a component to itself")
+        kinds = item.get("kinds")
+        if not isinstance(kinds, list) or not kinds or not set(kinds) <= set(CONNECTION_KINDS):
+            problems.append(f"relationship {pair[0]!r} -> {pair[1]!r} needs `kinds` from {', '.join(CONNECTION_KINDS)}")
+    for pair in sorted({pair for pair in pairs if pairs.count(pair) > 1}, key=str):
+        problems.append(f"relationship {pair[0]!r} -> {pair[1]!r} is listed more than once; list the allowed kinds once")
+    for item in expected.get("not_established", []):
+        if isinstance(item, dict) and (item.get("source"), item.get("target")) in pairs:
+            problems.append(f"{item.get('source')!r} -> {item.get('target')!r} is both expected and not established")
+    if problems:
+        raise EvaluationInputError("The expected set is not usable: " + "; ".join(problems))
+
+
+def check_revision(ir: dict[str, Any], expected: dict[str, Any]) -> None:
+    """The expected set describes one revision; the scored project must be scanned at exactly that revision.
+
+    A working tree with uncommitted changes is a content fingerprint, never the commit the expected set
+    was written from, so it is refused here too.
+    """
+
+    wanted = expected["source"]["revision"]
+    scanned = [(item["repository_id"], item["revision_kind"], item["revision"]) for item in ir["snapshots"]]
+    if not any(revision == wanted for _, _, revision in scanned):
+        found = ", ".join(f"{name}: {kind} {revision[:12]}" for name, kind, revision in scanned) or "no snapshot"
+        raise EvaluationInputError(
+            f"The expected set was written from revision {wanted[:12]}, but this project is scanned at {found}. "
+            "Check out that exact commit (a clean working tree) and run `repodocs scan` again"
+        )
 
 
 def _share(members: list[str], patterns: list[str]) -> float:
@@ -57,6 +129,8 @@ def match_components(view: dict[str, Any], expected: dict[str, Any]) -> dict[str
 
 
 def evaluate(config: ProjectConfig, ir: dict[str, Any], view: dict[str, Any], context: dict[str, Any], expected: dict[str, Any]) -> dict[str, Any]:
+    check_expected(expected)
+    check_revision(ir, expected)
     matched = match_components(view, expected)
     by_expected = {entry["name"]: entry for entry in expected["components"]}
     deployment = {name for name, entry in by_expected.items() if entry.get("deployment")}
@@ -68,22 +142,27 @@ def evaluate(config: ProjectConfig, ir: dict[str, Any], view: dict[str, Any], co
     mixed = sorted(name for name in found if name in deployment)
     wanted = {(item["source"], item["target"]): item for item in expected["relationships"]}
     forbidden = {(item["source"], item["target"]) for item in expected.get("not_established", [])}
-    categories: dict[str, list[dict[str, Any]]] = {"supported": [], "wrong-kind": [], "contradicted": [], "unexpected": [], "unmapped": []}
+    categories: dict[str, list[dict[str, Any]]] = {"supported": [], "wrong-kind": [], "duplicate": [], "contradicted": [], "unexpected": [], "unmapped": []}
+    # An expected relationship is recovered once: endpoints, direction, and an allowed kind must all match.
+    # Any further connection between the same two components is a duplicate and adds no coverage.
     covered: set[tuple[str, str]] = set()
-    for link in view["connections"]:
+    for link in sorted(view["connections"], key=lambda item: item["id"]):
         source, target = matched.get(link["source"]), matched.get(link["target"])
         row = {"source": names[link["source"]], "target": names[link["target"]], "kind": link["kind"], "label": link["label"], "classification": link["classification"]}
         if source is None or target is None:
             categories["unmapped"].append(row)
         elif (source, target) in wanted:
-            expectation = wanted[(source, target)]
-            covered.add((source, target))
-            categories["supported" if link["kind"] in expectation["kinds"] else "wrong-kind"].append(row)
+            if link["kind"] not in wanted[(source, target)]["kinds"]:
+                categories["wrong-kind"].append(row)
+            elif (source, target) in covered:
+                categories["duplicate"].append(row)
+            else:
+                covered.add((source, target))
+                categories["supported"].append(row)
         elif (source, target) in forbidden or (target, source) in wanted:
             categories["contradicted"].append(row)
         else:
             categories["unexpected"].append(row)
-    expected_required = {key for key, item in wanted.items() if not item.get("deployment") and key[0] in required | found and key[1] in required | found}
     expected_required = {key for key, item in wanted.items() if not item.get("deployment")}
 
     documents = {item["id"]: item for item in context["documents"]}
@@ -151,7 +230,7 @@ class ReferenceProvider:
 
     It is not a model and its output says nothing about model quality. ``defects`` injects known faults so
     the harness can be shown to notice them: ``fabricated-citation``, ``missing-component``,
-    ``unsupported-connection``, ``reversed-connection``.
+    ``unsupported-connection``, ``reversed-connection``, ``wrong-kind``, ``duplicate-connection``.
     """
 
     name = "ollama"
@@ -190,6 +269,10 @@ class ReferenceProvider:
             components.append({"name": "Invented service", "kind": "other", "responsibility": "Not in the source.", "repository_id": repository,
                                "members": components[0]["members"][:1], "evidence": ["ctx:0000000000000000"], "confidence": "high"})
         pairs = [(item["source"], item["target"], item["kinds"][0]) for item in self.expected["relationships"]]
+        if "wrong-kind" in self.defects:
+            pairs = [(source, target, next(kind for kind in CONNECTION_KINDS if kind not in item["kinds"])) for (source, target, _), item in zip(pairs, self.expected["relationships"])]
+        if "duplicate-connection" in self.defects:
+            pairs += [(item["source"], item["target"], item["kinds"][1]) for item in self.expected["relationships"] if len(item["kinds"]) > 1]
         if "reversed-connection" in self.defects and pairs:
             pairs[0] = (pairs[0][1], pairs[0][0], pairs[0][2])
         if "unsupported-connection" in self.defects and self.expected.get("not_established"):
@@ -235,8 +318,12 @@ def main(argv: list[str] | None = None) -> int:
     if status != STATUS_CURRENT or view is None:
         print(f"The stored architecture view is {status}: {reason or 'run `repodocs architecture discover`'}", file=sys.stderr)
         return 1
-    context = json.loads((config.internal_path / "architecture-context.json").read_text(encoding="utf-8"))
-    report = evaluate(config, ir, view, context, json.loads(Path(args.expected).read_text(encoding="utf-8")))
+    context = json.loads(saved_context_path(config, view["provenance"]["context_hash"]).read_text(encoding="utf-8"))
+    try:
+        report = evaluate(config, ir, view, context, json.loads(Path(args.expected).read_text(encoding="utf-8")))
+    except (EvaluationInputError, OSError, ValueError) as exc:
+        print(f"Cannot score: {exc}", file=sys.stderr)
+        return 2
     print(summary(report) if args.summary else json.dumps(report, indent=2, sort_keys=True))
     return 0
 
