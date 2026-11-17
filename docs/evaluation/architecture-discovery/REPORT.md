@@ -22,7 +22,7 @@ Why Flaskr: it is small and clearly licensed, and it contrasts on every axis tha
 ## Method
 
 1. The expected components and relationships were written by reading the source, before any output was scored ([`expected/digitalbonebox.json`](expected/digitalbonebox.json), [`expected/flaskr.json`](expected/flaskr.json)). Each entry names the files and lines inspected. Deployment-only items (the Vercel entry) are marked and scored separately, because the epic asks for deployment to be kept apart from application dependencies. Each file also lists relationships the source does **not** establish, so an assertion of them can be called unsupported.
-2. Components are matched to the expected set by the files they claim, not by name. A connection counts as supported when both ends map to expected components and the expected set has that relationship with that kind.
+2. Components are matched to the expected set by the files they claim, not by name. A connection counts as supported when both ends map to expected components, the direction matches, and its kind is one the expected set allows. Recall credits each expected relationship once: a connection of the wrong kind is reported as `wrong-kind` and recovers nothing, and a second connection between the same two components is a `duplicate` that adds no coverage and counts against precision. The harness refuses an expected file with duplicate components or relationships, unknown endpoints, kinds outside the contract, or a relationship that is also listed as not established, and it refuses to score a project that is not scanned at the exact revision the expected file was written from (a working tree with uncommitted changes never is). Each refusal names the problem.
 3. The harness (`python -m repodocs.architecture.evaluation`) reports component and connection precision and recall, citation resolution against the snapshot, member paths that exist, inferred versus proposed counts, evidence items with a commit link, what the deterministic scan found, and a review list with an empty verdict for every connection. A match score does not show that a relationship is true; the review list is for a person to open each cited location and decide.
 4. Competitor diagrams were not used as ground truth.
 
@@ -76,10 +76,12 @@ Each has a regression test.
 - **Large files cannot be read.** `templates/js/scenes.js` is 123 KB, above the 64 KiB per-file budget, so it is refused as `too-large`. It holds the client's call to the scenes API (line 21), which a model therefore cannot cite. `boneset-api/scenes.js` (44 KB) fits. Reading only the head of a large file is possible and would be a budget decision for the owner (O13).
 - **The diagram can be crowded.** At six components the edges already cross and edge labels overlap (see the screenshots). This is a readability problem that a live view of a larger system would make worse; crowded views group by kind, but that has been tried only on synthetic input.
 - **Edges are clickable only through the side panel**, not on the drawing.
-- **Publication from a clean CI clone removes the view's files**, because the stored view lives in `.repodocs/`. The pull request says so.
+- **A clean CI clone has no stored view.** Earlier published architecture files are then kept as they are and reported as not verified against the new revisions, with their manifest entries unchanged; `repodocs generate --retire-architecture` removes them on purpose. This was verified only with the replay and the CLI tests, not in a real CI publication run.
 - **The page embeds a 3.6 MB library.**
 - **Only github.com links** are generated. Only Chrome was tried.
 - **The deployment component is shown as an application component** by the reference replay, as the harness expects, and is flagged; a live model is likely to do the same, and nothing yet teaches it not to.
+
+Scoring was corrected after review (wrong-kind and duplicate connections, input and revision checks). Re-running the reference replay on both pinned repositories with the corrected harness gave the same numbers as before, because the replay always uses an allowed kind once per relationship; the corrections are covered by tests with injected wrong-kind and duplicate connections.
 
 ## What the scripted reference replay is, and is not
 
