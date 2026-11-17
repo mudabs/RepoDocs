@@ -14,11 +14,11 @@ from typing import Any
 from .. import __version__
 from ..ai.bundle import redact_text
 from ..ai.providers import Provider
-from ..common import canonical_json, scrub, sha256_text, write_json
+from ..common import canonical_json, scrub, sha256_text, write_json_atomic
 from ..config import ProjectConfig
 from ..errors import MalformedProviderOutput, ProviderError
 from ..ir import ir_hash
-from .context import CONTEXT_FILENAME, CONTEXT_VERSION, ContextResolver, context_hash, is_denied, well_formed_path
+from .context import CONTEXT_VERSION, ContextResolver, context_hash, is_denied, well_formed_path
 
 
 PROMPT_VERSION = "1.0"
@@ -402,9 +402,33 @@ def discover(config: ProjectConfig, ir: dict[str, Any], provider: Provider) -> t
     return view, final_context
 
 
+SAVED_CONTEXT_PREFIX = "architecture-view-context-"
+
+
+def saved_context_path(config: ProjectConfig, context_digest: str):
+    """Where the context behind a stored view lives. It is named by its hash and never overwritten.
+
+    ``architecture-context.json`` is only the reviewable preview that ``architecture context`` writes. It
+    is a different file so that previewing again cannot change what a stored view was built from.
+    """
+
+    return config.internal_path / f"{SAVED_CONTEXT_PREFIX}{context_digest[:16]}.json"
+
+
 def save_view(config: ProjectConfig, view: dict[str, Any], context: dict[str, Any]) -> None:
-    write_json(config.internal_path / CONTEXT_FILENAME, context)
-    write_json(config.internal_path / VIEW_FILENAME, view)
+    """Store a view with the context it was built from as one transition.
+
+    The context goes to a new file first and the view is replaced last, so a failure at any point leaves
+    the previous view and its own context in place. The previous context is removed only afterwards.
+    """
+
+    digest = view["provenance"]["context_hash"]
+    write_json_atomic(saved_context_path(config, digest), context)
+    write_json_atomic(config.internal_path / VIEW_FILENAME, view)
+    keep = saved_context_path(config, digest).name
+    for other in config.internal_path.glob(f"{SAVED_CONTEXT_PREFIX}*.json"):
+        if other.name != keep:
+            other.unlink(missing_ok=True)
 
 
 STATUS_MISSING = "missing"
@@ -459,7 +483,7 @@ def load_view(config: ProjectConfig, ir: dict[str, Any]) -> tuple[str, dict[str,
             for item in provenance["snapshots"] for key in ("revision", "revision_kind", "content_fingerprint")
         ) or len(current) != len(provenance["snapshots"]):
             return STATUS_STALE, view, "the repositories were scanned again after this view was discovered"
-        context = json.loads((config.internal_path / CONTEXT_FILENAME).read_text(encoding="utf-8"))
+        context = json.loads(saved_context_path(config, provenance["context_hash"]).read_text(encoding="utf-8"))
         if context_hash(context) != provenance["context_hash"]:
             return STATUS_INVALID, view, "the stored context does not match the view's provenance"
         again = validate_proposal(_raw_from_view(view), context, ir, config.architecture.deny_names)
