@@ -492,3 +492,14 @@ def test_the_real_page_stays_inert_with_hostile_text_and_unlinked_for_uncommitte
     assert report["drawn"] and report["dialogs"] == [] and report["violations"] == [] and report["requests"] == []
     assert report["links"] == [], "uncommitted content must not link to a commit"
     assert report["scripts"] == 3
+
+
+def test_dark_mode_keeps_the_drawing_light_and_the_links_readable() -> None:
+    """Found by looking at the page in dark mode (#54): dark links on a dark panel, and edge labels on a dark ground."""
+
+    view, evidence = small_view()
+    html = build_html(view, render_view(view), evidence, "window.mermaid = {};")
+    dark = html.split("prefers-color-scheme: dark", 1)[1].split("</style>", 1)[0]
+
+    assert "#stage" not in dark and "aside a" in dark and "#58a6ff" in dark
+    assert "#stage { flex: 1; overflow: hidden; position: relative; cursor: grab; background: #f6f8fa; }" in html

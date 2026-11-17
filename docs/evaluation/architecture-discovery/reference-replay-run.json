@@ -1,0 +1,328 @@
+{
+ "digitalbonebox": {
+  "architecture_files": [
+   "architecture-view-evidence.json",
+   "architecture-view.html",
+   "architecture-view.mmd"
+  ],
+  "context": {
+   "context_bytes": 18723,
+   "documents": 8,
+   "omitted": {
+    "denied-name": 3
+   },
+   "redactions": 0
+  },
+  "deterministic_files": [
+   "architecture.md",
+   "architecture.mmd"
+  ],
+  "discover": {
+   "components": 6,
+   "connections": 5,
+   "inferred": 11,
+   "proposed": 0,
+   "rejected": {},
+   "status": "complete"
+  },
+  "discover_seconds": 0.16,
+  "expected_revision": "602e9c53c656f55b5e69b1a4dd4c6f79e53b368c",
+  "generate_seconds": 0.34,
+  "link_checks": [
+   {
+    "gh_contents_path": "templates/Dockerfile",
+    "link": "https://github.com/oss-slu/DigitalBoneBox/blob/602e9c53c656f55b5e69b1a4dd4c6f79e53b368c/templates/Dockerfile#L1-L16",
+    "ok": true
+   },
+   {
+    "gh_contents_path": "boneset-api/images.js",
+    "link": "https://github.com/oss-slu/DigitalBoneBox/blob/602e9c53c656f55b5e69b1a4dd4c6f79e53b368c/boneset-api/images.js#L1-L60",
+    "ok": true
+   }
+  ],
+  "page_bytes": 3599585,
+  "page_check": {
+   "console": [],
+   "dialogs": [],
+   "drawn": true,
+   "links": [
+    "https://github.com/oss-slu/DigitalBoneBox/blob/602e9c53c656f55b5e69b1a4dd4c6f79e53b368c/boneset-api/images.js",
+    "https://github.com/oss-slu/DigitalBoneBox/blob/602e9c53c656f55b5e69b1a4dd4c6f79e53b368c/boneset-api/images.js#L1-L60"
+   ],
+   "requests": [],
+   "scripts": 3,
+   "violations": [],
+   "zoomed": true
+  },
+  "real_renderer": {
+   "diagrams": [
+    "architecture-view.mmd"
+   ],
+   "message": "",
+   "status": "rendered"
+  },
+  "reproducible_view_bytes": true,
+  "sampled_links": [
+   {
+    "lines": [
+     1,
+     16
+    ],
+    "link": "https://github.com/oss-slu/DigitalBoneBox/blob/602e9c53c656f55b5e69b1a4dd4c6f79e53b368c/templates/Dockerfile#L1-L16",
+    "path": "templates/Dockerfile"
+   },
+   {
+    "lines": [
+     1,
+     60
+    ],
+    "link": "https://github.com/oss-slu/DigitalBoneBox/blob/602e9c53c656f55b5e69b1a4dd4c6f79e53b368c/boneset-api/images.js#L1-L60",
+    "path": "boneset-api/images.js"
+   },
+   {
+    "lines": [
+     1,
+     60
+    ],
+    "link": "https://github.com/oss-slu/DigitalBoneBox/blob/602e9c53c656f55b5e69b1a4dd4c6f79e53b368c/boneset-api/legacyAnnotations.js#L1-L60",
+    "path": "boneset-api/legacyAnnotations.js"
+   }
+  ],
+  "scan_seconds": 0.81,
+  "scores": {
+   "components": {
+    "deployment_shown_as_application": [
+     "Serverless entry"
+    ],
+    "extra": [],
+    "matched": 6,
+    "missing": [],
+    "precision": 0.8333,
+    "proposed": 6,
+    "recall": 1.0,
+    "required_expected": 4,
+    "required_found": 4
+   },
+   "connections": {
+    "covered": 4,
+    "expected": 4,
+    "missing": [],
+    "precision": 1.0,
+    "proposed": 5,
+    "recall": 1.0,
+    "supported": 5,
+    "unsupported_for_review": {}
+   },
+   "deterministic_baseline": {
+    "application_components_found": 0,
+    "expected_components_touched": [],
+    "note": "Nodes other than project, repository, language, manifest and dependency; none of them is an application component unless an analyzer supports the stack.",
+    "semantic_nodes": 0
+   },
+   "evidence": {
+    "citations": 7,
+    "member_paths": 22,
+    "member_paths_in_snapshot": 22,
+    "resolution": 1.0,
+    "resolving": 7
+   },
+   "navigation": {
+    "evidence_items": 17,
+    "with_commit_link": 17,
+    "working_tree_items": 0
+   },
+   "uncertainty": {
+    "alternatives": 0,
+    "inferred": 11,
+    "low_confidence": 0,
+    "proposed": 0,
+    "rejected_by_validation": {}
+   }
+  },
+  "second_generate_changed": false,
+  "snapshot": {
+   "files": 798,
+   "revision": "602e9c53c656f55b5e69b1a4dd4c6f79e53b368c",
+   "revision_kind": "commit"
+  },
+  "summary": "digitalbonebox (ollama, reference-replay)\n  components proposed / matched        6 / 6\n  component recall (required)          1.0 (4/4)\n  component precision                  0.8333\n  connection precision                 1.0\n  connection recall                    1.0 (4/4)\n  unsupported or unmapped, for review  0\n  citations resolving                  1.0 (7/7)\n  proposed (not inferred) items        0\n  evidence items with a commit link    17/17\n  deterministic components found       0\n",
+  "validate_exit": 0
+ },
+ "flaskr": {
+  "architecture_files": [
+   "architecture-view-evidence.json",
+   "architecture-view.html",
+   "architecture-view.mmd"
+  ],
+  "committed_change": {
+   "after": {
+    "rendered": false,
+    "view": "stale"
+   },
+   "before": {
+    "rendered": true,
+    "view": "current"
+   },
+   "warnings": [
+    "The architecture view is stale: the repositories were scanned again after this view was discovered; no architecture diagrams were generated"
+   ]
+  },
+  "context": {
+   "context_bytes": 2936,
+   "documents": 3,
+   "omitted": {
+    "denied-name": 1
+   },
+   "redactions": 0
+  },
+  "deterministic_files": [
+   "architecture.md",
+   "architecture.mmd"
+  ],
+  "dirty_and_ownership": {
+   "after_discovery": {
+    "committed": 0,
+    "evidence_items": 6,
+    "linked": 0,
+    "status": "complete"
+   },
+   "after_revert": {
+    "exit": 0,
+    "view": {
+     "rendered": false,
+     "view": "stale"
+    }
+   },
+   "architecture_files_after": [],
+   "edited_output": {
+      "error": "Generated file was edited unexpectedly: <local path>",
+    "exit": 4
+   },
+   "repository_note": "Working-tree content, not a commit: no source link is offered. Open the file in your checkout.",
+   "snapshot_kind": "content",
+   "view_after_edit": {
+    "rendered": false,
+    "view": "stale"
+   },
+   "warnings": [
+    "The architecture view is stale: the repositories were scanned again after this view was discovered; no architecture diagrams were generated"
+   ]
+  },
+  "discover": {
+   "components": 5,
+   "connections": 8,
+   "inferred": 13,
+   "proposed": 0,
+   "rejected": {},
+   "status": "complete"
+  },
+  "discover_seconds": 0.03,
+  "expected_revision": "49943b5a94413a530761350f04e896f76e8d620e",
+  "generate_seconds": 0.34,
+  "page_bytes": 3599361,
+  "page_check": {
+   "console": [],
+   "dialogs": [],
+   "drawn": true,
+   "links": [
+    "https://github.com/pallets/flask/blob/49943b5a94413a530761350f04e896f76e8d620e/examples/tutorial/flaskr/__init__.py",
+    "https://github.com/pallets/flask/blob/49943b5a94413a530761350f04e896f76e8d620e/examples/tutorial/flaskr/__init__.py#L1-L48"
+   ],
+   "requests": [],
+   "scripts": 3,
+   "violations": [],
+   "zoomed": true
+  },
+  "real_renderer": {
+   "diagrams": [
+    "architecture-view.mmd"
+   ],
+   "message": "",
+   "status": "rendered"
+  },
+  "reproducible_view_bytes": true,
+  "sampled_links": [
+   {
+    "lines": [
+     1,
+     56
+    ],
+    "link": "https://github.com/pallets/flask/blob/49943b5a94413a530761350f04e896f76e8d620e/examples/tutorial/flaskr/db.py#L1-L56",
+    "path": "flaskr/db.py"
+   },
+   {
+    "lines": [
+     1,
+     60
+    ],
+    "link": "https://github.com/pallets/flask/blob/49943b5a94413a530761350f04e896f76e8d620e/examples/tutorial/flaskr/auth.py#L1-L60",
+    "path": "flaskr/auth.py"
+   },
+   {
+    "lines": [
+     1,
+     56
+    ],
+    "link": "https://github.com/pallets/flask/blob/49943b5a94413a530761350f04e896f76e8d620e/examples/tutorial/flaskr/db.py#L1-L56",
+    "path": "flaskr/db.py"
+   }
+  ],
+  "scan_seconds": 0.33,
+  "scores": {
+   "components": {
+    "deployment_shown_as_application": [],
+    "extra": [],
+    "matched": 5,
+    "missing": [],
+    "precision": 1.0,
+    "proposed": 5,
+    "recall": 1.0,
+    "required_expected": 5,
+    "required_found": 5
+   },
+   "connections": {
+    "covered": 8,
+    "expected": 8,
+    "missing": [],
+    "precision": 1.0,
+    "proposed": 8,
+    "recall": 1.0,
+    "supported": 8,
+    "unsupported_for_review": {}
+   },
+   "deterministic_baseline": {
+    "application_components_found": 0,
+    "expected_components_touched": [],
+    "note": "Nodes other than project, repository, language, manifest and dependency; none of them is an application component unless an analyzer supports the stack.",
+    "semantic_nodes": 0
+   },
+   "evidence": {
+    "citations": 6,
+    "member_paths": 11,
+    "member_paths_in_snapshot": 11,
+    "resolution": 1.0,
+    "resolving": 6
+   },
+   "navigation": {
+    "evidence_items": 22,
+    "with_commit_link": 22,
+    "working_tree_items": 0
+   },
+   "uncertainty": {
+    "alternatives": 0,
+    "inferred": 13,
+    "low_confidence": 0,
+    "proposed": 0,
+    "rejected_by_validation": {}
+   }
+  },
+  "second_generate_changed": false,
+  "snapshot": {
+   "files": 22,
+   "revision": "49943b5a94413a530761350f04e896f76e8d620e",
+   "revision_kind": "commit"
+  },
+  "summary": "flaskr (ollama, reference-replay)\n  components proposed / matched        5 / 5\n  component recall (required)          1.0 (5/5)\n  component precision                  1.0\n  connection precision                 1.0\n  connection recall                    1.0 (8/8)\n  unsupported or unmapped, for review  0\n  citations resolving                  1.0 (6/6)\n  proposed (not inferred) items        0\n  evidence items with a commit link    22/22\n  deterministic components found       0\n",
+  "validate_exit": 0
+ }
+}

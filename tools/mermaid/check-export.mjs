@@ -1,9 +1,9 @@
 // Loads a RepoDocs architecture export in a real browser and reports what happened, as JSON.
-// Optional tooling: used by the test suite only. Usage: node check-export.mjs <file> <browser> [--no-sandbox]
+// Optional tooling: used by the test suite only. Usage: node check-export.mjs <file> <browser> [--no-sandbox|--] [screenshot.png]
 import puppeteer from 'puppeteer';
 import { pathToFileURL } from 'node:url';
 
-const [file, browser, flag] = process.argv.slice(2);
+const [file, browser, flag, screenshot] = process.argv.slice(2);
 const report = { dialogs: [], console: [], violations: [], requests: [], clicked: null, zoomed: false, drawn: false, links: [] };
 const instance = await puppeteer.launch({ executablePath: browser, headless: true, args: flag === '--no-sandbox' ? ['--no-sandbox'] : [] });
 try {
@@ -33,6 +33,7 @@ try {
   report.links = await page.$$eval('#details a', (anchors) => anchors.map((anchor) => anchor.href));
   report.violations = await page.evaluate(() => window.__violations || []);
   report.scripts = await page.$$eval('script', (nodes) => nodes.length);
+  if (screenshot) { await page.screenshot({ path: screenshot }); }
 } finally {
   await instance.close();
 }

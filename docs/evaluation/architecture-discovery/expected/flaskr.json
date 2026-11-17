@@ -1,0 +1,58 @@
+{
+  "name": "flaskr",
+  "source": {
+    "repository": "https://github.com/pallets/flask",
+    "path": "examples/tutorial",
+    "revision": "49943b5a94413a530761350f04e896f76e8d620e",
+    "revision_date": "2026-10-30",
+    "license": "BSD-3-Clause (examples/tutorial/LICENSE.txt)",
+    "stack": "Python and Flask, SQLite, Jinja templates, server-rendered HTML"
+  },
+  "written": "Before any output was scored, by reading the files named in each entry. Competitor diagrams were not used.",
+  "components": [
+    {
+      "name": "Application factory",
+      "kind": "backend-service",
+      "members": ["flaskr/__init__.py"],
+      "inspected": "flaskr/__init__.py create_app, register_blueprint(auth.bp), register_blueprint(blog.bp)"
+    },
+    {
+      "name": "Authentication",
+      "kind": "backend-service",
+      "members": ["flaskr/auth.py"],
+      "inspected": "flaskr/auth.py Blueprint('auth') with register, login, logout, login_required"
+    },
+    {
+      "name": "Blog",
+      "kind": "backend-service",
+      "members": ["flaskr/blog.py"],
+      "inspected": "flaskr/blog.py Blueprint('blog') with index, create, update, delete"
+    },
+    {
+      "name": "Database",
+      "kind": "database",
+      "members": ["flaskr/db.py", "flaskr/schema.sql"],
+      "inspected": "flaskr/db.py sqlite3 connection and init-db command; flaskr/schema.sql user and post tables"
+    },
+    {
+      "name": "Pages",
+      "kind": "frontend",
+      "members": ["flaskr/templates/**", "flaskr/static/**"],
+      "inspected": "flaskr/templates/base.html, auth/*.html, blog/*.html, static/style.css"
+    }
+  ],
+  "relationships": [
+    {"source": "Application factory", "target": "Authentication", "kinds": ["depends-on", "calls"], "inspected": "flaskr/__init__.py:39"},
+    {"source": "Application factory", "target": "Blog", "kinds": ["depends-on", "calls"], "inspected": "flaskr/__init__.py:40"},
+    {"source": "Application factory", "target": "Database", "kinds": ["depends-on", "calls"], "inspected": "flaskr/__init__.py:31 db.init_app"},
+    {"source": "Authentication", "target": "Database", "kinds": ["reads", "writes", "calls", "depends-on"], "inspected": "flaskr/auth.py:14 get_db; user queries"},
+    {"source": "Blog", "target": "Database", "kinds": ["reads", "writes", "calls", "depends-on"], "inspected": "flaskr/blog.py:11 get_db; post queries"},
+    {"source": "Blog", "target": "Authentication", "kinds": ["depends-on", "calls"], "inspected": "flaskr/blog.py:10 login_required"},
+    {"source": "Authentication", "target": "Pages", "kinds": ["renders", "calls", "serves", "depends-on"], "inspected": "flaskr/auth.py render_template('auth/...')"},
+    {"source": "Blog", "target": "Pages", "kinds": ["renders", "calls", "serves", "depends-on"], "inspected": "flaskr/blog.py render_template('blog/...')"}
+  ],
+  "not_established": [
+    {"source": "Pages", "target": "Database", "why": "Templates receive rows from the views; they never reach the database."},
+    {"source": "Database", "target": "Blog", "why": "The database module imports nothing from the views; the direction is reversed."}
+  ]
+}
