@@ -96,6 +96,14 @@ def _is_binary(data: bytes) -> bool:
     return b"\x00" in data[:8192]
 
 
+def _inside(root: Path, path: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
 def discover_files(
     root: Path, excluded_paths: Iterable[str] = ()
 ) -> tuple[list[DiscoveredFile], list[str], int]:
@@ -125,6 +133,10 @@ def discover_files(
                 warnings.append(f"Skipped symlink: {entry.path}")
                 continue
             if entry.is_dir(follow_symlinks=False):
+                # A Windows junction is a directory that is not a symlink but still leads elsewhere.
+                if not _inside(root, Path(os.path.realpath(entry.path))):
+                    warnings.append(f"Skipped directory that leaves the repository: {entry.path}")
+                    continue
                 relative_dir = Path(entry.path).relative_to(root).as_posix().lower()
                 if entry.name.lower() not in EXCLUDED_DIRECTORIES and relative_dir not in excluded:
                     pending.append(Path(entry.path))
@@ -170,6 +182,8 @@ def _manifest_dependencies(path: Path) -> list[str]:
     try:
         if name == "package.json":
             data = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                return []
             result: list[str] = []
             for section in ("dependencies", "devDependencies", "peerDependencies"):
                 values = data.get(section, {})
@@ -204,7 +218,7 @@ def _manifest_dependencies(path: Path) -> list[str]:
                 if line and not line.startswith("#") and not line.startswith("-"):
                     result.append(line.split("[", 1)[0].split("=", 1)[0].split(">", 1)[0].split("<", 1)[0].strip())
             return sorted({item for item in result if item})
-    except (OSError, ValueError, TypeError, json.JSONDecodeError, tomllib.TOMLDecodeError, ET.ParseError):
+    except (OSError, ValueError, TypeError, RecursionError, json.JSONDecodeError, tomllib.TOMLDecodeError, ET.ParseError):
         return []
     return []
 
@@ -257,10 +271,12 @@ def scan_project(
         root = config.resolve_repository(repository)
         files, file_warnings, total_bytes = discover_files(root, _excluded_output_paths(config, repository.id))
         warnings.extend(f"{repository.id}: {warning}" for warning in file_warnings)
+        git_state = read_git_state(root, frozenset(EXCLUDED_DIRECTORIES))
+        warnings.extend(f"{repository.id}: {note}" for note in git_state.notes)
         header = resolve_snapshot(
             repository_id=repository.id,
             mode=mode,
-            git=read_git_state(root),
+            git=git_state,
             fingerprint=content_fingerprint([(item.path, item.content_hash) for item in files]),
             pinned_revision=pins.get(repository.id, repository.pinned_revision),
         )

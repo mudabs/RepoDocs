@@ -19,7 +19,7 @@ ADR-004 settles one BYO cloud provider plus Ollama behind a provider-neutral ada
 ### Evidence bundle
 - `repodocs ai-bundle` writes `.repodocs/evidence-bundle.json` (schema `schemas/evidence-bundle-1.0.json`) and contacts nothing. It is what a provider receives, so it can be reviewed before consent is given.
 - The bundle is built only from the System IR: nodes with scalar attributes, relationships, cross-repository candidates with their status, limitations, and the evidence locations those items cite (repository, path, line range, symbol, revision). It contains no source text, file listings, content hashes, or local filesystem paths. Project, repository, and language nodes keep their facts but not their evidence lists, which would enumerate every file.
-- Every string is passed through versioned secret redaction (private keys, cloud and platform tokens, JWTs, bearer tokens, URL credentials, and `key = value` secret assignments). The number of replacements is recorded. Redaction is a second line of defense; analyzers already avoid recording configuration values (ADR-015) and URL credentials (ADR-018).
+- Every string is passed through versioned secret redaction (private keys, cloud and platform tokens, JWTs, bearer tokens, URL credentials, and `key = value` secret assignments). The number of replacements is recorded. Redaction rules are version 1.1 (ADR-025). Redaction is a second line of defense; analyzers already avoid recording configuration values (ADR-015) and URL credentials (ADR-018).
 - The bundle is deterministic and records the hash of the IR it was built from.
 
 ### Providers and consent

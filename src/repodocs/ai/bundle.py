@@ -15,7 +15,7 @@ from ..ir import ir_hash
 
 
 BUNDLE_SCHEMA_VERSION = "1.0"
-REDACTION_RULES_VERSION = "1.0"
+REDACTION_RULES_VERSION = "1.1"
 
 # Node types whose evidence is every file in a repository or language. Their facts are
 # kept; their evidence lists are omitted so a bundle does not become a file listing.
@@ -23,11 +23,19 @@ BULK_EVIDENCE_TYPES = {"project", "repository", "language"}
 # Attributes that are local paths or bulk listings, not architecture facts.
 OMITTED_ATTRIBUTES = {"path", "manifest_files", "file_count", "total_bytes", "lines"}
 
-_ASSIGNED = r"(?i)\b(password|passwd|secret|token|api[_-]?key|access[_-]?key|credential)(\s*[=:]\s*)(\"[^\"]*\"|'[^']*'|[^\s,;&]+)"
+# The key may carry a prefix (client_secret, DB_PASSWORD, x-api-key). The prefix is bounded so a very
+# long unbroken word cannot make the search quadratic.
+_ASSIGNED = r"(?i)\b([\w.-]{0,64}?(?:password|passwd|secret|token|api[_-]?key|access[_-]?key|credential))(\s*[=:]\s*)(\"[^\"]*\"|'[^']*'|[^\s,;&]+)"
 REDACTION_RULES: tuple[tuple[str, re.Pattern[str], str], ...] = (
     ("private-key", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|\Z)", re.S), "[REDACTED:private-key]"),
     ("aws-access-key", re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"), "[REDACTED:aws-access-key]"),
     ("github-token", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{30,}\b"), "[REDACTED:github-token]"),
+    ("github-fine-grained-token", re.compile(r"\bgithub_pat_[A-Za-z0-9_]{40,}"), "[REDACTED:github-token]"),
+    ("gitlab-token", re.compile(r"\bglpat-[A-Za-z0-9_-]{20,}"), "[REDACTED:gitlab-token]"),
+    ("npm-token", re.compile(r"\bnpm_[A-Za-z0-9]{36}\b"), "[REDACTED:npm-token]"),
+    ("slack-token", re.compile(r"\bxox[abeoprs]-[A-Za-z0-9-]{10,}"), "[REDACTED:slack-token]"),
+    ("google-api-key", re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b"), "[REDACTED:google-api-key]"),
+    ("stripe-key", re.compile(r"\b[sr]k_(?:live|test)_[0-9A-Za-z]{16,}"), "[REDACTED:stripe-key]"),
     ("api-key", re.compile(r"\bsk-[A-Za-z0-9_-]{20,}"), "[REDACTED:api-key]"),
     ("jwt", re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"), "[REDACTED:jwt]"),
     ("bearer-token", re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{16,}"), "Bearer [REDACTED:bearer-token]"),

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .common import canonical_json, sha256_text, write_json
+from .common import canonical_json, markdown_code, markdown_text, scrub, sha256_text, write_json
 from .config import ProjectConfig
 from .erd import build_erd_model, render_erd
 from .errors import OwnershipError, SnapshotError
@@ -66,7 +66,9 @@ class GenerationResult:
 
 
 def _escape_label(value: str) -> str:
-    return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
+    """Untrusted text inside a quoted Mermaid label, written with the entities Mermaid defines."""
+
+    return scrub(value).replace('"', "#quot;").replace("<", "#lt;").replace(">", "#gt;")
 
 
 def render_markdown(ir: dict[str, Any]) -> str:
@@ -76,7 +78,7 @@ def render_markdown(ir: dict[str, Any]) -> str:
     claims = ir["claims"]
     evidence = {item["id"]: item for item in ir["evidence"]}
     lines = [
-        f"# {project['name']} architecture overview",
+        f"# {_cell(project['name'])} architecture overview",
         "",
         "This document was generated from the RepoDocs System IR. It contains deterministic static findings only.",
         "",
@@ -87,9 +89,9 @@ def render_markdown(ir: dict[str, Any]) -> str:
     ]
     for snapshot in snapshots:
         languages = sorted({item["language"] for item in snapshot["files"] if item.get("language")})
-        revision = f"{snapshot['revision_kind']} `{snapshot['revision'][:12]}`"
+        revision = f"{snapshot['revision_kind']} {_code(snapshot['revision'][:12])}"
         lines.append(
-            f"| {snapshot['repository_id']} | {snapshot['snapshot_mode']} | {revision} | "
+            f"| {_cell(snapshot['repository_id'])} | {snapshot['snapshot_mode']} | {revision} | "
             f"{snapshot['working_tree_state']} | {len(snapshot['files'])} | {', '.join(languages) or 'Unknown'} |"
         )
     lines.extend(
@@ -109,7 +111,7 @@ def render_markdown(ir: dict[str, Any]) -> str:
         for relationship in observed_relationships:
             source = nodes.get(relationship["source"], {}).get("name", relationship["source"])
             target = nodes.get(relationship["target"], {}).get("name", relationship["target"])
-            lines.append(f"| {relationship['type']} | {_cell(source)} | {_cell(target)} |")
+            lines.append(f"| {_cell(relationship['type'])} | {_cell(source)} | {_cell(target)} |")
     else:
         lines.append("No observed relationships were extracted.")
     lines.extend(["", "## Inferred relationships", ""])
@@ -127,7 +129,7 @@ def render_markdown(ir: dict[str, Any]) -> str:
             attributes = relationship.get("attributes", {})
             refs = ", ".join(_evidence_ref(evidence, evidence_id) for evidence_id in relationship["evidence_ids"])
             lines.append(
-                f"| {relationship['type']} | {_cell(source)} | {_cell(target)} | {_cell(attributes.get('basis', 'name match'))} | "
+                f"| {_cell(relationship['type'])} | {_cell(source)} | {_cell(target)} | {_cell(attributes.get('basis', 'name match'))} | "
                 f"{relationship.get('confidence', '')} | {refs} |"
             )
     else:
@@ -147,7 +149,7 @@ def render_markdown(ir: dict[str, Any]) -> str:
         for limitation in sorted(limitations, key=lambda item: (item["repository_id"], item["kind"], item["message"])):
             evidence_text = ", ".join(_evidence_ref(evidence, evidence_id) for evidence_id in limitation["evidence_ids"])
             lines.append(
-                f"- **{limitation['repository_id']}** `{limitation['kind']}` ({limitation['analyzer']}): "
+                f"- **{_cell(limitation['repository_id'])}** {_code(limitation['kind'])} ({_cell(limitation['analyzer'])}): "
                 f"{_cell(limitation['message'])} Evidence: {evidence_text or 'none'}."
             )
     else:
@@ -166,8 +168,8 @@ def render_markdown(ir: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _cell(value: Any) -> str:
-    return str(value).replace("|", "\\|").replace("\n", " ")
+_cell = markdown_text
+_code = markdown_code
 
 
 def _render_candidate_section(
@@ -190,12 +192,12 @@ def _render_candidate_section(
     for candidate in sorted(candidates, key=lambda item: item["id"]):
         source, target = nodes[candidate["source"]], nodes[candidate["target"]]
         revisions = ", ".join(
-            f"{_cell(repo)}: {item['revision_kind']} `{_cell(item['revision'])}`"
+            f"{_cell(repo)}: {item['revision_kind']} {_code(item['revision'])}"
             for repo, item in sorted(candidate["snapshots"].items())
         )
         refs = ", ".join(_evidence_ref(evidence, key) for key in candidate["evidence_ids"])
         lines.append(
-            f"| `{candidate['id']}` ({candidate['status']}) | {_cell(source['attributes']['repository_id'])}: {_cell(source['name'])} | "
+            f"| {_code(candidate['id'])} ({_cell(candidate['status'])}) | {_cell(source['attributes']['repository_id'])}: {_cell(source['name'])} | "
             f"{_cell(target['attributes']['repository_id'])}: {_cell(target['name'])} | {candidate['confidence']} | "
             f"{_cell(', '.join(candidate['reasons']))} | {revisions} | {refs} |"
         )
@@ -205,11 +207,11 @@ def _render_candidate_section(
 def _evidence_ref(evidence: dict[str, dict[str, Any]], evidence_id: str) -> str:
     source = evidence.get(evidence_id)
     if not source:
-        return f"`{evidence_id}`"
+        return _code(evidence_id)
     location = f"{source['repository_id']}:{source['path']}"
     if source.get("kind") == "span":
         location += f":L{source['line_start']}-L{source['line_end']}"
-    return f"`{location}` ({evidence_id})"
+    return f"{_code(location)} ({_cell(evidence_id)})"
 
 
 def _render_analysis_sections(
@@ -219,8 +221,8 @@ def _render_analysis_sections(
 
     lines = ["", "## Analysis coverage", ""]
     for analyzer in ir["provenance"].get("analyzers", []):
-        repositories = ", ".join(analyzer.get("repositories", [])) or "no repository detected"
-        lines.append(f"- `{analyzer['name']}` {analyzer['version']}: {repositories}")
+        repositories = ", ".join(_cell(item) for item in analyzer.get("repositories", [])) or "no repository detected"
+        lines.append(f"- {_code(analyzer['name'])} {_cell(analyzer['version'])}: {repositories}")
     contains, exposes, references, requests = _relationship_index(ir)
 
     services = sorted((node for node in nodes.values() if node["type"] == "service"), key=lambda item: (item["attributes"].get("repository_id", ""), item["name"]))
@@ -234,8 +236,8 @@ def _render_analysis_sections(
                 framework += f" {attributes['framework_version']}"
             entry = attributes.get("application_class") or attributes.get("package_path") or ""
             lines.append(
-                f"| {_cell(service['name'])} | {attributes.get('repository_id', '')} | {_cell(framework)} | "
-                f"`{_cell(entry)}` | {_service_summary(service['id'], nodes, contains, exposes, requests)} |"
+                f"| {_cell(service['name'])} | {_cell(attributes.get('repository_id', ''))} | {_cell(framework)} | "
+                f"{_code(entry)} | {_service_summary(service['id'], nodes, contains, exposes, requests)} |"
             )
     else:
         lines.append("No framework-aware services were detected.")
@@ -251,9 +253,9 @@ def _render_analysis_sections(
             attributes = endpoint["attributes"]
             refs = ", ".join(_evidence_ref(evidence, evidence_id) for evidence_id in endpoint["evidence_ids"])
             lines.append(
-                f"| {attributes.get('http_method', '')} | `{_cell(attributes.get('path', ''))}` | "
-                f"`{_cell(attributes.get('controller', ''))}` | {_cell(attributes.get('handler', ''))} | "
-                f"{attributes.get('repository_id', '')} | {refs} |"
+                f"| {_cell(attributes.get('http_method', ''))} | {_code(attributes.get('path', ''))} | "
+                f"{_code(attributes.get('controller', ''))} | {_cell(attributes.get('handler', ''))} | "
+                f"{_cell(attributes.get('repository_id', ''))} | {refs} |"
             )
     else:
         lines.append("No request mappings with literal paths were extracted.")
@@ -269,8 +271,8 @@ def _render_analysis_sections(
             attributes = entity["attributes"]
             table = attributes.get("table") or "not declared"
             lines.append(
-                f"| `{_cell(attributes.get('qualified_name', entity['name']))}` | {_cell(table)} | "
-                f"{len(attributes.get('fields', []))} | {references.get(entity['id'], 0)} | {attributes.get('repository_id', '')} |"
+                f"| {_code(attributes.get('qualified_name', entity['name']))} | {_cell(table)} | "
+                f"{len(attributes.get('fields', []))} | {references.get(entity['id'], 0)} | {_cell(attributes.get('repository_id', ''))} |"
             )
         lines.append("")
         lines.append("Table names are listed only when declared with @Table; default naming strategies are not applied.")
@@ -289,10 +291,10 @@ def _render_analysis_sections(
         for route in routes:
             attributes = route["attributes"]
             refs = ", ".join(_evidence_ref(evidence, evidence_id) for evidence_id in route["evidence_ids"])
-            path = f"`{_cell(attributes.get('path', ''))}`" + (" (index)" if attributes.get("index") else "")
+            path = f"{_code(attributes.get('path', ''))}" + (" (index)" if attributes.get("index") else "")
             lines.append(
                 f"| {path} | {_cell(attributes.get('router', ''))} | {_cell(attributes.get('component') or 'not literal')} | "
-                f"`{_cell(attributes.get('module', ''))}` | {attributes.get('repository_id', '')} | {refs} |"
+                f"{_code(attributes.get('module', ''))} | {_cell(attributes.get('repository_id', ''))} | {refs} |"
             )
     else:
         lines.append("No client-side routes with literal paths were extracted.")
@@ -313,8 +315,8 @@ def _render_analysis_sections(
             attributes = request["attributes"]
             refs = ", ".join(_evidence_ref(evidence, evidence_id) for evidence_id in request["evidence_ids"])
             lines.append(
-                f"| {attributes.get('http_method', '')} | `{_cell(attributes.get('url', ''))}` | {_cell(attributes.get('client', ''))} | "
-                f"{_cell(attributes.get('base_url') or '')} | `{_cell(attributes.get('module', ''))}` | {attributes.get('repository_id', '')} | {refs} |"
+                f"| {_cell(attributes.get('http_method', ''))} | {_code(attributes.get('url', ''))} | {_cell(attributes.get('client', ''))} | "
+                f"{_cell(attributes.get('base_url') or '')} | {_code(attributes.get('module', ''))} | {_cell(attributes.get('repository_id', ''))} | {refs} |"
             )
     else:
         lines.append("No HTTP request sites with literal URLs were extracted.")
@@ -330,8 +332,8 @@ def _render_analysis_sections(
             attributes = component["attributes"]
             exported = "default" if attributes.get("default_export") else ("named" if attributes.get("exported") else "no")
             lines.append(
-                f"| {_cell(component['name'])} | {_cell(attributes.get('kind', ''))} | `{_cell(attributes.get('module', ''))}` | "
-                f"{exported} | {references.get(component['id'], 0)} | {attributes.get('repository_id', '')} |"
+                f"| {_cell(component['name'])} | {_cell(attributes.get('kind', ''))} | {_code(attributes.get('module', ''))} | "
+                f"{exported} | {references.get(component['id'], 0)} | {_cell(attributes.get('repository_id', ''))} |"
             )
         lines.append("")
         lines.append("References count JSX elements that resolve to components defined in the same repository.")
@@ -371,10 +373,10 @@ def _render_database_section(ir: dict[str, Any], nodes: dict[str, dict[str, Any]
             f"{item.get('references_table', '')} ({', '.join(item.get('columns', []))})" for item in foreign_keys
         )
         lines.append(
-            f"| {_cell(owner.get(table['id'], attributes.get('repository_id', '')))} | `{_cell(table['name'])}` | "
+            f"| {_cell(owner.get(table['id'], attributes.get('repository_id', '')))} | {_code(table['name'])} | "
             f"{_cell(attributes.get('schema') or 'not qualified')} | {len(attributes.get('columns', []))} | "
             f"{_cell(', '.join(attributes.get('primary_key', [])) or 'none')} | {_cell(targets or 'none')} | "
-            f"{attributes.get('repository_id', '')} |"
+            f"{_cell(attributes.get('repository_id', ''))} |"
         )
     lines.append("")
     lines.extend(["### Table columns", "", "| Table | Column | Type | Nullable | Default | Key | Repository |", "|---|---|---|---|---|---|---|"])
@@ -391,18 +393,18 @@ def _render_database_section(ir: dict[str, Any], nodes: dict[str, dict[str, Any]
             else:
                 key = ""
             lines.append(
-                f"| `{_cell(table['name'])}` | `{_cell(column.get('name', ''))}` | `{_cell(column.get('type', ''))}` | "
+                f"| {_code(table['name'])} | {_code(column.get('name', ''))} | {_code(column.get('type', ''))} | "
                 f"{'yes' if column.get('nullable', True) else 'no'} | {_cell(column.get('default') or '-')} | "
-                f"{key} | {attributes.get('repository_id', '')} |"
+                f"{key} | {_cell(attributes.get('repository_id', ''))} |"
             )
     erd_model = build_erd_model(ir)
     if erd_model is not None and (erd_model.missing_keys or erd_model.unsupported_relationships):
         lines.append("")
         lines.extend(["### Schema diagnostics", ""])
         for mk in erd_model.missing_keys:
-            lines.append(f"- **Missing key**: {mk}")
+            lines.append(f"- **Missing key**: {scrub(mk)}")
         for ur in erd_model.unsupported_relationships:
-            lines.append(f"- **Unsupported relationship**: {ur}")
+            lines.append(f"- **Unsupported relationship**: {scrub(ur)}")
     return lines
 
 
@@ -529,6 +531,23 @@ def manifest_path(config: ProjectConfig) -> Path:
     return config.internal_path / MANIFEST_FILENAME
 
 
+def owned_path(output_dir: Path, relative_path: str) -> Path:
+    """A path under the generated output directory, refusing any that leads somewhere else.
+
+    The destination repository may be untrusted, so a link planted at an artifact's name could
+    otherwise make a write or a read land outside it. Absolute paths and ``..`` resolve outside.
+    """
+
+    path = output_dir / relative_path
+    try:
+        path.resolve().relative_to(output_dir.resolve())
+    except ValueError:
+        raise OwnershipError(f"Generated artifact path leaves the output directory: {relative_path}") from None
+    if path.is_symlink() or any(parent.is_symlink() for parent in path.parents if parent != output_dir and output_dir in parent.parents):
+        raise OwnershipError(f"Generated artifact path is a symbolic link; remove it before generating: {path}")
+    return path
+
+
 def _read_manifest(path: Path) -> dict[str, Any] | None:
     if not path.exists():
         return None
@@ -601,7 +620,7 @@ def _preflight(output_dir: Path, manifest: dict[str, Any] | None, planned: set[s
     for relative_path, entry in existing_entries.items():
         if relative_path in OPTIONAL_ARTIFACT_GENERATORS and entry.get("generator") != OPTIONAL_ARTIFACT_GENERATORS[relative_path]:
             raise OwnershipError(f"Artifact manifest mislabels optional output: {relative_path}")
-        path = output_dir / relative_path
+        path = owned_path(output_dir, relative_path)
         if path.exists():
             current_hash = sha256_text(path.read_text(encoding="utf-8"))
             if current_hash != entry.get("content_hash"):
@@ -668,11 +687,11 @@ def generate_docs(
     changed = False
     # _preflight has verified that owned files are unedited, so a retired one is safe to remove.
     for name in set(OPTIONAL_ARTIFACT_GENERATORS) - set(contents):
-        if (output_dir / name).exists():
-            (output_dir / name).unlink()
+        if owned_path(output_dir, name).exists():
+            owned_path(output_dir, name).unlink()
             changed = True
     for relative_path, content in contents.items():
-        path = output_dir / relative_path
+        path = owned_path(output_dir, relative_path)
         if not path.exists() or path.read_text(encoding="utf-8") != content:
             path.write_text(content, encoding="utf-8", newline="\n")
             changed = True
