@@ -12,7 +12,7 @@
       "enum": ["complete", "partial"],
       "description": "partial means a budget, timeout, or provider failure stopped discovery early; statuses 'stale' and 'invalid' are computed on load, never stored."
     },
-    "partial_reason": {"enum": ["round-budget", "request-budget", "context-budget", "response-budget", "timeout", "provider-error"]},
+    "partial_reason": {"enum": ["round-budget", "request-budget", "context-budget", "response-budget", "timeout", "provider-error", "incomplete-response", "empty-response", "no-progress"]},
     "provenance": {
       "type": "object",
       "required": ["provider", "requested_model", "served_model", "engine_version", "prompt_version", "context_version", "context_hash", "source_ir_hash", "snapshots", "external", "rounds", "requests"],
