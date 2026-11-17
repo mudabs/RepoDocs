@@ -87,7 +87,8 @@
           "propertyNames": {"enum": ["max_rounds", "max_requests", "max_files_per_round", "max_excerpt_bytes", "max_file_bytes", "max_context_bytes", "max_response_bytes", "max_inventory_paths"]},
           "additionalProperties": {"type": "integer", "minimum": 1}
         },
-        "deny_names": {"type": "array", "items": {"type": "string", "minLength": 1}}
+        "deny_names": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "html_export": {"type": "boolean", "description": "Also write the self-contained architecture-view.html. It embeds the pinned Mermaid bundle from tools/mermaid, so generation fails when the bundle is missing."}
       },
       "additionalProperties": false
     }

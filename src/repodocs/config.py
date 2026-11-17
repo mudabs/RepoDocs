@@ -75,6 +75,7 @@ class ArchitectureSettings:
 
     budgets: dict[str, int] = field(default_factory=dict)
     deny_names: tuple[str, ...] = ()
+    html_export: bool = False  # also write the self-contained architecture-view.html (needs the optional Mermaid bundle)
 
     def to_dict(self) -> dict[str, Any]:
         data: dict[str, Any] = {}
@@ -82,13 +83,15 @@ class ArchitectureSettings:
             data["budgets"] = dict(sorted(self.budgets.items()))
         if self.deny_names:
             data["deny_names"] = list(self.deny_names)
+        if self.html_export:
+            data["html_export"] = True
         return data
 
     @classmethod
     def from_dict(cls, data: Any) -> "ArchitectureSettings":
         if not isinstance(data, dict):
             raise ConfigError("architecture must be a JSON object")
-        unknown = sorted(set(data) - {"budgets", "deny_names"})
+        unknown = sorted(set(data) - {"budgets", "deny_names", "html_export"})
         if unknown:
             raise ConfigError("Unknown architecture setting: " + ", ".join(unknown))
         budgets = data.get("budgets", {})
@@ -106,7 +109,10 @@ class ArchitectureSettings:
         names = data.get("deny_names", [])
         if not isinstance(names, list) or not all(isinstance(item, str) and item for item in names):
             raise ConfigError("architecture.deny_names must be a list of non-empty strings")
-        return cls(budgets=dict(budgets), deny_names=tuple(names))
+        export = data.get("html_export", False)
+        if not isinstance(export, bool):
+            raise ConfigError("architecture.html_export must be true or false")
+        return cls(budgets=dict(budgets), deny_names=tuple(names), html_export=export)
 
 
 @dataclass(frozen=True)

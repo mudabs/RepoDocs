@@ -287,3 +287,14 @@ def resolve_snapshot(
         "revision_kind": REVISION_KIND_COMMIT if exact_commit else REVISION_KIND_CONTENT,
         "revision": git.revision if exact_commit else fingerprint,
     }
+
+
+def read_remote_url(root: Path) -> str | None:
+    """The `origin` remote URL, read from configuration only. Nothing is executed or contacted."""
+
+    try:
+        result = _git(root, arguments=("config", "--get", "remote.origin.url"))
+    except OSError:
+        return None
+    url = result.stdout.strip()
+    return url if result.returncode == 0 and url else None
