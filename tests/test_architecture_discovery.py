@@ -19,7 +19,7 @@ from repodocs.ai.providers import AnthropicProvider, OllamaProvider, ProviderRes
 from repodocs.architecture import discovery
 from repodocs.architecture.discovery import (
     RESPONSE_SCHEMA, SYSTEM_PROMPT, STATUS_CURRENT, STATUS_INVALID, STATUS_MISSING, STATUS_STALE,
-    component_id, discover, load_view, save_view, validate_proposal,
+    component_id, discover, load_view, save_view, saved_context_path, validate_proposal,
 )
 from repodocs.config import ProjectConfig
 from repodocs.errors import MalformedProviderOutput, ProviderError
@@ -609,7 +609,7 @@ def test_a_tampered_view_is_invalid(tmp_path: Path, capsys, tamper: Callable) ->
 
 def test_a_missing_or_altered_context_or_unreadable_view_is_invalid(tmp_path: Path, capsys) -> None:
     root, config, ir = stored(tmp_path, capsys)
-    context = root / ".repodocs" / "architecture-context.json"
+    context = saved_context_path(config, json.loads((root / ".repodocs" / "architecture-view.json").read_text(encoding="utf-8"))["provenance"]["context_hash"])
     original = context.read_text(encoding="utf-8")
     context.write_text(original.replace("Express", "Evil"), encoding="utf-8")
     assert load_view(config, ir)[0] == STATUS_INVALID
@@ -618,6 +618,50 @@ def test_a_missing_or_altered_context_or_unreadable_view_is_invalid(tmp_path: Pa
     context.write_text(original, encoding="utf-8")
     (root / ".repodocs" / "architecture-view.json").write_text("{not json", encoding="utf-8")
     assert load_view(config, ir)[0] == STATUS_INVALID
+
+
+def stored_pair(root: Path) -> dict[str, str]:
+    return {item.name: item.read_text(encoding="utf-8") for item in sorted((root / ".repodocs").glob("architecture-view*.json"))}
+
+
+def test_a_new_view_replaces_the_old_pair_and_leaves_one_saved_context(tmp_path: Path, capsys) -> None:
+    root, config, ir = stored(tmp_path, capsys)
+    before = stored_pair(root)
+    view, context = discover(config, ir, Scripted(ask("lib/storage.js"), full_answer))
+
+    save_view(config, view, context)
+
+    after = stored_pair(root)
+    assert set(after) != set(before) and len(after) == 2, "the old context is gone and the new one is stored beside the view"
+    assert load_view(config, ir)[0] == STATUS_CURRENT
+
+
+def test_a_failure_while_saving_leaves_the_previous_view_and_its_context_usable(tmp_path: Path, capsys, monkeypatch) -> None:
+    from repodocs.architecture import discovery
+
+    root, config, ir = stored(tmp_path, capsys)
+    before = stored_pair(root)
+    view, context = discover(config, ir, Scripted(ask("lib/storage.js"), full_answer))
+    real = discovery.write_json_atomic
+    calls: list[str] = []
+
+    def failing(path: Path, value: Any) -> None:
+        calls.append(path.name)
+        if path.name == "architecture-view.json":
+            raise OSError("disk full")
+        real(path, value)
+
+    monkeypatch.setattr(discovery, "write_json_atomic", failing)
+    with pytest.raises(OSError):
+        save_view(config, view, context)
+
+    monkeypatch.undo()
+    leftovers = {name: text for name, text in stored_pair(root).items() if name not in before}
+    assert all(text == context_text for name, text in stored_pair(root).items() if name in before for context_text in [before[name]]), "the previous pair is untouched"
+    assert len(leftovers) == 1 and next(iter(leftovers)).startswith("architecture-view-context-"), "only an unreferenced new context remains"
+    assert load_view(config, ir)[0] == STATUS_CURRENT and load_view(config, ir)[1]["provenance"]["context_hash"] == json.loads(before["architecture-view.json"])["provenance"]["context_hash"]
+    save_view(config, view, context)
+    assert len(stored_pair(root)) == 2, "the next successful save removes the unreferenced context"
 
 
 # ------------------------------------------------------------------ both providers, through their real adapters
