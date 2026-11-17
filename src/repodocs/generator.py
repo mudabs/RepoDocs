@@ -29,6 +29,21 @@ OPTIONAL_ARTIFACT_GENERATORS = {
     AI_ARTIFACT: AI_GENERATOR_NAME,
     ERD_ARTIFACT: GENERATOR_NAME,
 }
+# Architecture-view artifacts (ADR-026) have names that depend on the view, so they are recognized by
+# prefix. They come from a validated model proposal and carry their own generator label.
+ARCHITECTURE_GENERATOR_NAME = "repodocs-architecture"
+ARCHITECTURE_PREFIX = "architecture-view"
+ARCHITECTURE_SUFFIXES = (".mmd", ".md", ".html", ".json")
+
+
+def optional_generator(path: str) -> str | None:
+    """The generator label of an optional artifact, or None when the name is not an optional one."""
+
+    if path in OPTIONAL_ARTIFACT_GENERATORS:
+        return OPTIONAL_ARTIFACT_GENERATORS[path]
+    if "/" not in path and path.startswith(ARCHITECTURE_PREFIX) and path.endswith(ARCHITECTURE_SUFFIXES):
+        return ARCHITECTURE_GENERATOR_NAME
+    return None
 
 # The fields that identify where generated output lives. Revision and tree state change
 # legitimately between runs and are deliberately not part of the identity.
@@ -609,7 +624,7 @@ def _preflight(output_dir: Path, manifest: dict[str, Any] | None, planned: set[s
             )
         return
     existing_entries = {item["path"]: item for item in manifest.get("artifacts", [])}
-    unexpected_manifest = set(existing_entries) - planned - set(OPTIONAL_ARTIFACT_GENERATORS)
+    unexpected_manifest = {path for path in existing_entries if path not in planned and optional_generator(path) is None}
     if unexpected_manifest:
         raise OwnershipError(
             "Artifact manifest contains unexpected paths: " + ", ".join(sorted(unexpected_manifest))
@@ -618,7 +633,7 @@ def _preflight(output_dir: Path, manifest: dict[str, Any] | None, planned: set[s
     if unexpected_files:
         raise OwnershipError("Generated output contains unowned files: " + ", ".join(sorted(unexpected_files)))
     for relative_path, entry in existing_entries.items():
-        if relative_path in OPTIONAL_ARTIFACT_GENERATORS and entry.get("generator") != OPTIONAL_ARTIFACT_GENERATORS[relative_path]:
+        if optional_generator(relative_path) is not None and entry.get("generator") != optional_generator(relative_path):
             raise OwnershipError(f"Artifact manifest mislabels optional output: {relative_path}")
         path = owned_path(output_dir, relative_path)
         if path.exists():
@@ -641,7 +656,7 @@ def _manifest(ir: dict[str, Any], destination: dict[str, Any], artifact_contents
                 "path": path,
                 "content_hash": sha256_text(content),
                 "source_ir_hash": source_hash,
-                "generator": OPTIONAL_ARTIFACT_GENERATORS.get(path, GENERATOR_NAME),
+                "generator": optional_generator(path) or GENERATOR_NAME,
                 "generator_version": GENERATOR_VERSION,
             }
             for path, content in sorted(artifact_contents.items())
@@ -678,7 +693,7 @@ def generate_docs(
     if erd_source is not None:
         contents[ERD_ARTIFACT] = erd_source
     for name, content in (optional or {}).items():
-        if name not in OPTIONAL_ARTIFACT_GENERATORS:
+        if optional_generator(name) is None:
             raise OwnershipError(f"Unknown optional artifact: {name}")
         contents[name] = content
     _preflight(output_dir, manifest, set(contents))
@@ -686,7 +701,8 @@ def generate_docs(
     new_manifest = _manifest(ir, destination, contents)
     changed = False
     # _preflight has verified that owned files are unedited, so a retired one is safe to remove.
-    for name in set(OPTIONAL_ARTIFACT_GENERATORS) - set(contents):
+    retired = set(OPTIONAL_ARTIFACT_GENERATORS) | {item["path"] for item in (manifest or {}).get("artifacts", []) if optional_generator(item["path"])}
+    for name in sorted(retired - set(contents)):
         if owned_path(output_dir, name).exists():
             owned_path(output_dir, name).unlink()
             changed = True

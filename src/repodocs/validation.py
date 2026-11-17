@@ -348,6 +348,56 @@ def validate_er_diagram(lines: list[str]) -> None:
         raise ValidationError("Mermaid ERD references undefined entities: " + ", ".join(missing))
 
 
+_ARCH_ID = r"[A-Za-z_][A-Za-z0-9_]*"
+_ARCH_LABEL = r'"[^"<>]*"'
+ARCH_NODE_PATTERN = re.compile(rf"^({_ARCH_ID})(?:\[{_ARCH_LABEL}\]|\[\({_ARCH_LABEL}\)\]|\{{\{{{_ARCH_LABEL}\}}\}}|\(\[{_ARCH_LABEL}\]\))$")
+ARCH_SUBGRAPH_PATTERN = re.compile(rf"^subgraph ({_ARCH_ID})\[{_ARCH_LABEL}\]$")
+ARCH_EDGE_PATTERN = re.compile(rf"^({_ARCH_ID}) (?:-->|-\.->)\|{_ARCH_LABEL}\| ({_ARCH_ID})$")
+ARCH_CLASSDEF_PATTERN = re.compile(r"^classDef [a-z]+ [a-z-]+:[#a-z0-9 ]+(?:,[a-z-]+:[#a-z0-9 ]+)*$")
+ARCH_CLASS_PATTERN = re.compile(rf"^class ({_ARCH_ID}(?:,{_ARCH_ID})*) [a-z]+$")
+
+
+def validate_architecture_flowchart(lines: list[str]) -> None:
+    """The architecture view grammar: subgraphs, shaped nodes, labelled edges, styles, and comments only."""
+
+    defined: set[str] = set()
+    references: list[str] = []
+    depth = 0
+    for line in lines[1:]:
+        if line.startswith("%%"):
+            if line.startswith("%%{"):
+                raise ValidationError(f"Mermaid directives are not allowed in generated diagrams: {line}")
+            continue
+        if ARCH_SUBGRAPH_PATTERN.match(line):
+            depth += 1
+            continue
+        if line == "end":
+            depth -= 1
+            if depth < 0:
+                raise ValidationError("Mermaid architecture view closes a subgraph that was not opened")
+            continue
+        node = ARCH_NODE_PATTERN.match(line)
+        if node:
+            defined.add(node.group(1))
+            continue
+        edge = ARCH_EDGE_PATTERN.match(line)
+        if edge:
+            references.extend(edge.groups())
+            continue
+        if ARCH_CLASSDEF_PATTERN.match(line):
+            continue
+        styled = ARCH_CLASS_PATTERN.match(line)
+        if styled:
+            references.extend(styled.group(1).split(","))
+            continue
+        raise ValidationError(f"Unsupported or malformed Mermaid architecture line: {line}")
+    if depth:
+        raise ValidationError("Mermaid architecture view has an unclosed subgraph")
+    missing = sorted(set(references) - defined)
+    if missing:
+        raise ValidationError("Mermaid architecture view references undefined nodes: " + ", ".join(missing))
+
+
 def validate_mermaid(content: str) -> None:
     lines = [line.strip() for line in content.splitlines() if line.strip()]
     if not lines:
@@ -358,11 +408,13 @@ def validate_mermaid(content: str) -> None:
     header = lines[0]
     if header == "flowchart TD":
         validate_flowchart(lines)
+    elif header == "flowchart LR":
+        validate_architecture_flowchart(lines)
     elif header == "erDiagram":
         validate_er_diagram(lines)
     else:
         raise ValidationError(
-            f"Unsupported Mermaid diagram header: {header!r}; expected `flowchart TD` or `erDiagram`"
+            f"Unsupported Mermaid diagram header: {header!r}; expected `flowchart TD`, `flowchart LR` (architecture view), or `erDiagram`"
         )
 
 
