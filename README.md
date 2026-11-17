@@ -193,6 +193,13 @@ Reviewed fake-provider golden cases currently yield 1 inference, 4 proposals,
 3 rejections, and no reviewed unsupported inferences. These are regression
 results, not a real-model factuality benchmark. See ADR-021.
 
+### Architecture discovery: source context (in progress, ADR-026)
+
+- `repodocs architecture context` writes `.repodocs/architecture-context.json` and contacts nothing. It holds redacted, bounded excerpts of the README, manifests, and entry-point files of each scanned repository, an inventory of names, and a list of what was omitted and why (denied names such as `.env` and `*.pem`, binary, oversized, stale, links, and budget limits). Review it before consenting.
+- Sending those excerpts to an external provider needs `repodocs ai-configure --consent-source-excerpts`, in addition to `--consent-external`. Consent for the evidence bundle never covers excerpts, and consent given for an older policy version does not apply. A loopback Ollama host needs neither.
+- `architecture` in `repodocs.json` may lower the default budgets and add denied file names; it cannot raise a budget or remove a built-in denied name.
+- This step only builds the context. Discovery, diagrams, and navigation are separate, later changes (epic #47). Redaction is pattern-based, not a guarantee.
+
 ### Publishing documentation from GitHub Actions
 
 `repodocs publish` opens or updates one documentation pull request from the destination repository, and does nothing when the generated output is unchanged. It is meant to run in a coordination repository's workflow after `scan --snapshot-mode pinned`, `generate`, and `validate`.

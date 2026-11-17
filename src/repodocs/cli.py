@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,7 @@ from .config import (
     REPOSITORY_ROLES,
     ROLE_DESTINATION,
     ROLE_SOURCE,
+    SOURCE_POLICY_VERSION,
     AiSettings,
     ProjectConfig,
     RepositorySpec,
@@ -400,7 +402,10 @@ def _cmd_ai_configure(args: argparse.Namespace) -> int:
     config = ProjectConfig.load(_root(args))
     current = config.ai
     consent = True if args.consent_external else False if args.revoke_consent else current.external_consent
+    source = True if args.consent_source_excerpts else False if args.revoke_source_consent else current.source_excerpts_consent
     config.ai = AiSettings(
+        source_excerpts_consent=source,
+        source_consent_policy=SOURCE_POLICY_VERSION if source else None,
         provider=args.provider or current.provider,
         model=args.model or (current.model if not args.provider or args.provider == current.provider else None),
         external_consent=consent,
@@ -408,6 +413,47 @@ def _cmd_ai_configure(args: argparse.Namespace) -> int:
     )
     config.save()
     _emit("ai-configure", ok=True, data=config.ai.to_dict())
+    return EXIT_OK
+
+
+def _cmd_architecture_context(args: argparse.Namespace) -> int:
+    """Write the bounded, redacted source context for review. Never contacts a provider."""
+
+    from .architecture.context import CONTEXT_FILENAME, build_context, context_hash
+    from .ai import providers
+
+    config = ProjectConfig.load(_root(args))
+    ir = _load_scanned_ir(config)
+    bundle, _ = build_context(config, ir)
+    path = config.internal_path / CONTEXT_FILENAME
+    write_json(path, bundle)
+    reasons: dict[str, int] = {}
+    for item in bundle["omitted"]:
+        reasons[item["reason"]] = reasons.get(item["reason"], 0) + 1
+    external = None
+    if config.ai.provider != "none":
+        try:
+            provider = providers.resolve_provider(replace(config.ai, external_consent=True))
+            external = bool(provider and provider.external)
+        except RepoDocsError:
+            external = None
+    _emit(
+        "architecture-context",
+        ok=True,
+        data={
+            "context": path.as_posix(),
+            "context_version": bundle["context_version"],
+            "context_hash": context_hash(bundle),
+            "source_ir_hash": bundle["source_ir_hash"],
+            "documents": len(bundle["documents"]),
+            "context_bytes": bundle["usage"]["context_bytes"],
+            "redactions": bundle["redaction"]["replacements"],
+            "omitted": dict(sorted(reasons.items())),
+            "provider": config.ai.provider,
+            "provider_is_external": external,
+            "source_consent": config.ai.source_consent_current,
+        },
+    )
     return EXIT_OK
 
 
@@ -597,6 +643,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Consent to sending the redacted evidence bundle off this machine",
     )
     consent.add_argument("--revoke-consent", action="store_true", help="Return the project to local-only")
+    source_consent = ai_configure.add_mutually_exclusive_group()
+    source_consent.add_argument(
+        "--consent-source-excerpts",
+        action="store_true",
+        help="Consent to sending bounded, redacted source excerpts to an external provider for architecture discovery",
+    )
+    source_consent.add_argument("--revoke-source-consent", action="store_true", help="Withdraw consent for source excerpts")
     ai_configure.set_defaults(handler=_cmd_ai_configure)
 
     ai_bundle = subparsers.add_parser("ai-bundle", help="Write the redacted evidence bundle for review; sends nothing")
@@ -606,6 +659,13 @@ def _build_parser() -> argparse.ArgumentParser:
         "ai-interpret", help="Ask the configured provider for claims and validate them against the evidence"
     )
     ai_interpret.set_defaults(handler=_cmd_ai_interpret)
+
+    architecture = subparsers.add_parser("architecture", help="Architecture discovery (ADR-026)")
+    architecture_commands = architecture.add_subparsers(dest="architecture_command", required=True)
+    architecture_context = architecture_commands.add_parser(
+        "context", help="Write the bounded, redacted source context for review; sends nothing"
+    )
+    architecture_context.set_defaults(handler=_cmd_architecture_context)
     return parser
 
 
