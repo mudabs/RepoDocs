@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from repodocs.architecture.discovery import discover, save_view
+from repodocs.architecture.discovery import discover, save_view, saved_context_path
 from repodocs.architecture.export import HTML_NAME, architecture_artifacts, build_html, mermaid_bundle
 from repodocs.architecture.navigation import MAP_NAME, SOURCE_LINK, evidence_map, github_repository, source_link
 from repodocs.architecture.render import render_view
@@ -252,7 +252,7 @@ def test_the_evidence_map_is_deterministic_and_holds_no_source_text(tmp_path: Pa
     second, _ = architecture_artifacts(config, ir)
 
     assert first == second
-    context = json.loads((root / ".repodocs" / "architecture-context.json").read_text(encoding="utf-8"))
+    context = json.loads(saved_context_path(config, json.loads((root / ".repodocs" / "architecture-view.json").read_text(encoding="utf-8"))["provenance"]["context_hash"]).read_text(encoding="utf-8"))
     for document in context["documents"]:
         for line in document["text"].splitlines():
             if len(line.strip()) > 12:
