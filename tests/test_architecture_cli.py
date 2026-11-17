@@ -188,6 +188,103 @@ def test_a_partial_discovery_is_reported_and_still_renders_with_a_visible_note(t
     assert "Partial discovery: provider-error" in diagram
 
 
+# ------------------------------------------------------------------ saved discovery state
+def asks(path: str = "lib/storage.js"):
+    return lambda message: full_answer(message, complete=False, requests=[{"repository_id": "shop", "path": path, "line_start": 1, "line_end": 20}])
+
+
+def saved(root: Path) -> dict[str, str]:
+    return {item.name: item.read_text(encoding="utf-8") for item in sorted((root / ".repodocs").glob("architecture-view*.json"))}
+
+
+def usable(root: Path, capsys) -> None:
+    assert invoke(root, capsys, "generate")[0] == 0 and invoke(root, capsys, "validate")[0] == 0
+    assert "architecture-view.mmd" in files(root)
+
+
+def test_a_context_preview_after_a_multi_round_discovery_leaves_the_stored_view_current(tmp_path: Path, capsys, monkeypatch) -> None:
+    root = express_project(tmp_path, capsys)
+    provider = use(monkeypatch, Scripted(asks(), full_answer))
+    assert invoke(root, capsys, "architecture", "discover")[1]["data"]["provenance"]["rounds"] == 2
+    before = saved(root)
+
+    assert invoke(root, capsys, "architecture", "context")[0] == 0
+
+    assert saved(root) == before, "previewing writes the preview file only"
+    code, payload = invoke(root, capsys, "architecture", "discover")
+    assert code == 0 and payload["data"]["reused"] is True and len(provider.messages) == 2
+    usable(root, capsys)
+
+
+def test_a_successful_refresh_replaces_the_view_and_its_context_together(tmp_path: Path, capsys, monkeypatch) -> None:
+    root = express_project(tmp_path, capsys)
+    use(monkeypatch, Scripted(full_answer, asks(), full_answer))
+    assert invoke(root, capsys, "architecture", "discover")[0] == 0
+    before = saved(root)
+
+    code, payload = invoke(root, capsys, "architecture", "discover", "--refresh")
+
+    after = saved(root)
+    assert code == 0 and payload["data"]["status"] == "complete" and payload["data"]["provenance"]["rounds"] == 2
+    assert set(after) - set(before) and len(after) == 2, "one view and exactly one saved context remain"
+    usable(root, capsys)
+
+
+@pytest.mark.parametrize("failure, expected", [
+    (ProviderError("Unable to reach Ollama"), 7),
+    (lambda message: {"components": [], "connections": [], "alternatives": [], "requests": [], "complete": True}, 7),
+    (lambda message: full_answer(message, components=[{"name": "X", "kind": "other", "responsibility": "x", "repository_id": "shop", "members": ["server.js"], "evidence": ["ctx:0000000000000000"], "confidence": "low"}]), 7),
+], ids=["provider failure", "empty output", "invalid output"])
+def test_a_failed_refresh_keeps_the_previous_usable_view_and_context(tmp_path: Path, capsys, monkeypatch, failure, expected) -> None:
+    root = express_project(tmp_path, capsys)
+    use(monkeypatch, Scripted(asks(), full_answer, failure))
+    assert invoke(root, capsys, "architecture", "discover")[0] == 0
+    before = saved(root)
+
+    code, payload = invoke(root, capsys, "architecture", "discover", "--refresh")
+
+    assert code == expected and payload["ok"] is False
+    assert saved(root) == before
+    usable(root, capsys)
+
+
+def test_a_persistence_failure_keeps_the_previous_pair_and_says_so(tmp_path: Path, capsys, monkeypatch) -> None:
+    from repodocs.architecture import discovery
+
+    root = express_project(tmp_path, capsys)
+    use(monkeypatch, Scripted(full_answer, asks(), full_answer))
+    assert invoke(root, capsys, "architecture", "discover")[0] == 0
+    before = saved(root)
+    real = discovery.write_json_atomic
+
+    def failing(path: Path, value: Any) -> None:
+        if path.name == "architecture-view.json":
+            raise OSError("disk full")
+        real(path, value)
+
+    monkeypatch.setattr(discovery, "write_json_atomic", failing)
+    code, payload = invoke(root, capsys, "architecture", "discover", "--refresh")
+    monkeypatch.setattr(discovery, "write_json_atomic", real)
+
+    assert code != 0 and "could not be stored" in payload["errors"][0] and "unchanged" in payload["errors"][0]
+    assert {name: text for name, text in saved(root).items() if name in before} == before
+    usable(root, capsys)
+
+
+def test_a_refresh_that_ends_early_does_not_replace_a_complete_current_view(tmp_path: Path, capsys, monkeypatch) -> None:
+    root = express_project(tmp_path, capsys)
+    use(monkeypatch, Scripted(full_answer, asks(), ProviderError("timed out")))
+    assert invoke(root, capsys, "architecture", "discover")[0] == 0
+    before = saved(root)
+
+    code, payload = invoke(root, capsys, "architecture", "discover", "--refresh")
+
+    assert code == 0 and payload["data"]["status"] == "complete" and payload["data"]["replacement_discarded"] == "provider-error"
+    assert any("previous complete view was kept" in warning for warning in payload["warnings"])
+    assert saved(root) == before
+    usable(root, capsys)
+
+
 # ------------------------------------------------------------------ staleness and ownership
 def test_a_changed_source_makes_the_view_stale_visible_and_retires_its_files_safely(tmp_path: Path, capsys, monkeypatch) -> None:
     root = express_project(tmp_path, capsys)
@@ -301,14 +398,126 @@ def test_publication_sees_the_architecture_files_and_explains_their_removal(tmp_
     project.commit_docs()
     (project.root / VIEW).unlink()   # a clean CI clone has no stored view
     project.generate()
-    removed = project.publish(FakePullRequests(), dry_run=True, remote="no-such-remote")
-    deleted = {change["path"] for change in removed["changes"] if change["status"] == "D"}
-    assert "docs/generated/architecture-view.mmd" in deleted
+    kept = project.publish(FakePullRequests(), dry_run=True, remote="no-such-remote")
+    deleted = {change["path"] for change in kept["changes"] if change["status"] == "D"}
+    assert not deleted, "absent local state alone never deletes published architecture files"
+    assert (project.root / "docs" / "generated" / "architecture-view.mmd").exists()
+
+    ir = read_ir(project.root)
+    from repodocs.config import ProjectConfig
+    from repodocs.publish import unverified_architecture_files
+
+    config = ProjectConfig.load(project.root)
+    assert unverified_architecture_files(config, ir) == [], "kept for the same System IR they were generated from"
+    unverified = unverified_architecture_files(config, {**ir, "project": {**ir["project"], "name": "moved on"}})
+    assert "architecture-view.mmd" in unverified
+    kept_body = render_pull_request_body(ir, [("M", "docs/generated/architecture.md")], "bot", "main", unverified)
+    assert "**not verified**" in kept_body and "`architecture-view.mmd`" in kept_body and "--retire-architecture" in kept_body
     body = render_pull_request_body(
         {"snapshots": [], "candidates": []}, [("D", "docs/generated/architecture-view.mmd"), ("M", "docs/generated/architecture.md")], "bot", "main"
     )
-    assert "removed: `docs/generated/architecture-view.mmd`" in body and "architecture discover --refresh" in body
+    assert "removed: `docs/generated/architecture-view.mmd`" in body and "architecture discover --refresh" in body and "not verified" not in body
     assert "Architecture-view files" not in render_pull_request_body({"snapshots": [], "candidates": []}, [("M", "docs/generated/architecture.md")], "bot", "main")
+
+
+# ------------------------------------------------------------------ clean clones, stale state, retirement
+def generated(tmp_path: Path) -> Path:
+    return tmp_path / "shop" / "docs" / "generated"
+
+
+def manifest_entries(tmp_path: Path) -> dict[str, dict[str, Any]]:
+    manifest = json.loads((generated(tmp_path) / ".." / "generated-manifest.json").resolve().read_text(encoding="utf-8")) if False else read_manifest(tmp_path / "project")
+    return {item["path"]: item for item in manifest["artifacts"]}
+
+
+def discovered(tmp_path: Path, capsys, monkeypatch) -> Path:
+    root = express_project(tmp_path, capsys)
+    use(monkeypatch, Scripted(full_answer))
+    assert invoke(root, capsys, "architecture", "discover")[0] == 0
+    assert invoke(root, capsys, "generate")[0] == 0
+    return root
+
+
+def lose_local_state(root: Path) -> None:
+    for item in (root / ".repodocs").glob("architecture-view*.json"):
+        item.unlink()
+
+
+def test_a_clean_clone_keeps_the_published_architecture_files_and_says_they_are_unverified(tmp_path: Path, capsys, monkeypatch) -> None:
+    root = discovered(tmp_path, capsys, monkeypatch)
+    before = {name: (generated(tmp_path) / name).read_bytes() for name in files(root)}
+    recorded = manifest_entries(tmp_path)
+    lose_local_state(root)
+
+    code, payload = invoke(root, capsys, "generate")
+
+    assert code == 0 and payload["data"]["architecture"]["view"] == "unverified"
+    assert any("freshness was not verified" in warning for warning in payload["warnings"])
+    assert {name: (generated(tmp_path) / name).read_bytes() for name in files(root)} == before, "kept byte for byte"
+    kept = {name: item for name, item in manifest_entries(tmp_path).items() if name.startswith("architecture-view")}
+    assert kept and all(item == recorded[name] for name, item in kept.items()), "each kept file keeps the provenance it was recorded with"
+    code, validated = invoke(root, capsys, "validate")
+    assert code == 0 and any("not verified" in warning for warning in validated["warnings"])
+    assert invoke(root, capsys, "generate")[1]["data"]["changed"] is False, "repeated runs are quiet"
+
+
+def test_kept_files_never_claim_the_current_source_revision(tmp_path: Path, capsys, monkeypatch) -> None:
+    root = discovered(tmp_path, capsys, monkeypatch)
+    before = manifest_entries(tmp_path)["architecture-view.mmd"]["source_ir_hash"]
+    lose_local_state(root)
+    (tmp_path / "shop" / "lib" / "storage.js").write_text("module.exports = { changed: true };" + chr(10), encoding="utf-8")
+    assert invoke(root, capsys, "scan")[0] == 0
+
+    code, payload = invoke(root, capsys, "generate")
+
+    manifest = read_manifest(root)
+    assert code == 0 and manifest["source_ir_hash"] != before
+    assert manifest_entries(tmp_path)["architecture-view.mmd"]["source_ir_hash"] == before
+    assert manifest_entries(tmp_path)["architecture.md"]["source_ir_hash"] == manifest["source_ir_hash"]
+    assert invoke(root, capsys, "validate")[0] == 0
+
+
+def test_a_modified_kept_file_still_stops_generation_and_validation(tmp_path: Path, capsys, monkeypatch) -> None:
+    root = discovered(tmp_path, capsys, monkeypatch)
+    lose_local_state(root)
+    target = generated(tmp_path) / "architecture-view.mmd"
+    target.write_text(target.read_text(encoding="utf-8") + "%% edited" + chr(10), encoding="utf-8")
+
+    assert invoke(root, capsys, "generate")[0] == 4
+    assert invoke(root, capsys, "validate")[0] == 4
+    assert "edited" in target.read_text(encoding="utf-8"), "the edit is left in place"
+
+
+def test_a_known_stale_view_still_retires_its_files(tmp_path: Path, capsys, monkeypatch) -> None:
+    root = discovered(tmp_path, capsys, monkeypatch)
+    (tmp_path / "shop" / "lib" / "storage.js").write_text("module.exports = { changed: true };" + chr(10), encoding="utf-8")
+    assert invoke(root, capsys, "scan")[0] == 0
+
+    code, payload = invoke(root, capsys, "generate")
+
+    assert code == 0 and payload["data"]["architecture"]["view"] == "stale"
+    assert not any(name.startswith("architecture-view") for name in files(root))
+
+
+def test_architecture_files_can_be_retired_on_purpose_without_prompting(tmp_path: Path, capsys, monkeypatch) -> None:
+    root = discovered(tmp_path, capsys, monkeypatch)
+    lose_local_state(root)
+
+    code, payload = invoke(root, capsys, "generate", "--retire-architecture")
+
+    assert code == 0 and payload["data"]["architecture"]["view"] == "retired"
+    assert not any(name.startswith("architecture-view") for name in files(root))
+    assert not any(name.startswith("architecture-view") for name in manifest_entries(tmp_path))
+    assert invoke(root, capsys, "generate")[1]["data"]["changed"] is False and invoke(root, capsys, "validate")[0] == 0
+
+
+def test_retiring_does_not_delete_an_edited_file(tmp_path: Path, capsys, monkeypatch) -> None:
+    root = discovered(tmp_path, capsys, monkeypatch)
+    target = generated(tmp_path) / "architecture-view.mmd"
+    target.write_text(target.read_text(encoding="utf-8") + "%% edited" + chr(10), encoding="utf-8")
+
+    assert invoke(root, capsys, "generate", "--retire-architecture")[0] == 4
+    assert target.exists()
 
 
 # ------------------------------------------------------------------ the optional page

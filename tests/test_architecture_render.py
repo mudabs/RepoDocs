@@ -210,9 +210,10 @@ def test_architecture_diagrams_are_owned_labelled_and_no_op_when_unchanged(tmp_p
     labels = {item["path"]: item["generator"] for item in manifest["artifacts"]}
     assert labels["architecture-view.mmd"] == ARCHITECTURE_GENERATOR_NAME and labels["architecture.mmd"] == "repodocs-deterministic"
     assert first.changed is True and second.changed is False
-    # Without a stored view that produced it, the file is not a current architecture view.
+    # With no stored view at all (a clean clone) the unedited file passes structurally and is reported as not
+    # verified; the equality check against a stored view is covered in test_architecture_cli.
     code, payload = invoke(root, capsys, "validate")
-    assert code == 3 and "does not match the current architecture view" in payload["errors"][0]
+    assert code == 0 and any("not verified" in warning for warning in payload["warnings"])
 
 
 def test_a_diagram_that_is_no_longer_produced_is_retired_safely(tmp_path: Path, capsys) -> None:

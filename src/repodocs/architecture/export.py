@@ -24,7 +24,7 @@ from typing import Any
 from ..common import canonical_json
 from ..config import ProjectConfig
 from ..errors import ConfigError
-from .discovery import STATUS_CURRENT, load_view
+from .discovery import STATUS_CURRENT, load_view, saved_context_path
 from .navigation import MAP_NAME, evidence_map, repository_remotes
 from .render import BANNER, node_key, project, render_view
 from .render_check import TOOL_DIRECTORY
@@ -137,7 +137,7 @@ def architecture_artifacts(
     status, view, reason = load_view(config, ir)
     if status != STATUS_CURRENT or view is None:
         return {}, ([] if status == "missing" else [f"The architecture view is {status}: {reason}; no architecture diagrams were generated"])
-    context = json.loads((config.internal_path / "architecture-context.json").read_text(encoding="utf-8"))
+    context = json.loads(saved_context_path(config, view["provenance"]["context_hash"]).read_text(encoding="utf-8"))
     diagrams = render_view(view)
     evidence = evidence_map(view, context, ir, repository_remotes(config, ir))
     artifacts = dict(diagrams)

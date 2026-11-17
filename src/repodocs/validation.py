@@ -270,6 +270,10 @@ def validate_architecture_artifact(config: ProjectConfig, ir: dict[str, Any], na
 
     if name.endswith(".html"):
         validate_export_page(content)
+    elif not (config.internal_path / "architecture-view.json").exists():
+        # No local state to compare with (a clean clone): the file is unedited (its hash was checked) and
+        # structurally valid, and `validate` reports that its freshness was not verified.
+        pass
     else:
         expected, _ = architecture_artifacts(config, ir, include_html=False)
         if expected.get(name) != content:
