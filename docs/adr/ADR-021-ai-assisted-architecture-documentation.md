@@ -1,5 +1,7 @@
 # ADR-021: AI-Assisted Architecture Documentation and Contribution Checks
 
+> Amended by ADR-026: the rule that AI cannot change diagrams applies to the deterministic documents and the IR. A separate, validated, inferred architecture view may drive separate diagram files.
+
 - Status: Accepted
 - Date: 2026-11-15
 

@@ -11,8 +11,9 @@ Milestone 1 CLI commands below are implemented. GitHub Actions, hosted UI, and a
 6. Optional AI: review the redacted evidence bundle with `repodocs ai-bundle`, choose a provider with `repodocs ai-configure`, give explicit consent with `--consent-external` before anything leaves the machine, then run `repodocs ai-interpret`. Local Ollama needs no consent, and skipping this step leaves the deterministic output complete.
 7. `repodocs generate` produces the complete deterministic architecture/component output and optionally `architecture-ai.md` when current validated claims exist. Stale or invalid AI input is omitted with a warning; refreshing it requires an explicit `ai-interpret`. Interactive scope selection and ERD/API expansion follow in later milestones.
 8. `repodocs validate` checks diagrams, references, artifact ownership, and required confirmations; it exits with code 5 while any candidate is unresolved or stale.
-9. Review local Markdown and Mermaid files.
-10. Full-project regeneration skips a no-op; commit manually or publish system documentation through the coordination repository.
+9. Planned (ADR-026, epic #47; commands do not exist yet): `repodocs architecture context` previews the redacted source excerpts a provider would see and contacts nothing; `repodocs architecture discover` runs bounded discovery (external providers also need `--consent-source-excerpts`); `generate` then renders the architecture view from the stored, current result without calling a provider.
+10. Review local Markdown and Mermaid files.
+11. Full-project regeneration skips a no-op; commit manually or publish system documentation through the coordination repository.
 
 ## B. GitHub Actions
 1. User commits project config and workflow; grants required repository permissions.

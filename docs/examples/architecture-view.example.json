@@ -1,0 +1,130 @@
+{
+  "view_version": "1.0",
+  "status": "complete",
+  "provenance": {
+    "provider": "ollama",
+    "requested_model": "example-model",
+    "served_model": "example-model:latest",
+    "engine_version": "0.1.0",
+    "prompt_version": "1.0",
+    "context_version": "1.0",
+    "context_hash": "8888888888888888888888888888888888888888888888888888888888888888",
+    "source_ir_hash": "9999999999999999999999999999999999999999999999999999999999999999",
+    "snapshots": [
+      {
+        "repository_id": "shop",
+        "revision": "0123456789abcdef0123456789abcdef01234567",
+        "revision_kind": "commit",
+        "content_fingerprint": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      }
+    ],
+    "external": false,
+    "rounds": 1,
+    "requests": 1
+  },
+  "components": [
+    {
+      "id": "arch:460fa44f6fe2bbca",
+      "name": "Order file",
+      "kind": "storage",
+      "responsibility": "JSON file on disk that holds the orders.",
+      "repository_id": "shop",
+      "members": [
+        "orders.json"
+      ],
+      "evidence": [
+        "ctx:409bcf5bb6718f5b"
+      ],
+      "classification": "proposed",
+      "confidence": "medium"
+    },
+    {
+      "id": "arch:4c0ecd7c5bd6b202",
+      "name": "Orders API",
+      "kind": "backend-service",
+      "responsibility": "Express server that serves the static page and the order list.",
+      "repository_id": "shop",
+      "members": [
+        "server.js"
+      ],
+      "evidence": [
+        "ctx:409bcf5bb6718f5b",
+        "ctx:8547537416b965da"
+      ],
+      "classification": "inferred",
+      "confidence": "high"
+    },
+    {
+      "id": "arch:5bf3490666797997",
+      "name": "Web page",
+      "kind": "frontend",
+      "responsibility": "Static page that loads the order list from the API and renders it in the browser.",
+      "repository_id": "shop",
+      "members": [
+        "public/app.js",
+        "public/index.html"
+      ],
+      "evidence": [
+        "ctx:73d069239867407c"
+      ],
+      "classification": "inferred",
+      "confidence": "high"
+    }
+  ],
+  "connections": [
+    {
+      "id": "archc:7be323d9de7b2418",
+      "source": "arch:4c0ecd7c5bd6b202",
+      "target": "arch:460fa44f6fe2bbca",
+      "kind": "reads",
+      "label": "reads orders.json",
+      "evidence": [
+        "ctx:409bcf5bb6718f5b"
+      ],
+      "classification": "proposed",
+      "confidence": "medium",
+      "cross_repository": false
+    },
+    {
+      "id": "archc:aeaf3e6216fe548f",
+      "source": "arch:5bf3490666797997",
+      "target": "arch:4c0ecd7c5bd6b202",
+      "kind": "calls",
+      "label": "GET /api/orders",
+      "evidence": [
+        "ctx:73d069239867407c",
+        "ctx:409bcf5bb6718f5b"
+      ],
+      "classification": "inferred",
+      "confidence": "high",
+      "cross_repository": false
+    },
+    {
+      "id": "archc:cad86be7a32aa9c3",
+      "source": "arch:4c0ecd7c5bd6b202",
+      "target": "arch:5bf3490666797997",
+      "kind": "serves",
+      "label": "serves static files",
+      "evidence": [
+        "ctx:409bcf5bb6718f5b"
+      ],
+      "classification": "inferred",
+      "confidence": "high",
+      "cross_repository": false
+    }
+  ],
+  "alternatives": [
+    {
+      "about": [
+        "arch:460fa44f6fe2bbca"
+      ],
+      "statement": "orders.json may be a seed file rather than the live store; the source never writes it.",
+      "evidence": [
+        "ctx:409bcf5bb6718f5b"
+      ]
+    }
+  ],
+  "rejected": {
+    "unknown-evidence": 1
+  }
+}

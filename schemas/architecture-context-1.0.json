@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://repodocs.invalid/schemas/architecture-context-1.0.json",
+  "title": "RepoDocs architecture-discovery context bundle",
+  "description": "The redacted, bounded source context a provider receives for architecture discovery (ADR-026). Written to .repodocs/architecture-context.json before any provider is contacted, so it can be reviewed. Holds redacted excerpts, never the unredacted originals.",
+  "type": "object",
+  "required": ["context_version", "policy", "source_ir_hash", "snapshots", "inventory", "documents", "omitted", "usage", "redaction"],
+  "additionalProperties": false,
+  "properties": {
+    "context_version": {"const": "1.0"},
+    "source_ir_hash": {"type": "string", "minLength": 1},
+    "policy": {
+      "type": "object",
+      "required": ["selection_version", "redaction_version", "budgets"],
+      "additionalProperties": false,
+      "properties": {
+        "selection_version": {"type": "string", "minLength": 1},
+        "redaction_version": {"type": "string", "minLength": 1},
+        "budgets": {
+          "type": "object",
+          "required": ["max_rounds", "max_requests", "max_files_per_round", "max_excerpt_bytes", "max_file_bytes", "max_context_bytes", "max_response_bytes", "max_inventory_paths"],
+          "additionalProperties": false,
+          "properties": {
+            "max_rounds": {"type": "integer", "minimum": 1},
+            "max_requests": {"type": "integer", "minimum": 1},
+            "max_files_per_round": {"type": "integer", "minimum": 1},
+            "max_excerpt_bytes": {"type": "integer", "minimum": 1},
+            "max_file_bytes": {"type": "integer", "minimum": 1},
+            "max_context_bytes": {"type": "integer", "minimum": 1},
+            "max_response_bytes": {"type": "integer", "minimum": 1},
+            "max_inventory_paths": {"type": "integer", "minimum": 1}
+          }
+        }
+      }
+    },
+    "snapshots": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["repository_id", "revision", "revision_kind", "content_fingerprint"],
+        "additionalProperties": false,
+        "properties": {
+          "repository_id": {"type": "string", "minLength": 1},
+          "revision": {"type": "string", "minLength": 1},
+          "revision_kind": {"enum": ["commit", "content"]},
+          "content_fingerprint": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "inventory": {
+      "type": "array",
+      "description": "Directory and file names only, bounded by max_inventory_paths.",
+      "items": {
+        "type": "object",
+        "required": ["repository_id", "paths", "truncated"],
+        "additionalProperties": false,
+        "properties": {
+          "repository_id": {"type": "string", "minLength": 1},
+          "paths": {"type": "array", "items": {"type": "string", "minLength": 1}},
+          "truncated": {"type": "boolean"}
+        }
+      }
+    },
+    "documents": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "repository_id", "path", "content_hash", "kind", "line_start", "line_end", "text", "redactions", "truncated"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string", "pattern": "^ctx:[0-9a-f]{16}$"},
+          "repository_id": {"type": "string", "minLength": 1},
+          "path": {"type": "string", "minLength": 1},
+          "content_hash": {"type": "string", "minLength": 1},
+          "kind": {"enum": ["readme", "manifest", "config", "source"]},
+          "line_start": {"type": "integer", "minimum": 1},
+          "line_end": {"type": "integer", "minimum": 1},
+          "text": {"type": "string"},
+          "redactions": {"type": "integer", "minimum": 0},
+          "truncated": {"type": "boolean"},
+          "requested_in_round": {"type": "integer", "minimum": 0}
+        }
+      }
+    },
+    "omitted": {
+      "type": "array",
+      "description": "What was left out and why, without the content.",
+      "items": {
+        "type": "object",
+        "required": ["reason"],
+        "additionalProperties": false,
+        "properties": {
+          "repository_id": {"type": "string"},
+          "path": {"type": "string"},
+          "reason": {"enum": ["denied-name", "binary", "too-large", "not-text", "stale", "outside-repository", "not-in-snapshot", "budget-exhausted", "duplicate", "unreadable"]}
+        }
+      }
+    },
+    "usage": {
+      "type": "object",
+      "required": ["rounds", "requests", "context_bytes"],
+      "additionalProperties": false,
+      "properties": {
+        "rounds": {"type": "integer", "minimum": 0},
+        "requests": {"type": "integer", "minimum": 0},
+        "context_bytes": {"type": "integer", "minimum": 0}
+      }
+    },
+    "redaction": {
+      "type": "object",
+      "required": ["rules_version", "replacements"],
+      "additionalProperties": false,
+      "properties": {
+        "rules_version": {"type": "string"},
+        "replacements": {"type": "integer", "minimum": 0}
+      }
+    }
+  }
+}

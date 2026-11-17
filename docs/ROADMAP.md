@@ -30,6 +30,10 @@
 - Current validated claims produce optional AI architecture explanations with provenance, subject-bound citations, safe deterministic fallback, and no graph or confirmation changes (ADR-021).
 - Golden fixtures measure bounded deterministic-versus-AI contribution and reviewed unsupported-inference counts. Real-provider semantic accuracy and broader precision/recall evaluation remain follow-up work.
 
+## Phase 3b: architecture discovery (epic #47)
+- Contracts for architecture views, bounded source context, consent, failure semantics, and the threat model are defined (ADR-026, #48). Implementation proceeds in order: context (#49), discovery (#50), rendering with a real Mermaid check (#51), source navigation (#52), CLI integration (#53), and an evaluation on DigitalBoneBox and a contrasting stack with an owner go/no-go decision (#54).
+- Not started: any of the implementation. Live-model quality is unmeasured, and replayed tests do not prove it.
+
 ## Phase 4: GitHub automation
 - GitHub Action runner integration for pinned clean revisions, `repodocs publish`, no-op detection, loop prevention, concurrency controls, and the failing check for unresolved confirmations are implemented (ADR-023).
 - Coordination-repository config for multi-repo projects uses the existing destination configuration with sources checked out under `sources/`.
