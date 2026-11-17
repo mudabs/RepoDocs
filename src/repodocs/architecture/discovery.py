@@ -114,6 +114,7 @@ class Validation:
         self.extra_deny = extra_deny
         self.nodes = {node["id"]: node for node in ir["nodes"]}
         self.candidates = {item["id"]: item for item in ir.get("candidates", [])}
+        self.evidence = {item["id"]: item for item in ir.get("evidence", [])}
         self.rejected: dict[str, int] = {}
         self.components: dict[str, dict[str, Any]] = {}
         self.connections: dict[str, dict[str, Any]] = {}
@@ -186,13 +187,35 @@ class Validation:
             return None
         return matches[0]
 
-    def _candidate_confirms(self, candidate_id: Any, repositories: set[str]) -> bool:
+    def _end_paths(self, node_id: str) -> tuple[str | None, set[str]]:
+        """The repository and the files the observed IR records for one end of a candidate."""
+
+        node = self.nodes.get(node_id, {})
+        repository = node.get("attributes", {}).get("repository_id")
+        return repository, {
+            self.evidence[key]["path"] for key in node.get("evidence_ids", [])
+            if key in self.evidence and self.evidence[key].get("repository_id") == repository
+        }
+
+    def _candidate_problem(self, candidate_id: Any, source: dict[str, Any], target: dict[str, Any]) -> str | None:
+        """Why a candidate cannot back this connection, or None when it binds to it.
+
+        A confirmed decision is about one request and one endpoint. It supports a connection only when
+        the connection runs the same way (the request's side is the source, the endpoint's side is the
+        target) and each of those two observed locations is a member file of the component on that side.
+        Naming the same two repositories is not enough.
+        """
+
         candidate = self.candidates.get(candidate_id) if isinstance(candidate_id, str) else None
         if candidate is None or candidate.get("status") != "confirmed":
-            return False
-        ends = {self.nodes.get(candidate["source"], {}).get("attributes", {}).get("repository_id"),
-                self.nodes.get(candidate["target"], {}).get("attributes", {}).get("repository_id")}
-        return ends == repositories
+            return "unconfirmed-candidate"
+        request_repository, request_paths = self._end_paths(candidate["source"])
+        endpoint_repository, endpoint_paths = self._end_paths(candidate["target"])
+        if (request_repository, endpoint_repository) != (source["repository_id"], target["repository_id"]):
+            return "unbound-candidate"
+        if not (request_paths & set(source["members"])) or not (endpoint_paths & set(target["members"])):
+            return "unbound-candidate"
+        return None
 
     def connection(self, item: Any) -> None:
         if not isinstance(item, dict):
@@ -219,10 +242,10 @@ class Validation:
         cross = len(repositories) == 2
         candidate_id = item.get("candidate_id") or ""
         if cross:
-            confirmed = self._candidate_confirms(candidate_id, repositories)
-            if candidate_id and not confirmed:
-                self.reject("unconfirmed-candidate")
-            inferred = confirmed and both
+            problem = self._candidate_problem(candidate_id, source, target) if candidate_id else None
+            if problem:
+                self.reject(problem)
+            inferred = bool(candidate_id) and problem is None and both
         else:
             inferred = both
         identity = connection_id(source["id"], target["id"], item["kind"])
@@ -286,8 +309,10 @@ def _user_message(resolver: ContextResolver, context: dict[str, Any], *, round_n
 def discover(config: ProjectConfig, ir: dict[str, Any], provider: Provider) -> tuple[dict[str, Any], dict[str, Any]]:
     """Run the bounded exploration and return the view and the context it was given.
 
-    Raises ``ProviderError`` when no response produced a single valid component. A later failure
-    keeps the best earlier proposal and marks the view partial with its reason.
+    Raises ``ProviderError`` when no response produced a single valid component. The view is
+    ``complete`` only when the model's last reply is valid, says ``complete: true``, and holds a
+    component. A later failure, an empty or unfinished reply, a round that gets no new file, or an
+    exhausted budget keeps the best earlier proposal and marks the view partial with its reason.
     """
 
     resolver = ContextResolver(config, ir)
@@ -314,25 +339,44 @@ def discover(config: ProjectConfig, ir: dict[str, Any], provider: Provider) -> t
             partial, failure = "provider-error", str(exc)
             break
         repair = False
-        if len(canonical_json(response.data).encode("utf-8")) > resolver.budgets["max_response_bytes"]:
+        data = response.data
+        if not isinstance(data, dict):
+            if not repaired:
+                repaired = repair = True
+                continue
+            partial, failure = "provider-error", "the reply was not a JSON object"
+            break
+        if len(canonical_json(data).encode("utf-8")) > resolver.budgets["max_response_bytes"]:
             partial = "response-budget"
             break
-        validation = validate_proposal(response.data, context, ir, config.architecture.deny_names)
+        validation = validate_proposal(data, context, ir, config.architecture.deny_names)
         if validation.components:
             best = (validation, response.model)
-        requests = response.data.get("requests") if isinstance(response.data.get("requests"), list) else []
-        if not requests or response.data.get("complete") is True:
+        requests = data.get("requests") if isinstance(data.get("requests"), list) else []
+        if data.get("complete") is True:
+            # Only an explicit, valid completion ends discovery as complete. A final answer with no
+            # component never replaces an earlier usable one, and the view then says so.
+            if not validation.components:
+                partial = "empty-response"
+            break
+        if not requests:
+            partial = "incomplete-response"
             break
         if not resolver.start_round():
             partial = "round-budget"
             break
+        progressed = False
         for request in requests[: resolver.budgets["max_files_per_round"]]:
             if isinstance(request, dict) and isinstance(request.get("repository_id"), str) and isinstance(request.get("path"), str):
                 start, end = request.get("line_start"), request.get("line_end")
-                resolver.fetch(
+                added = resolver.fetch(
                     request["repository_id"], request["path"],
                     start if isinstance(start, int) and start > 0 else 1, end if isinstance(end, int) and end > 0 else None,
                 )
+                progressed = progressed or added is not None
+        if not progressed:
+            partial = "no-progress"
+            break
     if best is None:
         raise ProviderError(
             "The model returned no architecture component that passed validation"
