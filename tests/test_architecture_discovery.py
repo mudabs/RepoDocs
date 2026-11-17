@@ -274,8 +274,12 @@ def two_repository_ir(ir: dict[str, Any], status: str) -> dict[str, Any]:
     other = copy.deepcopy(ir)
     other["snapshots"].append({**copy.deepcopy(ir["snapshots"][0]), "repository_id": "billing", "files": [{"path": "api.js", "size": 5, "content_hash": "ab" * 32, "language": "JavaScript"}]})
     other["nodes"] += [
-        {"id": "node:request", "type": "http_request", "name": "GET /pay", "attributes": {"repository_id": "shop"}, "evidence_ids": []},
-        {"id": "node:endpoint", "type": "endpoint", "name": "GET /pay", "attributes": {"repository_id": "billing"}, "evidence_ids": []},
+        {"id": "node:request", "type": "http_request", "name": "GET /pay", "attributes": {"repository_id": "shop"}, "evidence_ids": ["ev:request"]},
+        {"id": "node:endpoint", "type": "endpoint", "name": "GET /pay", "attributes": {"repository_id": "billing"}, "evidence_ids": ["ev:endpoint"]},
+    ]
+    other["evidence"] = [
+        {"id": "ev:request", "repository_id": "shop", "path": "server.js"},
+        {"id": "ev:endpoint", "repository_id": "billing", "path": "api.js"},
     ]
     other["candidates"] = [{"id": "candidate:pay", "source": "node:request", "target": "node:endpoint", "status": status}]
     return other
@@ -315,6 +319,104 @@ def test_a_cross_repository_connection_is_inferred_only_through_a_matching_confi
     assert link["cross_repository"] is True and link["classification"] == expected
     assert result.rejected == rejected
     assert ("candidate_id" in link) is (expected == "inferred")
+
+
+def bound_ir() -> dict[str, Any]:
+    ir = two_repository_ir({"snapshots": [{"repository_id": "shop", "revision": "r", "revision_kind": "content", "content_fingerprint": "f", "files": [{"path": "server.js"}, {"path": "other.js"}]}], "nodes": [], "candidates": []}, "confirmed")
+    ir["snapshots"][1]["files"] = [{"path": "api.js"}, {"path": "other.js"}]
+    return ir
+
+
+def bound_context() -> dict[str, Any]:
+    ids = ["ctx:" + str(index) * 16 for index in range(1, 5)]
+    return {"documents": [
+        {"id": ids[0], "repository_id": "shop", "path": "server.js", "content_hash": "c" * 64},
+        {"id": ids[1], "repository_id": "billing", "path": "api.js", "content_hash": "d" * 64},
+        {"id": ids[2], "repository_id": "shop", "path": "other.js", "content_hash": "e" * 64},
+        {"id": ids[3], "repository_id": "billing", "path": "other.js", "content_hash": "f" * 64},
+    ]}, ids
+
+
+def cross(source: tuple[str, str, list[str]], target: tuple[str, str, list[str]], evidence: list[int], candidate: str = "candidate:pay") -> dict[str, Any]:
+    context, ids = bound_context()
+    ir = bound_ir()
+    raw = {
+        "components": [
+            component(source[0], "frontend", source[2], [ids[0] if source[1] == "shop" else ids[1]], repository=source[1]),
+            component(target[0], "backend-service", target[2], [ids[1] if target[1] == "billing" else ids[0]], repository=target[1]),
+        ],
+        "connections": [connection(source[0], target[0], "calls", "GET /pay", [ids[index] for index in evidence], candidate_id=candidate,
+                                   source_repository=source[1], target_repository=target[1])],
+    }
+    result = validate_proposal(raw, context, ir)
+    return {"link": next(iter(result.connections.values()), None), "rejected": result.rejected}
+
+
+def test_a_confirmed_candidate_authorizes_only_the_two_components_it_is_about() -> None:
+    ok = cross(("Checkout", "shop", ["server.js"]), ("Payments", "billing", ["api.js"]), [0, 1])
+    assert ok["link"]["classification"] == "inferred" and ok["link"]["candidate_id"] == "candidate:pay" and ok["rejected"] == {}
+
+    # Same two repositories, but components built from other files than the ones the candidate observed.
+    unrelated = cross(("Reports", "shop", ["other.js"]), ("Ledger", "billing", ["other.js"]), [2, 3])
+    assert unrelated["link"]["classification"] == "proposed" and "candidate_id" not in unrelated["link"]
+    assert unrelated["rejected"] == {"unbound-candidate": 1}
+
+
+def test_a_candidate_with_only_one_side_matching_does_not_authorize_the_connection() -> None:
+    wrong_target = cross(("Checkout", "shop", ["server.js"]), ("Ledger", "billing", ["other.js"]), [0, 3])
+    wrong_source = cross(("Reports", "shop", ["other.js"]), ("Payments", "billing", ["api.js"]), [2, 1])
+
+    for result in (wrong_target, wrong_source):
+        assert result["link"]["classification"] == "proposed" and result["rejected"] == {"unbound-candidate": 1}
+
+
+def test_a_reversed_connection_is_not_backed_by_the_candidate() -> None:
+    reversed_link = cross(("Payments", "billing", ["api.js"]), ("Checkout", "shop", ["server.js"]), [1, 0])
+
+    assert reversed_link["link"]["classification"] == "proposed" and reversed_link["rejected"] == {"unbound-candidate": 1}
+
+
+def test_a_bound_candidate_still_needs_evidence_from_both_sides() -> None:
+    one_sided = cross(("Checkout", "shop", ["server.js"]), ("Payments", "billing", ["api.js"]), [0])
+
+    assert one_sided["link"] is None or one_sided["link"]["classification"] == "proposed"
+    assert "candidate_id" not in (one_sided["link"] or {})
+
+
+def test_a_stored_inference_that_the_candidate_does_not_support_no_longer_reproduces() -> None:
+    from repodocs.architecture.discovery import _raw_from_view
+
+    context, ids = bound_context()
+    ir = bound_ir()
+    raw = {
+        "components": [component("Reports", "frontend", ["other.js"], [ids[2]]), component("Ledger", "backend-service", ["other.js"], [ids[3]], repository="billing")],
+        "connections": [connection("Reports", "Ledger", "calls", "GET /pay", [ids[2], ids[3]], source_repository="shop", target_repository="billing")],
+    }
+    honest = validate_proposal(raw, context, ir)
+    view = {
+        "components": sorted(honest.components.values(), key=lambda item: item["id"]),
+        "connections": [{**link, "classification": "inferred", "candidate_id": "candidate:pay"} for link in honest.connections.values()],
+        "alternatives": [],
+    }
+
+    again = validate_proposal(_raw_from_view(view), context, ir)
+
+    assert again.rejected == {"unbound-candidate": 1}
+    assert next(iter(again.connections.values()))["classification"] == "proposed"
+
+
+def test_a_candidate_whose_observed_locations_are_unknown_cannot_back_a_connection() -> None:
+    context, ids = bound_context()
+    ir = bound_ir()
+    ir["evidence"] = []
+    raw = {
+        "components": [component("Checkout", "frontend", ["server.js"], [ids[0]]), component("Payments", "backend-service", ["api.js"], [ids[1]], repository="billing")],
+        "connections": [connection("Checkout", "Payments", "calls", "GET /pay", [ids[0], ids[1]], candidate_id="candidate:pay")],
+    }
+
+    result = validate_proposal(raw, context, ir)
+
+    assert next(iter(result.connections.values()))["classification"] == "proposed" and result.rejected == {"unbound-candidate": 1}
 
 
 def test_evidence_from_another_repository_is_unrelated_to_a_single_repository_component() -> None:
@@ -373,6 +475,61 @@ def test_the_round_and_request_budgets_end_discovery_as_partial(tmp_path: Path, 
     view, _ = discover(config, ir, Scripted(greedy, greedy, greedy))
 
     assert view["status"] == "partial" and view["partial_reason"] == "round-budget" and view["provenance"]["rounds"] == 2
+
+
+def ask(path: str):
+    return lambda message: full_answer(message, complete=False, requests=[{"repository_id": "shop", "path": path, "line_start": 1, "line_end": 20}])
+
+
+def empty(**extra: Any):
+    return lambda message: {"components": [], "connections": [], "alternatives": [], "requests": [], "complete": False, **extra}
+
+
+@pytest.mark.parametrize("final, reason", [
+    (empty(), "incomplete-response"),
+    (empty(complete=True), "empty-response"),
+    (empty(requests="not a list"), "incomplete-response"),
+    (empty(complete="true"), "incomplete-response"),
+    (empty(requests=[None, 7, {"repository_id": 1, "path": "x"}]), "no-progress"),
+])
+def test_an_earlier_usable_proposal_followed_by_an_unfinished_reply_stays_partial(tmp_path: Path, capsys, final, reason) -> None:
+    root, config, ir = setup(tmp_path, capsys)
+
+    view, _ = discover(config, ir, Scripted(ask("lib/storage.js"), final))
+
+    assert view["status"] == "partial" and view["partial_reason"] == reason
+    assert {item["name"] for item in view["components"]} == {"Web page", "Orders API", "Order file"}, "the usable earlier result is kept"
+
+
+@pytest.mark.parametrize("path", [".env", "../../etc/passwd", "nope/missing.js", "server.js"])
+def test_a_round_with_no_new_readable_file_ends_discovery_as_no_progress(tmp_path: Path, capsys, path: str) -> None:
+    root, config, ir = setup(tmp_path, capsys)
+    (tmp_path / "shop" / ".env").write_text("A=1" + chr(10), encoding="utf-8")
+    assert invoke(root, capsys, "scan")[0] == 0
+    config, ir = ProjectConfig.load(root), read_ir(root)
+    provider = Scripted(ask(path), ask("lib/storage.js"))
+
+    view, _ = discover(config, ir, provider)
+
+    assert view["status"] == "partial" and view["partial_reason"] == "no-progress"
+    assert len(provider.messages) == 1 and view["provenance"]["rounds"] == 2
+
+
+def test_an_explicit_valid_completion_after_more_files_is_complete(tmp_path: Path, capsys) -> None:
+    root, config, ir = setup(tmp_path, capsys)
+
+    view, _ = discover(config, ir, Scripted(ask("lib/storage.js"), full_answer))
+
+    assert view["status"] == "complete" and "partial_reason" not in view
+
+
+def test_a_reply_that_is_not_an_object_gets_the_repair_attempt_then_ends_partial(tmp_path: Path, capsys) -> None:
+    root, config, ir = setup(tmp_path, capsys)
+
+    view, _ = discover(config, ir, Scripted(ask("lib/storage.js"), lambda message: ["not", "an object"], lambda message: "text"))
+
+    assert view["status"] == "partial" and view["partial_reason"] == "provider-error"
+    assert view["provenance"]["requests"] == 3
 
 
 def test_the_request_budget_bounds_the_repair_attempt(tmp_path: Path, capsys) -> None:
