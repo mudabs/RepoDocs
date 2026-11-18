@@ -160,6 +160,32 @@ repodocs ai-configure --provider ollama --model llama3
 repodocs ai-interpret
 ```
 
+### Private authenticated Ollama gateway (Tailscale)
+
+RepoDocs can use an authenticated OpenAI-compatible Ollama gateway without exposing native Ollama management routes. A host ending in `/v1` selects the chat-completions transport; the existing local `/api/chat` transport is unchanged.
+
+From a configured RepoDocs project directory, review the bundle and then explicitly authorize transfer to your private server:
+
+```powershell
+repodocs ai-bundle
+repodocs ai-configure --provider ollama --model qwen2.5-coder:3b --ollama-host https://vps01.tail81dbee.ts.net:8443/v1
+repodocs ai-configure --consent-external
+```
+
+On Windows PowerShell, provide the API key using a prompt instead of saving it into project configuration:
+
+```powershell
+$secure = Read-Host "Private Ollama gateway key" -AsSecureString
+$env:REPODOCS_OLLAMA_API_KEY = [System.Net.NetworkCredential]::new("", $secure).Password
+Remove-Variable secure
+repodocs ai-interpret
+repodocs generate
+Remove-Item Env:REPODOCS_OLLAMA_API_KEY
+```
+
+The computer running RepoDocs must be able to reach the tailnet address. GitHub-hosted runners do not automatically have Tailscale connectivity. A non-loopback endpoint is classified as external even if you operate it; explicit consent is mandatory. The API key is read from `REPODOCS_OLLAMA_API_KEY`, not stored in `repodocs.json`. Remote `/v1` gateways require HTTPS. Redirects are not followed and credentials are not included in error output.
+
+Small local models may fail to produce valid structured claims, particularly for large evidence bundles. Provider errors do not disable deterministic documentation.
 - `repodocs ai-bundle` writes `.repodocs/evidence-bundle.json` and contacts nothing. The bundle is the only thing a provider receives: analyzed facts and evidence locations, with no source text, file listings, content hashes, or local paths, and with secret-looking strings redacted. Review it before consenting to external use.
 - Providers are `ollama` (local) and `anthropic` (cloud, bring your own key; install with `python -m pip install -e ".[ai]"` and set `ANTHROPIC_API_KEY`). Keys are never written to `repodocs.json`.
 - Anything that would send the bundle off the machine, including an Ollama host that is not a loopback address, is refused until you run `repodocs ai-configure --consent-external`. `--revoke-consent` returns the project to local-only.
