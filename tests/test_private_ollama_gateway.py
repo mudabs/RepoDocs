@@ -31,7 +31,10 @@ def serve(reply, status=200, *, raw=None, declare=True, headers=None, delay=0.0)
             received.append((self.path, self.headers.get("Authorization"), json.loads(body)))
             if delay:
                 time.sleep(delay)
-            payload = raw if raw is not None else json.dumps(reply).encode()
+            if raw is not None:
+                payload = raw
+            else:
+                payload = json.dumps(reply(received[-1][2]) if callable(reply) else reply).encode()
             try:
                 self.send_response(status)
                 for name, value in (headers or {}).items():
@@ -369,3 +372,57 @@ def test_the_credential_never_reaches_a_persisted_artifact_or_the_cli_output(tmp
         if path.is_file() and ".git" not in path.parts:
             assert SECRET.encode() not in path.read_bytes(), path
     assert SECRET not in capsys.readouterr().err
+
+
+# ------------------------------------------------------------------ with architecture discovery (Epic #47), when it is present
+def completion_for(answer):
+    return {"model": "m", "choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": json.dumps(answer)}}]}
+
+
+def test_architecture_discovery_runs_over_the_v1_transport_with_one_repair_for_malformed_text(tmp_path, capsys):
+    discovery = pytest.importorskip("repodocs.architecture.discovery")
+    from test_architecture_discovery import full_answer, setup
+
+    root, config, ir = setup(tmp_path, capsys)
+    calls = []
+
+    def reply(body):
+        calls.append(body)
+        if len(calls) == 1:
+            return {"model": "m", "choices": [{"finish_reason": "stop", "message": {"content": "this is not json"}}]}
+        assert body["response_format"]["json_schema"]["schema"] == discovery.RESPONSE_SCHEMA
+        return completion_for(full_answer(json.loads(body["messages"][1]["content"])))
+
+    server, _ = serve(reply)
+    try:
+        view, _ = discovery.discover(config, ir, provider(server))
+    finally:
+        stop(server)
+
+    assert view["status"] == "complete" and view["provenance"]["requests"] == 2 and len(view["components"]) == 3
+    assert view["provenance"]["provider"] == "ollama" and view["provenance"]["external"] is False
+
+
+def test_an_unsuccessful_completion_during_discovery_is_a_provider_error_not_a_view(tmp_path, capsys):
+    discovery = pytest.importorskip("repodocs.architecture.discovery")
+    from test_architecture_discovery import setup
+
+    root, config, ir = setup(tmp_path, capsys)
+    server, _ = serve({"model": "m", "choices": [{"finish_reason": "length", "message": {"content": '{"components":'}}]})
+    try:
+        with pytest.raises(ProviderError, match="no architecture component that passed validation"):
+            discovery.discover(config, ir, provider(server))
+    finally:
+        stop(server)
+
+
+def test_a_remote_gateway_needs_the_separate_source_excerpt_consent_for_discovery(monkeypatch):
+    pytest.importorskip("repodocs.architecture.discovery")
+    monkeypatch.setenv("REPODOCS_OLLAMA_API_KEY", SECRET)
+    evidence_only = AiSettings(provider="ollama", model="m", ollama_host="https://gateway.example.net/v1", external_consent=True)
+
+    with pytest.raises(ConsentError, match="source excerpts"):
+        providers.resolve_discovery_provider(evidence_only)
+    assert resolve_provider(evidence_only) is not None, "the evidence-bundle path is unaffected"
+    loopback = AiSettings(provider="ollama", model="m", ollama_host="http://127.0.0.1:11434/v1")
+    assert providers.resolve_discovery_provider(loopback) is not None
