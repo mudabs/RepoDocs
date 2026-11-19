@@ -181,6 +181,18 @@ VIEWER_SCRIPT = r"""
     item.appendChild(button);
     links.appendChild(item);
   });
+  var alternatives = document.getElementById('alternatives');
+  if (!data.alternatives.length) { alternatives.appendChild(element('li', 'The model reported no alternative readings.', 'note')); }
+  data.alternatives.forEach(function (alternative) {
+    var item = element('li');
+    var button = element('button', alternative.statement);
+    button.type = 'button';
+    button.addEventListener('click', function () {
+      show('Alternative reading', [alternative.statement, 'About: ' + (alternative.about.join(', ') || 'the whole view')], alternative.evidence, []);
+    });
+    item.appendChild(button);
+    alternatives.appendChild(item);
+  });
   show('Select a component or connection', [data.banner], [], []);
   draw(0);
 }());

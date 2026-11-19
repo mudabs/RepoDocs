@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from repodocs.architecture.discovery import component_id, connection_id
-from repodocs.architecture.render import OVERVIEW_LIMIT, label_text, project, render_view
+from repodocs.architecture.render import ALTERNATIVES_NAME, OVERVIEW_LIMIT, label_text, project, render_alternatives, render_view
 from repodocs.architecture.render_check import FAILED, NOT_AVAILABLE, RENDERED, find_renderer, render, svg_problems, _screened
 from repodocs.config import ProjectConfig
 from repodocs.errors import OwnershipError, ValidationError
@@ -214,6 +214,57 @@ def test_architecture_diagrams_are_owned_labelled_and_no_op_when_unchanged(tmp_p
     # verified; the equality check against a stored view is covered in test_architecture_cli.
     code, payload = invoke(root, capsys, "validate")
     assert code == 0 and any("not verified" in warning for warning in payload["warnings"])
+
+
+# ------------------------------------------------------------------ alternatives
+def test_stored_alternatives_are_rendered_with_their_components_and_citations() -> None:
+    view = example()
+    alternative = view["alternatives"][0]
+    name = next(item["name"] for item in view["components"] if item["id"] in alternative["about"])
+
+    text = render_alternatives(view, {alternative["evidence"][0]: "shop:server.js:1-40"})
+
+    assert "orders.json may be a seed file" in text and name in text and "shop:server.js:1-40" in text
+    assert "Citations are evidence to check, not proof" in text
+    assert text == render_alternatives(view, {alternative["evidence"][0]: "shop:server.js:1-40"}), "deterministic"
+
+
+def test_an_uncited_location_falls_back_to_the_evidence_id_and_no_alternatives_gives_nothing() -> None:
+    view = example()
+    assert view["alternatives"][0]["evidence"][0] in render_alternatives(view)
+    view["alternatives"] = []
+    assert render_alternatives(view) is None
+
+
+@pytest.mark.parametrize("text", HOSTILE)
+def test_hostile_alternative_text_stays_plain_text(text: str) -> None:
+    view = example()
+    view["alternatives"][0].update(statement=text)
+    view["components"][0]["name"] = text
+    view["alternatives"][0]["about"] = [view["components"][0]["id"]]
+
+    rendered = render_alternatives(view, {view["alternatives"][0]["evidence"][0]: text}) or ""
+
+    body = rendered.split("\n", 4)[4]  # past the title and the fixed banner
+    for special in "<>`[]|":
+        assert not re.search(r"(?<!\\)" + re.escape(special), body), special
+    statement = body.split("## Alternative 1")[1].split("\n\n")[1]
+    assert "\n" not in statement
+
+
+def test_the_alternatives_document_is_owned_retired_and_no_op_when_unchanged(tmp_path: Path, capsys) -> None:
+    root, config, ir = scanned_project(tmp_path, capsys)
+    view = example()
+    artifacts = {**render_view(view), ALTERNATIVES_NAME: render_alternatives(view) or ""}
+
+    first = generate_docs(config, ir, artifacts)
+    second = generate_docs(config, ir, artifacts)
+
+    labels = {item["path"]: item["generator"] for item in read_manifest(root)["artifacts"]}
+    assert labels[ALTERNATIVES_NAME] == ARCHITECTURE_GENERATOR_NAME
+    assert first.changed is True and second.changed is False
+    generate_docs(config, ir, render_view(view))
+    assert not (config.output_path / ALTERNATIVES_NAME).exists()
 
 
 def test_a_diagram_that_is_no_longer_produced_is_retired_safely(tmp_path: Path, capsys) -> None:

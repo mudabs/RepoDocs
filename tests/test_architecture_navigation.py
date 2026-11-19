@@ -16,7 +16,7 @@ import pytest
 from repodocs.architecture.discovery import discover, save_view, saved_context_path
 from repodocs.architecture.export import HTML_NAME, architecture_artifacts, build_html, mermaid_bundle
 from repodocs.architecture.navigation import MAP_NAME, SOURCE_LINK, evidence_map, github_repository, source_link
-from repodocs.architecture.render import render_view
+from repodocs.architecture.render import ALTERNATIVES_NAME, render_alternatives, render_view
 from repodocs.architecture.render_check import TOOL_DIRECTORY, find_browser, find_renderer
 from repodocs.config import ProjectConfig
 from repodocs.errors import ConfigError, OwnershipError
@@ -148,7 +148,7 @@ def test_a_committed_checkout_links_every_citation_to_its_exact_commit_and_never
 
     artifacts, warnings = architecture_artifacts(config, ir)
 
-    assert warnings == [] and set(artifacts) == {"architecture-view.mmd", MAP_NAME}
+    assert warnings == [] and set(artifacts) == {"architecture-view.mmd", ALTERNATIVES_NAME, MAP_NAME}
     evidence = json.loads(artifacts[MAP_NAME])
     helpers = next(item for item in evidence["components"].values() if any("my file" in file["path"] for file in item["files"]))
     assert helpers["files"][0]["link"] == f"https://github.com/acme/shop/blob/{sha}/lib/my%20file%20%231.js"
@@ -276,6 +276,52 @@ def test_a_stale_or_missing_view_produces_no_artifacts_and_says_why(tmp_path: Pa
     assert artifacts == {} and warnings and "stale" in warnings[0] and "no architecture diagrams were generated" in warnings[0]
 
 
+def test_competing_interpretations_and_their_citations_are_published(tmp_path: Path, capsys) -> None:
+    root_git, path = make_repository(tmp_path, "shop", "https://github.com/acme/shop")
+    sha = git(root_git, "rev-parse", "HEAD")
+    root, config, ir = scanned(tmp_path, capsys, {"shop": path})
+    view = store(config, ir, full_answer)
+    statement = view["alternatives"][0]["statement"]
+
+    artifacts, _ = architecture_artifacts(config, ir)
+
+    document = artifacts[ALTERNATIVES_NAME]
+    assert statement in document and "Order file" in document and "server.js" in document
+    evidence = json.loads(artifacts[MAP_NAME])
+    cited = evidence["alternatives"][0]["evidence"][0]
+    assert cited["path"] == "server.js" and cited["link"].startswith(f"https://github.com/acme/shop/blob/{sha}/server.js")
+    assert evidence["alternatives"][0]["about"] == view["alternatives"][0]["about"]
+    assert statement not in artifacts["architecture-view.mmd"], "alternatives stay out of the diagram"
+    first = architecture_artifacts(config, ir)[0]
+    assert first == artifacts, "deterministic"
+    assert generate_docs(config, ir, artifacts).changed is True and generate_docs(config, ir, artifacts).changed is False
+
+
+def test_a_view_with_no_alternatives_publishes_no_alternatives_document(tmp_path: Path, capsys) -> None:
+    root_git, path = make_repository(tmp_path, "shop", "https://github.com/acme/shop")
+    root, config, ir = scanned(tmp_path, capsys, {"shop": path})
+    store(config, ir, lambda message: {**full_answer(message), "alternatives": []})
+
+    artifacts, _ = architecture_artifacts(config, ir)
+
+    assert ALTERNATIVES_NAME not in artifacts and json.loads(artifacts[MAP_NAME])["alternatives"] == []
+    generate_docs(config, ir, {**artifacts, ALTERNATIVES_NAME: "# stale\n"})
+    generate_docs(config, ir, artifacts)
+    assert not (config.output_path / ALTERNATIVES_NAME).exists(), "an alternatives document that is no longer produced is retired"
+
+
+def test_hostile_alternative_text_is_plain_text_in_the_published_document(tmp_path: Path, capsys) -> None:
+    root_git, path = make_repository(tmp_path, "shop", "https://github.com/acme/shop")
+    root, config, ir = scanned(tmp_path, capsys, {"shop": path})
+    store(config, ir, lambda message: {**full_answer(message), "alternatives": [{
+        "about": ["Order file"], "statement": "<img src=x onerror=alert(1)> [click](javascript:alert(2)) `x`", "evidence": full_answer(message)["alternatives"][0]["evidence"]}]})
+
+    document = architecture_artifacts(config, ir)[0][ALTERNATIVES_NAME]
+
+    body = document.split("## Alternative 1")[1]
+    assert not re.search(r"(?<!\\)<", body) and not re.search(r"(?<!\\)\]\(", body) and "\\<img" in body
+
+
 # ------------------------------------------------------------------ ownership of the exports
 def test_the_map_and_page_are_owned_labelled_retired_and_never_overwritten_when_edited(tmp_path: Path, capsys) -> None:
     pytest.importorskip("jsonschema")
@@ -285,7 +331,8 @@ def test_the_map_and_page_are_owned_labelled_retired_and_never_overwritten_when_
     root, config, ir = scanned(tmp_path, capsys, {"shop": path}, html=True)
     store(config, ir, full_answer)
     artifacts, _ = architecture_artifacts(config, ir)
-    assert set(artifacts) == {"architecture-view.mmd", MAP_NAME, HTML_NAME}
+    assert set(artifacts) == {"architecture-view.mmd", ALTERNATIVES_NAME, MAP_NAME, HTML_NAME}
+    del artifacts[ALTERNATIVES_NAME]  # `validate` learns this file in the CLI integration; its ownership is covered above
 
     generate_docs(config, ir, artifacts)
     second = generate_docs(config, ir, artifacts)
@@ -368,6 +415,7 @@ def small_view() -> tuple[dict[str, Any], dict[str, Any]]:
         "repositories": [{"repository_id": "shop", "revision": SHA, "revision_kind": "commit", "content_fingerprint": "f" * 64, "remote": "acme/shop", "note": "Pinned to this commit."}],
         "components": {item["id"]: {"files": [], "evidence": []} for item in view["components"]},
         "connections": {item["id"]: {"evidence": []} for item in view["connections"]},
+        "alternatives": [{"about": item["about"], "evidence": []} for item in view["alternatives"]],
     }
     return view, evidence
 
@@ -390,6 +438,30 @@ def test_hostile_text_cannot_add_elements_or_scripts_to_the_page() -> None:
     data = json.loads(next(text for attrs, text in parser.scripts if attrs.get("id") == "data"))
     assert HOSTILE_TEXT.replace(" ", " ") in [item["name"] for item in data["components"]]
     assert " " not in html and "<img" not in html
+
+
+def test_alternatives_reach_the_page_as_data_and_hostile_text_stays_inert() -> None:
+    view, evidence = small_view()
+    view["alternatives"][0]["statement"] = HOSTILE_TEXT
+    html = build_html(view, render_view(view), evidence, "window.mermaid = {};")
+
+    parser = Scripts()
+    parser.feed(html)
+
+    assert len(parser.scripts) == 3 and "img" not in parser.tags and "<img" not in html
+    data = json.loads(next(text for attrs, text in parser.scripts if attrs.get("id") == "data"))
+    assert [item["statement"] for item in data["alternatives"]] == [HOSTILE_TEXT]
+    assert data["alternatives"][0]["about"] == ["Order file"]
+
+
+def test_a_view_without_alternatives_gives_the_page_an_empty_list_and_no_document() -> None:
+    view, evidence = small_view()
+    view["alternatives"], evidence["alternatives"] = [], []
+    parser = Scripts()
+    parser.feed(build_html(view, render_view(view), evidence, "window.mermaid = {};"))
+
+    data = json.loads(next(text for attrs, text in parser.scripts if attrs.get("id") == "data"))
+    assert data["alternatives"] == [] and render_alternatives(view) is None
 
 
 def test_the_policy_allows_only_the_two_inline_scripts_by_hash_and_no_connections() -> None:
@@ -467,6 +539,7 @@ def test_the_real_page_draws_navigates_zooms_and_loads_nothing(tmp_path: Path, c
     assert not [line for line in report["console"] if line.startswith(("error", "pageerror"))], report["console"]
     assert any(item["name"] in report["clicked"] for item in view["components"]), report["clicked"]
     assert "sha256" in report["clicked"] and "no source text" in report["clicked"]
+    assert view["alternatives"][0]["statement"] in report["alternative"] and "Order file" in report["alternative"] and "sha256" in report["alternative"]
     assert report["links"] and all(link.startswith(f"https://github.com/acme/shop/blob/{sha}/") for link in report["links"])
 
 
