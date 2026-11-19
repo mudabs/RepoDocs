@@ -3,8 +3,8 @@
 //
 // Every launch gets its own new profile directory, which this script removes afterwards. A launch that fails is
 // tried once more with another new profile (LAUNCH_ATTEMPTS in all) and every failure is reported, so a retry never
-// hides what happened. On Windows Puppeteer words ANY failed launch as "already running" when the profile holds a
-// lockfile, which a profile this script created a moment ago always does; the note below says so.
+// hides what happened. On Windows Puppeteer can report "already running" after a failed launch if Chrome created
+// a lockfile in the new profile. A fresh profile alone does not establish the underlying launch failure's cause.
 import puppeteer from 'puppeteer';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -23,7 +23,7 @@ async function launch() {
       const instance = await puppeteer.launch({ executablePath: browser, headless: true, userDataDir: profile, args: flag === '--no-sandbox' ? ['--no-sandbox'] : [] });
       return { instance, profile, failures };
     } catch (error) {
-      const message = String(error && error.message || error).split('\n')[0];
+      const message = String(error && error.message || error).slice(0, 16000);
       failures.push({ attempt, message, note: /already running/.test(message) ? 'the profile was created for this launch, so the browser did not start; the real cause was not reported by Puppeteer' : undefined });
       await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
     }
