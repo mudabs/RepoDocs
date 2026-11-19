@@ -648,6 +648,33 @@ def test_a_malformed_persisted_envelope_is_invalid_never_current(tmp_path: Path,
     assert status == STATUS_INVALID and reason
 
 
+@pytest.mark.parametrize("rejected", [
+    {"unknown-evidence": -1}, {"unknown-evidence": "not-a-count"}, {"unknown-evidence": None}, {"unknown-evidence": True},
+    {"unknown-evidence": False}, {"unknown-evidence": 1.5}, {"unknown-evidence": [1]}, {"unknown-evidence": {"n": 1}}
+], ids=["negative", "string", "null", "true", "false", "float", "list", "object"])
+def test_rejected_counts_must_be_non_negative_integers(tmp_path: Path, capsys, rejected: dict) -> None:
+    root, config, ir = stored(tmp_path, capsys)
+    path = root / ".repodocs" / "architecture-view.json"
+    view = json.loads(path.read_text(encoding="utf-8"))
+    view["rejected"] = rejected
+    path.write_text(json.dumps(view), encoding="utf-8")
+
+    assert load_view(config, ir)[0] == STATUS_INVALID
+
+
+@pytest.mark.parametrize("count", [0, 1, 7])
+def test_zero_and_positive_rejected_counts_still_load_when_the_view_reproduces(tmp_path: Path, capsys, count: int) -> None:
+    root, config, ir = stored(tmp_path, capsys)
+    path = root / ".repodocs" / "architecture-view.json"
+    view = json.loads(path.read_text(encoding="utf-8"))
+    view["rejected"] = {"unknown-evidence": count}
+    path.write_text(json.dumps(view), encoding="utf-8")
+
+    status, _, reason = load_view(config, ir)
+
+    assert (status, reason) == (STATUS_CURRENT, "")
+
+
 def test_a_view_built_under_an_unsupported_context_policy_is_invalid(tmp_path: Path, capsys) -> None:
     root, config, ir = stored(tmp_path, capsys)
     path = root / ".repodocs" / "architecture-view.json"
