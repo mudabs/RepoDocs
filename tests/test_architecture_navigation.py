@@ -524,6 +524,23 @@ def run_page(tmp_path: Path, html: str) -> dict[str, Any]:
     return json.loads(completed.stdout.strip().splitlines()[-1])
 
 
+def test_a_failed_browser_launch_is_retried_once_reported_in_full_and_leaves_no_profile(tmp_path: Path) -> None:
+    node, _ = browser_or_skip()
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    page = tmp_path / "page.html"
+    page.write_text("<!doctype html>", encoding="utf-8")
+    environment = {**os.environ, "TMPDIR": str(scratch), "TMP": str(scratch), "TEMP": str(scratch)}
+
+    completed = subprocess.run([node, "check-export.mjs", str(page), str(tmp_path / "no-such-browser")], cwd=TOOL_DIRECTORY, capture_output=True, text=True, encoding="utf-8", timeout=120, check=False, env=environment)
+
+    assert completed.returncode == 1
+    failure = json.loads(completed.stderr.strip().splitlines()[-1])
+    assert failure["launchFailed"] is True and [item["attempt"] for item in failure["attempts"]] == [1, 2], "one retry, never more"
+    assert all("no-such-browser" in item["message"] or "executablePath" in item["message"] for item in failure["attempts"]), failure
+    assert list(scratch.iterdir()) == [], "every profile this run created is removed"
+
+
 def test_the_real_page_draws_navigates_zooms_and_loads_nothing(tmp_path: Path, capsys) -> None:
     browser_or_skip()
     root_git, path = make_repository(tmp_path, "shop", "https://github.com/acme/shop")
