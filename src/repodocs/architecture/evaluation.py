@@ -57,29 +57,47 @@ def check_expected(expected: Any) -> None:
         members = entry.get("members")
         if not isinstance(members, list) or not members or not all(isinstance(item, str) and item for item in members):
             problems.append(f"component {entry['name']!r} needs a non-empty list of `members` patterns")
+        for flag in ("required", "deployment"):
+            if flag in entry and not isinstance(entry[flag], bool):
+                problems.append(f"component {entry['name']!r} has a `{flag}` that is not true or false")
     for name in sorted({name for name in names if names.count(name) > 1}):
         problems.append(f"component {name!r} is listed more than once")
-    if components and not any(isinstance(item, dict) and item.get("required", True) and not item.get("deployment") for item in components):
+    if components and not any(isinstance(item, dict) and item.get("required", True) is True and not item.get("deployment") for item in components):
         problems.append("at least one component must be required and not a deployment component")
-    pairs: list[tuple[Any, Any]] = []
-    for index, item in enumerate(expected.get("relationships", [])):
+    pairs: list[tuple[str, str]] = []
+    relationships = expected.get("relationships")
+    if not isinstance(relationships, list):
+        problems.append("`relationships` must be a list (empty when none are expected)")
+        relationships = []
+    for index, item in enumerate(relationships):
         if not isinstance(item, dict):
             problems.append(f"relationships[{index}] must be an object")
             continue
-        pair = (item.get("source"), item.get("target"))
+        if not (isinstance(item.get("source"), str) and isinstance(item.get("target"), str)):
+            problems.append(f"relationships[{index}] needs a `source` and a `target` that are component names")
+            continue
+        pair = (item["source"], item["target"])
         pairs.append(pair)
         if pair[0] not in names or pair[1] not in names:
             problems.append(f"relationship {pair[0]!r} -> {pair[1]!r} names a component that is not listed")
         if pair[0] == pair[1]:
             problems.append(f"relationship {pair[0]!r} -> {pair[1]!r} connects a component to itself")
         kinds = item.get("kinds")
-        if not isinstance(kinds, list) or not kinds or not set(kinds) <= set(CONNECTION_KINDS):
+        if not isinstance(kinds, list) or not kinds or not all(isinstance(kind, str) and kind in CONNECTION_KINDS for kind in kinds):
             problems.append(f"relationship {pair[0]!r} -> {pair[1]!r} needs `kinds` from {', '.join(CONNECTION_KINDS)}")
-    for pair in sorted({pair for pair in pairs if pairs.count(pair) > 1}, key=str):
+        if "deployment" in item and not isinstance(item["deployment"], bool):
+            problems.append(f"relationship {pair[0]!r} -> {pair[1]!r} has a `deployment` that is not true or false")
+    for pair in sorted({pair for pair in pairs if pairs.count(pair) > 1}):
         problems.append(f"relationship {pair[0]!r} -> {pair[1]!r} is listed more than once; list the allowed kinds once")
-    for item in expected.get("not_established", []):
-        if isinstance(item, dict) and (item.get("source"), item.get("target")) in pairs:
-            problems.append(f"{item.get('source')!r} -> {item.get('target')!r} is both expected and not established")
+    not_established = expected.get("not_established", [])
+    if not isinstance(not_established, list):
+        problems.append("`not_established` must be a list")
+        not_established = []
+    for index, item in enumerate(not_established):
+        if not (isinstance(item, dict) and isinstance(item.get("source"), str) and isinstance(item.get("target"), str)):
+            problems.append(f"not_established[{index}] needs a `source` and a `target` that are component names")
+        elif (item["source"], item["target"]) in pairs:
+            problems.append(f"{item['source']!r} -> {item['target']!r} is both expected and not established")
     if problems:
         raise EvaluationInputError("The expected set is not usable: " + "; ".join(problems))
 

@@ -134,6 +134,71 @@ def test_an_expected_set_that_would_distort_the_scores_is_refused_with_every_pro
             evaluate(config, ir, view, context, bad)
 
 
+def _with(**changes: Any) -> dict[str, Any]:
+    expected = copy.deepcopy(SHOP)
+    expected.update(changes)
+    return expected
+
+
+def _relationship(**changes: Any) -> dict[str, Any]:
+    return _with(relationships=[{**copy.deepcopy(SHOP["relationships"][0]), **changes}])
+
+
+def _component(**changes: Any) -> dict[str, Any]:
+    expected = copy.deepcopy(SHOP)
+    expected["components"][0].update(changes)
+    return expected
+
+
+MALFORMED = {
+    "relationships null": _with(relationships=None),
+    "relationships number": _with(relationships=42),
+    "relationships text": _with(relationships="calls"),
+    "relationships object": _with(relationships={}),
+    "relationships missing": {key: value for key, value in SHOP.items() if key != "relationships"},
+    "kinds nested": _relationship(kinds=[["calls"]]),
+    "kinds number": _relationship(kinds=7),
+    "kinds text": _relationship(kinds="calls"),
+    "source list": _relationship(source=["Web page"]),
+    "target number": _relationship(target=3),
+    "relationship deployment": _relationship(deployment="yes"),
+    "not_established null": _with(not_established=None),
+    "not_established number": _with(not_established=42),
+    "not_established entry": _with(not_established=[1]),
+    "not_established empty entry": _with(not_established=[{}]),
+    "not_established endpoint": _with(not_established=[{"source": ["Web page"], "target": "Order file"}]),
+    "required text": _component(required="yes"),
+    "deployment number": _component(deployment=1),
+    "members nested": _component(members=[["server.js"]]),
+    "components entry": _with(components=[None]),
+    "source not an object": _with(source=["x"]),
+    "source field number": _with(source={"repository": 1, "revision": "r", "license": "MIT"}),
+}
+
+
+@pytest.mark.parametrize("expected", MALFORMED.values(), ids=MALFORMED.keys())
+def test_a_malformed_expected_set_is_an_input_error_never_a_crash(expected: Any) -> None:
+    with pytest.raises(evaluation.EvaluationInputError, match="not usable"):
+        evaluation.check_expected(expected)
+
+
+def test_a_valid_expected_set_still_passes_the_check() -> None:
+    evaluation.check_expected(copy.deepcopy(SHOP))
+
+
+def test_the_command_reports_a_malformed_expected_set_as_cannot_score_with_exit_2(tmp_path: Path, capsys) -> None:
+    root, config, ir = project(tmp_path, capsys)
+    save_view(config, *discover(config, ir, ReferenceProvider(at(ir, SHOP))))
+    capsys.readouterr()
+    for name in ("relationships null", "relationships number", "kinds nested", "not_established endpoint", "required text"):
+        expected = tmp_path / "expected.json"
+        expected.write_text(json.dumps(MALFORMED[name]), encoding="utf-8")
+
+        assert main(["--root", str(root), "--expected", str(expected)]) == 2, name
+        error = capsys.readouterr().err
+        assert "Cannot score" in error and "Traceback" not in error, name
+
+
 def test_the_expected_set_must_describe_the_revision_that_was_scanned(tmp_path: Path, capsys) -> None:
     root, config, ir = project(tmp_path, capsys)
     view, context = discover(config, ir, ReferenceProvider(at(ir, SHOP)))
