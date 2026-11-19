@@ -12,13 +12,13 @@ from __future__ import annotations
 from typing import Any
 
 from .. import __version__
-from ..ai.bundle import redact_text
+from ..ai.bundle import REDACTION_RULES_VERSION, redact_text
 from ..ai.providers import Provider
 from ..common import canonical_json, scrub, sha256_text, write_json_atomic
-from ..config import ProjectConfig
+from ..config import AI_PROVIDER_ANTHROPIC, AI_PROVIDER_OLLAMA, ProjectConfig
 from ..errors import MalformedProviderOutput, ProviderError
 from ..ir import ir_hash
-from .context import CONTEXT_VERSION, ContextResolver, context_hash, is_denied, well_formed_path
+from .context import CONTEXT_VERSION, SELECTION_VERSION, ContextResolver, context_hash, is_denied, well_formed_path
 
 
 PROMPT_VERSION = "1.0"
@@ -462,6 +462,68 @@ def _raw_from_view(view: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+PARTIAL_REASONS = (
+    "round-budget", "request-budget", "context-budget", "response-budget", "timeout",
+    "provider-error", "incomplete-response", "empty-response", "no-progress",
+)
+_VIEW_KEYS = {"view_version", "status", "partial_reason", "provenance", "components", "connections", "alternatives", "rejected"}
+_PROVENANCE_KEYS = {
+    "provider", "requested_model", "served_model", "engine_version", "prompt_version", "context_version",
+    "context_hash", "source_ir_hash", "snapshots", "external", "rounds", "requests",
+}
+_SNAPSHOT_KEYS = {"repository_id", "revision", "revision_kind", "content_fingerprint"}
+
+
+def _filled(value: Any) -> bool:
+    return isinstance(value, str) and bool(value)
+
+
+def _digest(value: Any) -> bool:
+    return isinstance(value, str) and len(value) == 64 and all(char in "0123456789abcdef" for char in value)
+
+
+def _count(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 1
+
+
+def check_envelope(view: Any) -> str:
+    """Why a stored view's own fields are not a supported, consistent envelope, or an empty string.
+
+    This mirrors schemas/architecture-view-1.0.json for the fields the validator does not reproduce,
+    so that no JSON Schema library is needed at run time. It does not judge the model's wording.
+    """
+
+    if not isinstance(view, dict) or set(view) - _VIEW_KEYS or _VIEW_KEYS - {"partial_reason"} - set(view):
+        return "the stored view does not have the view fields"
+    if view["view_version"] != VIEW_VERSION:
+        return "the stored view has an unsupported view version"
+    status = view["status"]
+    if status not in ("complete", "partial") or ("partial_reason" in view) != (status == "partial"):
+        return "the stored view's status and partial reason contradict each other"
+    if status == "partial" and view["partial_reason"] not in PARTIAL_REASONS:
+        return "the stored view has an unknown partial reason"
+    provenance = view["provenance"]
+    if not isinstance(provenance, dict) or set(provenance) != _PROVENANCE_KEYS:
+        return "the stored view's provenance is malformed"
+    snapshots = provenance["snapshots"]
+    if (
+        provenance["provider"] not in (AI_PROVIDER_ANTHROPIC, AI_PROVIDER_OLLAMA)
+        or not all(_filled(provenance[key]) for key in ("requested_model", "served_model", "engine_version", "prompt_version"))
+        or not isinstance(provenance["external"], bool)
+        or not (_count(provenance["rounds"]) and _count(provenance["requests"]))
+        or not (_digest(provenance["context_hash"]) and _digest(provenance["source_ir_hash"]))
+        or not isinstance(snapshots, list)
+        or not all(isinstance(item, dict) and set(item) == _SNAPSHOT_KEYS and all(_filled(value) for value in item.values()) for item in snapshots)
+        or len({item["repository_id"] for item in snapshots}) != len(snapshots)
+    ):
+        return "the stored view's provenance is malformed"
+    if provenance["context_version"] != CONTEXT_VERSION:
+        return "the stored view was built from an unsupported context version"
+    if not all(isinstance(view[key], list) for key in ("components", "connections", "alternatives")) or not isinstance(view["rejected"], dict):
+        return "the stored view's containers are malformed"
+    return ""
+
+
 def load_view(config: ProjectConfig, ir: dict[str, Any]) -> tuple[str, dict[str, Any] | None, str]:
     """The stored view and whether it can be used: missing, stale, invalid, or current, with the reason.
 
@@ -476,6 +538,9 @@ def load_view(config: ProjectConfig, ir: dict[str, Any]) -> tuple[str, dict[str,
         return STATUS_MISSING, None, "no architecture view has been stored; run discovery"
     try:
         view = json.loads(path.read_text(encoding="utf-8"))
+        problem = check_envelope(view)
+        if problem:
+            return STATUS_INVALID, None, problem
         provenance = view["provenance"]
         current = {item["repository_id"]: item for item in ir["snapshots"]}
         if provenance["source_ir_hash"] != ir_hash(ir) or any(
@@ -486,6 +551,13 @@ def load_view(config: ProjectConfig, ir: dict[str, Any]) -> tuple[str, dict[str,
         context = json.loads(saved_context_path(config, provenance["context_hash"]).read_text(encoding="utf-8"))
         if context_hash(context) != provenance["context_hash"]:
             return STATUS_INVALID, view, "the stored context does not match the view's provenance"
+        policy = context.get("policy", {})
+        if (
+            context.get("context_version") != CONTEXT_VERSION
+            or policy.get("selection_version") != SELECTION_VERSION
+            or policy.get("redaction_version") != REDACTION_RULES_VERSION
+        ):
+            return STATUS_INVALID, view, "the stored context was built under an unsupported policy version"
         again = validate_proposal(_raw_from_view(view), context, ir, config.architecture.deny_names)
         same = (
             view["components"] == sorted(again.components.values(), key=lambda item: item["id"])
