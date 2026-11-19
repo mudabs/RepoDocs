@@ -163,6 +163,29 @@ def test_a_file_changed_after_the_scan_is_stale(tmp_path: Path, capsys) -> None:
     assert {"repository_id": "shop", "path": "public/app.js", "reason": "stale"} in resolver.bundle()["omitted"]
 
 
+def test_a_file_that_grew_after_the_scan_is_never_read_past_the_size_bound(tmp_path: Path, capsys, monkeypatch) -> None:
+    root = project(tmp_path, capsys)
+    resolver = resolver_for(root)
+    limit = resolver.budgets["max_file_bytes"]
+    (tmp_path / "shop" / "server.js").write_bytes(b"x" * (1024 * 1024))
+    requested = []
+    real_open = Path.open
+
+    def spy(self, mode="r", *args, **kwargs):
+        handle = real_open(self, mode, *args, **kwargs)
+        if self.name == "server.js":
+            real_read = handle.read
+            handle.read = lambda size=-1: requested.append(size) or real_read(size)
+        return handle
+
+    monkeypatch.setattr(Path, "open", spy)
+    monkeypatch.setattr(Path, "read_bytes", lambda self: pytest.fail("the whole file must not be buffered"))
+
+    assert resolver.fetch("shop", "server.js") is None
+    assert requested and all(0 <= size <= limit + 1 for size in requested)
+    assert {"repository_id": "shop", "path": "server.js", "reason": "stale"} in resolver.bundle()["omitted"]
+
+
 def make_link(link: Path, target: Path, *, directory: bool) -> None:
     try:
         os.symlink(target, link, target_is_directory=directory)
