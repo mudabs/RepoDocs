@@ -26,7 +26,7 @@ from ..config import ProjectConfig
 from ..errors import ConfigError
 from .discovery import STATUS_CURRENT, load_view, saved_context_path
 from .navigation import MAP_NAME, evidence_map, repository_remotes
-from .render import BANNER, node_key, project, render_view
+from .render import ALTERNATIVES_NAME, BANNER, node_key, project, render_alternatives, render_view
 from .render_check import TOOL_DIRECTORY
 from .viewer_script import VIEWER_SCRIPT
 
@@ -90,6 +90,10 @@ def build_html(view: dict[str, Any], diagrams: dict[str, str], evidence: dict[st
              "classification": item["classification"], "confidence": item["confidence"], "cross_repository": item["cross_repository"]}
             for item in sorted(view["connections"], key=lambda entry: entry["id"])
         ],
+        "alternatives": [
+            {"statement": item["statement"], "about": [by_id[key]["name"] for key in item["about"] if key in by_id], "evidence": found["evidence"]}
+            for item, found in zip(view["alternatives"], evidence["alternatives"])
+        ],
         "groups": groups,
         "evidence": evidence,
         "repositories": evidence["repositories"],
@@ -113,7 +117,7 @@ def build_html(view: dict[str, Any], diagrams: dict[str, str], evidence: dict[st
         "<button id=\"fit\" type=\"button\">Fit</button><button id=\"in\" type=\"button\">Zoom in</button><button id=\"out\" type=\"button\">Zoom out</button>"
         f"<span class=\"banner\">{_escape(data['banner'])}</span></header>\n"
         "<main><div id=\"stage\"><div id=\"canvas\"></div></div><aside><div id=\"details\"></div>"
-        "<h3>Components</h3><ul id=\"components\"></ul><h3>Connections</h3><ul id=\"connections\"></ul>"
+        "<h3>Components</h3><ul id=\"components\"></ul><h3>Connections</h3><ul id=\"connections\"></ul><h3>Alternatives</h3><ul id=\"alternatives\"></ul>"
         f"<h3>Snapshots</h3><ul>{snapshot_lines}</ul></aside></main>\n"
         f"<script type=\"application/json\" id=\"data\">{data_script}</script>\n"
         f"<script>{bundle}</script>\n<script>{VIEWER_SCRIPT}</script>\n</body>\n</html>\n"
@@ -141,6 +145,13 @@ def architecture_artifacts(
     evidence = evidence_map(view, context, ir, repository_remotes(config, ir))
     artifacts = dict(diagrams)
     artifacts[MAP_NAME] = canonical_json(evidence)
+    citations = {
+        item["id"]: f"{item['repository_id']}:{item['path']}:{item['line_start']}-{item['line_end']}"
+        for found in evidence["alternatives"] for item in found["evidence"]
+    }
+    alternatives = render_alternatives(view, citations)
+    if alternatives is not None:
+        artifacts[ALTERNATIVES_NAME] = alternatives
     if config.architecture.html_export and include_html:
         bundle = mermaid_bundle(tool_directory)
         if bundle is None:
