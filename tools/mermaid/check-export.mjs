@@ -4,7 +4,7 @@ import puppeteer from 'puppeteer';
 import { pathToFileURL } from 'node:url';
 
 const [file, browser, flag] = process.argv.slice(2);
-const report = { dialogs: [], console: [], violations: [], requests: [], clicked: null, zoomed: false, drawn: false, links: [] };
+const report = { dialogs: [], console: [], violations: [], requests: [], clicked: null, alternative: null, zoomed: false, drawn: false, links: [] };
 const instance = await puppeteer.launch({ executablePath: browser, headless: true, args: flag === '--no-sandbox' ? ['--no-sandbox'] : [] });
 try {
   const page = await instance.newPage();
@@ -31,6 +31,11 @@ try {
     report.clicked = await page.$eval('#details', (node) => node.innerText);
   }
   report.links = await page.$$eval('#details a', (anchors) => anchors.map((anchor) => anchor.href));
+  const alternative = await page.$('#alternatives button');
+  if (alternative) {
+    await alternative.click();
+    report.alternative = await page.$eval('#details', (node) => node.innerText);
+  }
   report.violations = await page.evaluate(() => window.__violations || []);
   report.scripts = await page.$$eval('script', (nodes) => nodes.length);
 } finally {

@@ -62,7 +62,10 @@ def repository_remotes(config: ProjectConfig, ir: dict[str, Any]) -> dict[str, t
 
 
 def evidence_map(view: dict[str, Any], context: dict[str, Any], ir: dict[str, Any], remotes: dict[str, tuple[str, str] | None]) -> dict[str, Any]:
-    """Where every component and connection of a view can be checked, with exact provenance."""
+    """Where every component, connection and alternative of a view can be checked, with exact provenance.
+
+    ``alternatives`` follows the order of the view's own list.
+    """
 
     snapshots = {item["repository_id"]: item for item in ir["snapshots"]}
     documents = {item["id"]: item for item in context["documents"]}
@@ -102,4 +105,5 @@ def evidence_map(view: dict[str, Any], context: dict[str, Any], ir: dict[str, An
             for entry in view["components"]
         },
         "connections": {entry["id"]: {"evidence": [item(key) for key in entry["evidence"]]} for entry in view["connections"]},
+        "alternatives": [{"about": list(entry["about"]), "evidence": [item(key) for key in entry["evidence"]]} for entry in view["alternatives"]],
     }

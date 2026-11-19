@@ -109,7 +109,7 @@ RepoDocs' built-in validator checks the grammar it emits and is not Mermaid. The
 
 ### Architecture views: source navigation (in progress, ADR-026)
 
-- From a stored architecture view, generation can write `architecture-view-evidence.json`: for every component and connection, the cited files, line spans, and content hashes. A link to the source on GitHub is included only for a committed snapshot of a `github.com` repository, pinned to the exact commit. Uncommitted working-tree content is labelled with its fingerprint and never linked, and other hosts get no links.
+- From a stored architecture view, generation can write `architecture-view-evidence.json`: for every component and connection, the cited files, line spans, and content hashes. A link to the source on GitHub is included only for a committed snapshot of a `github.com` repository, pinned to the exact commit. Uncommitted working-tree content is labelled with its fingerprint and never linked, and other hosts get no links. When the model reported competing interpretations, generation also writes `architecture-view-alternatives.md` (each alternative, the components it concerns, and its evidence locations) and the HTML export lists them; they are never drawn into the diagram.
 - Setting `"architecture": {"html_export": true}` also writes one self-contained `architecture-view.html` that draws the diagram offline, with zoom, pan, fit, and evidence details on click. It embeds the pinned Mermaid bundle, so it needs the optional tooling (`npm ci` in `tools/mermaid`) and fails clearly without it. It contains locations and hashes, never source text, and loads nothing from the network.
 - The commands that produce these files arrive with the CLI integration (#53); the modules are in place and tested.
 
