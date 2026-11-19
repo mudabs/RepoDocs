@@ -173,6 +173,27 @@ escaped prose, not executable HTML or Markdown links. The deterministic
 `architecture.md`, `architecture.mmd`, and IR remain unchanged by model output.
 No model claim creates an authoritative relationship or confirms a candidate.
 
+### Ollama through an authenticated /v1 gateway (optional)
+
+The `ollama` provider has two transports, chosen by the host. A host with no path (the default `http://localhost:11434`) uses Ollama's native `/api/chat`, unchanged. A host ending in `/v1` uses the chat-completions route that Ollama serves, which lets a gateway in front of Ollama authenticate requests and hide its management routes. This is an Ollama-compatible transport, not a claim that RepoDocs works with every OpenAI-style provider; no other provider is supported.
+
+```powershell
+repodocs ai-bundle
+repodocs ai-configure --provider ollama --model <model> --ollama-host https://gateway.example.net/v1
+repodocs ai-configure --consent-external
+$env:REPODOCS_OLLAMA_API_KEY = "<token>"   # set it in the environment, never in repodocs.json
+repodocs ai-interpret
+repodocs generate
+```
+
+- A non-loopback host is external even if you operate it, so `--consent-external` is required, and architecture discovery (Epic #47, not merged yet) will additionally need its own source-excerpt consent (ADR-026); the first never implies the second. A remote `/v1` host must use HTTPS with certificate verification, and URLs with credentials, a query or a fragment are refused. A loopback `/v1` host needs no key and does not use environment proxies.
+- `REPODOCS_OLLAMA_API_KEY` is read only from the environment, sent as a Bearer token to `/v1` hosts only, and never written to `repodocs.json`, the bundle, claims, or an error message. Redirects are not followed.
+- A completion is accepted only when it is a single assistant message that finished with `stop` and holds a non-empty JSON object. Content-filtered, refused, truncated (`length`), tool-call and unrecognized endings are provider errors (exit code 7), and so are authentication failures (401 and 403), rate limits (429), server errors, timeouts, unreachable hosts, malformed JSON, and oversized replies. None of them stops the deterministic documents.
+- Limits, applied to both transports unless noted: a request times out after 300 seconds; a response larger than 512 KiB is refused while it is being read, whatever `Content-Length` says; the `/v1` request asks for at most 16,000 output tokens (`max_tokens`). Context length is the server's setting and is not controlled by RepoDocs. These limits were exercised only against local stand-in servers. No live gateway or model has been tested yet, and a small model may still return JSON that does not satisfy the schema, which is also a provider error.
+- Reaching a private network address (for example over a VPN) is up to the machine that runs RepoDocs. Hosted CI runners cannot reach it, so CI uses stand-ins and no credentials.
+- The adapter sends whatever schema the caller gives it, so the same transport serves AI interpretation and, once it is merged, architecture discovery (Epic #47). Transport success says nothing about model quality, which is evaluated separately (#54).
+
+
 Generation uses stored claims only: it never calls a provider. Missing claims
 leave the deterministic output complete; stale or invalid claims produce a
 warning and are omitted. After source or confirmation changes, explicitly run

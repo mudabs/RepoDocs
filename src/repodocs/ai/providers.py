@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import os
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -23,6 +24,10 @@ DEFAULT_ANTHROPIC_MODEL = "claude-opus-5-5"
 DEFAULT_OLLAMA_HOST = "http://localhost:11434"
 MAX_OUTPUT_TOKENS = 16000
 REQUEST_TIMEOUT_SECONDS = 300
+# The most a local or private Ollama server may send back for one request (the whole HTTP body, counted
+# while it is read, never trusting Content-Length). It is generous for MAX_OUTPUT_TOKENS of JSON, with room
+# for escaping, and well above the 32 KiB architecture discovery accepts as a model answer.
+MAX_RESPONSE_BYTES = 512 * 1024
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 
 
@@ -134,49 +139,144 @@ def _opener(external: bool) -> urllib.request.OpenerDirector:
     return urllib.request.build_opener(*handlers)
 
 
+def _read_bounded(response: Any, limit: int) -> bytes:
+    """The response body, refusing to read more than ``limit`` bytes.
+
+    A declared length over the limit is refused before reading. An undeclared or understated length
+    is caught while reading, so a hostile or broken server cannot make RepoDocs buffer an unbounded body.
+    """
+
+    declared = response.headers.get("Content-Length")
+    if declared is not None and declared.strip().isdigit() and int(declared) > limit:
+        raise ProviderError(f"Ollama response is larger than the {limit} byte limit")
+    data = response.read(limit + 1)
+    if len(data) > limit:
+        raise ProviderError(f"Ollama response is larger than the {limit} byte limit")
+    return data
+
+
+def _openai_completion_text(payload: dict[str, Any]) -> str:
+    """The text of a successful chat completion, or a ProviderError saying why it is not one.
+
+    Only one outcome is a success: exactly one assistant message, finished with ``stop``, holding
+    non-empty text and nothing else the request did not ask for (no refusal, no tool calls).
+    """
+
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        raise ProviderError("Ollama gateway returned no chat completion")
+    choice = choices[0]
+    message = choice.get("message")
+    message = message if isinstance(message, dict) else {}
+    finish = choice.get("finish_reason")
+    if message.get("refusal"):
+        raise ProviderError("The model declined the request")
+    if finish == "length":
+        raise ProviderError("Ollama gateway output was cut off at the token limit")
+    if finish == "content_filter":
+        raise ProviderError("Ollama gateway withheld the output (content filter)")
+    if finish in ("tool_calls", "function_call") or message.get("tool_calls") or message.get("function_call"):
+        raise ProviderError("Ollama gateway answered with a tool call, which this request does not allow")
+    if finish != "stop":
+        raise ProviderError("Ollama gateway ended the completion in an unsupported state")
+    content = message.get("content")
+    if not isinstance(content, str) or not content.strip():
+        raise ProviderError("Ollama returned no message content")
+    return content
+
+
 class OllamaProvider:
-    """A local Ollama server. A non-loopback host leaves the machine and counts as external."""
+    """Ollama through its native /api/chat or an authenticated Ollama-compatible /v1 gateway.
+
+    A host ending in /v1 uses chat completions, as Ollama serves them (``response_format`` with a JSON
+    schema, ``max_tokens``, ``finish_reason``). This is a transport for Ollama and gateways that
+    proxy it, not a claim of compatibility with every OpenAI-style provider. Other supported hosts use
+    the native endpoint, unchanged. Both keep the same provider identity and claim validation, and both
+    take whatever schema the caller passes.
+    """
 
     name = AI_PROVIDER_OLLAMA
 
     def __init__(self, model: str | None, host: str | None) -> None:
         if not model:
-            raise ConfigError("The ollama provider needs a model; set one with `repodocs ai-configure --provider ollama --model <name>`")
+            raise ConfigError("The ollama provider needs a model; set one with repodocs ai-configure --provider ollama --model NAME")
         self.model = model
         self.host = (host or DEFAULT_OLLAMA_HOST).rstrip("/")
         parts = urlsplit(self.host)
         if parts.scheme not in ("http", "https") or not parts.hostname:
-            raise ConfigError(f"Ollama host must be an http(s) URL: {self.host}")
+            raise ConfigError("Ollama host must be an http(s) URL")
+        if parts.username or parts.password or parts.query or parts.fragment or parts.path not in ("", "/v1"):
+            raise ConfigError("Ollama host must be a base URL or end in /v1, without URL credentials, query or fragment")
+        self.openai_compatible = parts.path == "/v1"
         self.external = not is_loopback(self.host)
+        if self.openai_compatible and self.external and parts.scheme != "https":
+            raise ConfigError("A remote Ollama /v1 gateway must use HTTPS")
 
     def generate(self, system: str, user: str, schema: dict[str, Any]) -> ProviderResponse:
-        body = json.dumps(
-            {
+        messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
+        headers = {"Content-Type": "application/json"}
+        if self.openai_compatible:
+            # The private gateway authenticates with a bearer token. Never persist it in
+            # repodocs.json or include it in an error message.
+            key = os.environ.get("REPODOCS_OLLAMA_API_KEY", "").strip()
+            if self.external and not key:
+                raise ConfigError("The remote Ollama /v1 gateway needs REPODOCS_OLLAMA_API_KEY in the environment")
+            if key and not (key.isascii() and key.isprintable()):
+                raise ConfigError("REPODOCS_OLLAMA_API_KEY must be printable ASCII with no line breaks")
+            if key:
+                headers["Authorization"] = f"Bearer {key}"
+            url = f"{self.host}/chat/completions"
+            body = {
                 "model": self.model,
                 "stream": False,
-                "format": schema,
-                "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+                "max_tokens": MAX_OUTPUT_TOKENS,
+                "messages": messages,
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {"name": "repodocs_response", "schema": schema},
+                },
             }
-        ).encode("utf-8")
+        else:
+            url = f"{self.host}/api/chat"
+            body = {"model": self.model, "stream": False, "format": schema, "messages": messages}
         request = urllib.request.Request(
-            f"{self.host}/api/chat", data=body, headers={"Content-Type": "application/json"}, method="POST"
+            url, data=json.dumps(body).encode("utf-8"), headers=headers, method="POST"
         )
         try:
-            with _opener(self.external).open(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:  # noqa: S310 - scheme checked above
-                payload = json.loads(response.read().decode("utf-8"))
+            with _opener(self.external).open(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:  # noqa: S310
+                raw = _read_bounded(response, MAX_RESPONSE_BYTES)
+            payload = json.loads(raw.decode("utf-8"))
         except urllib.error.HTTPError as exc:
             if 300 <= exc.code < 400:
                 raise ProviderError(
-                    f"Ollama at {self.host} answered with a redirect (HTTP {exc.code}), which is not followed so the "
-                    "bundle is not sent anywhere else; set ollama_host to the final address"
+                    f"Ollama returned a redirect (HTTP {exc.code}), which is not followed so the bundle "
+                    "is not sent anywhere else; configure the final host address"
                 ) from exc
-            raise ProviderError(f"Ollama error (HTTP {exc.code}); is the model `{self.model}` pulled?") from exc
-        except (urllib.error.URLError, OSError, ValueError) as exc:
-            raise ProviderError(f"Unable to reach Ollama at {self.host}") from exc
-        message = payload.get("message") if isinstance(payload, dict) else None
-        content = message.get("content") if isinstance(message, dict) else None
-        if not isinstance(content, str):
-            raise ProviderError("Ollama returned no message content")
+            if self.openai_compatible and exc.code in (401, 403):
+                raise ProviderError(f"Ollama gateway authentication failed (HTTP {exc.code}); check REPODOCS_OLLAMA_API_KEY") from exc
+            if exc.code == 429:
+                raise ProviderError("Ollama gateway is rate-limiting requests (HTTP 429)") from exc
+            raise ProviderError(f"Ollama error (HTTP {exc.code}); is the model pulled and gateway configured?") from exc
+        except ProviderError:
+            raise
+        except TimeoutError as exc:
+            raise ProviderError(f"Ollama did not answer within {REQUEST_TIMEOUT_SECONDS} seconds") from exc
+        except ValueError as exc:
+            raise ProviderError("Ollama returned a response that is not valid JSON") from exc
+        except (urllib.error.URLError, OSError) as exc:
+            if isinstance(getattr(exc, "reason", None), TimeoutError):
+                raise ProviderError(f"Ollama did not answer within {REQUEST_TIMEOUT_SECONDS} seconds") from exc
+            raise ProviderError("Unable to reach Ollama") from exc
+
+        if not isinstance(payload, dict):
+            raise ProviderError("Ollama returned a malformed response")
+        if self.openai_compatible:
+            content = _openai_completion_text(payload)
+        else:
+            message = payload.get("message")
+            content = message.get("content") if isinstance(message, dict) else None
+            if not isinstance(content, str):
+                raise ProviderError("Ollama returned no message content")
         model = payload.get("model")
         return ProviderResponse(_parse_object(content, "Ollama"), model if isinstance(model, str) and model else self.model)
 
