@@ -10,13 +10,15 @@ Evidence lookup stays in the view and in comments, so every node and edge can be
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from collections.abc import Mapping
 from typing import Any
 
-from ..common import scrub, sha256_text, slugify
+from ..common import markdown_text, scrub, sha256_text, slugify
 
 OVERVIEW_LIMIT = 12  # more components than this are grouped; each group gets its own detail diagram
 OVERVIEW_NAME = "architecture-view.mmd"
 DETAIL_PREFIX = "architecture-view-"
+ALTERNATIVES_NAME = "architecture-view-alternatives.md"
 BANNER = "Model-proposed architecture. Citations are evidence to check, not proof."
 CLASS_DEFINITIONS = (
     "classDef inferred stroke:#1f6f43,stroke-width:2px",
@@ -190,3 +192,28 @@ def render_view(view: dict[str, Any]) -> dict[str, str]:
     """File name to Mermaid text for every diagram of the view, in a stable order."""
 
     return {diagram.name: to_mermaid(diagram, view) for diagram in project(view)}
+
+
+def render_alternatives(view: dict[str, Any], citations: Mapping[str, str] | None = None) -> str | None:
+    """The competing interpretations the model reported, as Markdown, or None when it reported none.
+
+    ADR-026 shows alternatives and never drops them, but they do not belong in the diagram, which
+    would crowd. Statements and names are untrusted and written as plain text. ``citations`` maps an
+    evidence ID to its location; an ID with no location is listed as the ID alone.
+    """
+
+    if not view["alternatives"]:
+        return None
+    names = {item["id"]: item["name"] for item in view["components"]}
+    lines = [
+        "# Architecture alternatives",
+        "",
+        f"> {BANNER} Other readings the model offered; the diagram does not settle between them.",
+        "",
+    ]
+    for index, item in enumerate(sorted(view["alternatives"], key=lambda entry: (entry["about"], entry["statement"])), start=1):
+        about = ", ".join(markdown_text(names.get(key, key)) for key in item["about"]) or "the whole view"
+        lines += [f"## Alternative {index}", "", markdown_text(item["statement"]), "", f"About: {about}", "", "Evidence to check:"]
+        lines += [f"- {markdown_text((citations or {}).get(key, key))}" for key in item["evidence"]]
+        lines.append("")
+    return "\n".join(lines)
