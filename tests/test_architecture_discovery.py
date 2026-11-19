@@ -607,6 +607,75 @@ def test_a_tampered_view_is_invalid(tmp_path: Path, capsys, tamper: Callable) ->
     assert load_view(config, ir)[0] == STATUS_INVALID
 
 
+@pytest.mark.parametrize("tamper", [
+    lambda view: view.update(status="partial"),
+    lambda view: view.update(partial_reason="provider-error"),
+    lambda view: view.update(status="partial", partial_reason="made-up"),
+    lambda view: view.update(status="finished"),
+    lambda view: view.update(view_version="999.0"),
+    lambda view: view.update(view_version=1.0),
+    lambda view: view.update(unexpected="field"),
+    lambda view: view.pop("rejected"),
+    lambda view: view["provenance"].update(provider="other"),
+    lambda view: view["provenance"].update(external="yes"),
+    lambda view: view["provenance"].update(rounds=0),
+    lambda view: view["provenance"].update(requests=True),
+    lambda view: view["provenance"].update(context_version="9.0"),
+    lambda view: view["provenance"].update(context_hash="not-a-hash"),
+    lambda view: view["provenance"].update(source_ir_hash=""),
+    lambda view: view["provenance"]["snapshots"].append(dict(view["provenance"]["snapshots"][0])),
+    lambda view: view.update(components={}),
+    lambda view: view.update(alternatives=None),
+    lambda view: view.update(rejected=[]),
+    lambda view: view["components"].append(dict(view["components"][0])),
+    lambda view: view["components"][0].update(members=view["components"][0]["members"] * 2),
+    lambda view: view["connections"].append(dict(view["connections"][0])),
+], ids=[
+    "partial without reason", "complete with reason", "unknown reason", "unknown status", "future version", "numeric version",
+    "extra field", "missing container", "provider", "external type", "rounds", "requests", "context version", "context hash",
+    "ir hash", "duplicate snapshot", "components container", "alternatives container", "rejected container",
+    "duplicate component", "duplicate member", "duplicate connection",
+])
+def test_a_malformed_persisted_envelope_is_invalid_never_current(tmp_path: Path, capsys, tamper: Callable) -> None:
+    root, config, ir = stored(tmp_path, capsys)
+    path = root / ".repodocs" / "architecture-view.json"
+    view = json.loads(path.read_text(encoding="utf-8"))
+    tamper(view)
+    path.write_text(json.dumps(view), encoding="utf-8")
+
+    status, _, reason = load_view(config, ir)
+
+    assert status == STATUS_INVALID and reason
+
+
+def test_a_view_built_under_an_unsupported_context_policy_is_invalid(tmp_path: Path, capsys) -> None:
+    root, config, ir = stored(tmp_path, capsys)
+    path = root / ".repodocs" / "architecture-view.json"
+    view = json.loads(path.read_text(encoding="utf-8"))
+    from repodocs.architecture.context import context_hash
+
+    old = saved_context_path(config, view["provenance"]["context_hash"])
+    context = json.loads(old.read_text(encoding="utf-8"))
+    context["policy"]["selection_version"] = "9.0"
+    view["provenance"]["context_hash"] = context_hash(context)
+    old.unlink()
+    saved_context_path(config, view["provenance"]["context_hash"]).write_text(json.dumps(context), encoding="utf-8")
+    path.write_text(json.dumps(view), encoding="utf-8")
+
+    assert load_view(config, ir)[0] == STATUS_INVALID
+
+
+def test_a_stored_partial_view_with_a_reason_still_loads_with_its_warning(tmp_path: Path, capsys) -> None:
+    root, config, ir = stored(tmp_path, capsys)
+    view, context = discover(config, ir, Scripted(ask("lib/storage.js"), full_answer))
+    view.update(status="partial", partial_reason="round-budget")
+    save_view(config, view, context)
+
+    status, loaded, _ = load_view(config, ir)
+
+    assert status == STATUS_CURRENT and loaded["partial_reason"] == "round-budget"
+
+
 def test_a_missing_or_altered_context_or_unreadable_view_is_invalid(tmp_path: Path, capsys) -> None:
     root, config, ir = stored(tmp_path, capsys)
     context = saved_context_path(config, json.loads((root / ".repodocs" / "architecture-view.json").read_text(encoding="utf-8"))["provenance"]["context_hash"])

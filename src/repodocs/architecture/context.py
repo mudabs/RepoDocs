@@ -110,7 +110,10 @@ class ContextResolver:
     well_formed = staticmethod(lambda path: well_formed_path(path))
 
     def _read(self, root: Path, relative: str) -> bytes | None:
-        """The file's bytes, only when no path component is a link and it stays inside the repository."""
+        """The file's bytes, only when no path component is a link and it stays inside the repository.
+
+        At most one byte more than ``max_file_bytes`` is read, so a file that grew after the scan is never buffered whole.
+        """
 
         target = root / relative
         try:
@@ -124,7 +127,8 @@ class ContextResolver:
             if current.is_symlink():
                 return None
         try:
-            return target.read_bytes()
+            with target.open("rb") as handle:
+                return handle.read(self.budgets["max_file_bytes"] + 1)
         except OSError:
             return None
 
@@ -155,7 +159,7 @@ class ContextResolver:
         if data is None:
             self._omit(repository_id, path, "outside-repository" if (root / path).is_symlink() else "unreadable")
             return None
-        if sha256_bytes(data) != entry["content_hash"]:
+        if len(data) > self.budgets["max_file_bytes"] or sha256_bytes(data) != entry["content_hash"]:
             self._omit(repository_id, path, "stale")
             return None
         if b"\x00" in data[:BINARY_PROBE]:
