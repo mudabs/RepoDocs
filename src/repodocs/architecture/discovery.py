@@ -521,6 +521,8 @@ def check_envelope(view: Any) -> str:
         return "the stored view was built from an unsupported context version"
     if not all(isinstance(view[key], list) for key in ("components", "connections", "alternatives")) or not isinstance(view["rejected"], dict):
         return "the stored view's containers are malformed"
+    if not all(isinstance(count, int) and not isinstance(count, bool) and count >= 0 for count in view["rejected"].values()):
+        return "the stored view's rejected counts are not non-negative integers"
     return ""
 
 
