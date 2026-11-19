@@ -218,9 +218,11 @@ class OllamaProvider:
         if self.openai_compatible:
             # The private gateway authenticates with a bearer token. Never persist it in
             # repodocs.json or include it in an error message.
-            key = os.environ.get("REPODOCS_OLLAMA_API_KEY", "")
+            key = os.environ.get("REPODOCS_OLLAMA_API_KEY", "").strip()
             if self.external and not key:
                 raise ConfigError("The remote Ollama /v1 gateway needs REPODOCS_OLLAMA_API_KEY in the environment")
+            if key and not (key.isascii() and key.isprintable()):
+                raise ConfigError("REPODOCS_OLLAMA_API_KEY must be printable ASCII with no line breaks")
             if key:
                 headers["Authorization"] = f"Bearer {key}"
             url = f"{self.host}/chat/completions"

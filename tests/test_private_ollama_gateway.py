@@ -141,6 +141,23 @@ def test_external_gateway_needs_consent_and_environment_key(monkeypatch):
         resolve_provider(allowed).generate("s", "bundle", {})
 
 
+def test_a_key_with_surrounding_whitespace_is_trimmed_not_blamed_on_the_server(monkeypatch):
+    monkeypatch.setenv("REPODOCS_OLLAMA_API_KEY", "test-secret\r\n")
+    result, received = run()
+
+    assert result.data == {"claims": []} and received[0][1] == "Bearer test-secret"
+
+
+@pytest.mark.parametrize("key", ["bad\nkey", "kéy", "  \n"])
+def test_a_key_that_cannot_be_a_header_is_a_configuration_error_that_does_not_echo_it(monkeypatch, key):
+    monkeypatch.setenv("REPODOCS_OLLAMA_API_KEY", key)
+    settings = AiSettings(provider="ollama", model="m", ollama_host="https://gateway.example.net/v1", external_consent=True)
+    with pytest.raises(ConfigError, match="REPODOCS_OLLAMA_API_KEY") as caught:
+        resolve_provider(settings).generate("s", "bundle", {})
+
+    assert key.strip() not in str(caught.value) or not key.strip()
+
+
 @pytest.mark.parametrize("host", [
     "http://remote.example:8443/v1",
     "https://user:pass@remote.example/v1",
