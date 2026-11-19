@@ -357,6 +357,44 @@ def test_a_hand_written_architecture_file_that_matches_nothing_current_fails_val
     assert code == 3 and "does not match the current architecture view" in payload["errors"][0]
 
 
+def test_alternatives_are_published_validated_owned_and_retired_with_their_view(tmp_path: Path, capsys, monkeypatch) -> None:
+    root = express_project(tmp_path, capsys)
+    use(monkeypatch, Scripted(full_answer, generic))
+    assert invoke(root, capsys, "architecture", "discover")[0] == 0
+    statement = json.loads((root / ".repodocs" / "architecture-view.json").read_text(encoding="utf-8"))["alternatives"][0]["statement"]
+
+    code, generated = invoke(root, capsys, "generate")
+    assert code == 0 and "architecture-view-alternatives.md" in generated["data"]["artifacts"]
+    target = tmp_path / "shop" / "docs" / "generated" / "architecture-view-alternatives.md"
+    document = target.read_text(encoding="utf-8")
+    assert statement in document and "server.js" in document and "Order file" in document
+    assert statement not in (tmp_path / "shop" / "docs" / "generated" / "architecture-view.mmd").read_text(encoding="utf-8")
+    labels = {item["path"]: item["generator"] for item in read_manifest(root)["artifacts"]}
+    assert labels["architecture-view-alternatives.md"] == "repodocs-architecture"
+    assert invoke(root, capsys, "validate")[0] == 0
+    assert invoke(root, capsys, "generate")[1]["data"]["changed"] is False
+
+    from repodocs.common import sha256_text
+
+    forged = "# Architecture alternatives\n\nNothing to see.\n"
+    target.write_text(forged, encoding="utf-8", newline="\n")
+    manifest_path = root / ".repodocs" / "artifact-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    next(item for item in manifest["artifacts"] if item["path"] == "architecture-view-alternatives.md")["content_hash"] = sha256_text(forged)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    code, payload = invoke(root, capsys, "validate")
+    assert code == 3 and "does not match the current architecture view" in payload["errors"][0]
+    target.write_text(document, encoding="utf-8", newline="\n")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    next(item for item in manifest["artifacts"] if item["path"] == "architecture-view-alternatives.md")["content_hash"] = sha256_text(document)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    assert invoke(root, capsys, "architecture", "discover", "--refresh")[0] == 0
+    assert invoke(root, capsys, "generate")[0] == 0
+    assert not target.exists(), "a view without alternatives retires the document"
+    assert invoke(root, capsys, "validate")[0] == 0
+
+
 # ------------------------------------------------------------------ confirmations and the IR stay in charge
 def test_unresolved_cross_repository_confirmations_still_fail_validation_and_discovery_changes_none(tmp_path: Path, capsys, monkeypatch) -> None:
     root = react_spring_project(tmp_path, capsys)
