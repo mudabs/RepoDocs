@@ -33,6 +33,7 @@ Automatically discover, generate, validate, and maintain documentation and diagr
 - Stable generation minimizing noisy diffs.
 - Privacy, safe handling of secrets, least privilege, untrusted repository isolation.
 - Reproducible output tied to per-repository commit SHAs and generator/model versions.
+- Architecture views for stacks without an analyzer are inferred, evidence-linked, and labeled as such; structural validation is never presented as proof that a relationship is true (ADR-026).
 - Measurable quality using golden fixtures, precision/recall, provenance checks, and deterministic-versus-AI comparisons.
 
 ## Success demo

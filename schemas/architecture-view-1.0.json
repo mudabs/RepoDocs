@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://repodocs.invalid/schemas/architecture-view-1.0.json",
+  "title": "RepoDocs inferred architecture view",
+  "description": "A model's proposed application architecture, validated against the context it was given (ADR-026). Stored in .repodocs/architecture-view.json, separate from the System IR. Every component and connection is proposed or inferred, never observed.",
+  "type": "object",
+  "required": ["view_version", "status", "provenance", "components", "connections", "alternatives", "rejected"],
+  "additionalProperties": false,
+  "allOf": [
+    {"if": {"properties": {"status": {"const": "partial"}}, "required": ["status"]}, "then": {"required": ["partial_reason"]}},
+    {"if": {"properties": {"status": {"const": "complete"}}, "required": ["status"]}, "then": {"not": {"required": ["partial_reason"]}}}
+  ],
+  "properties": {
+    "view_version": {"const": "1.0"},
+    "status": {
+      "enum": ["complete", "partial"],
+      "description": "partial means a budget, timeout, or provider failure stopped discovery early; statuses 'stale' and 'invalid' are computed on load, never stored."
+    },
+    "partial_reason": {"enum": ["round-budget", "request-budget", "context-budget", "response-budget", "timeout", "provider-error", "incomplete-response", "empty-response", "no-progress"]},
+    "provenance": {
+      "type": "object",
+      "required": ["provider", "requested_model", "served_model", "engine_version", "prompt_version", "context_version", "context_hash", "source_ir_hash", "snapshots", "external", "rounds", "requests"],
+      "additionalProperties": false,
+      "properties": {
+        "provider": {"enum": ["anthropic", "ollama"]},
+        "requested_model": {"type": "string", "minLength": 1},
+        "served_model": {"type": "string", "minLength": 1},
+        "engine_version": {"type": "string", "minLength": 1},
+        "prompt_version": {"type": "string", "minLength": 1},
+        "context_version": {"type": "string", "minLength": 1},
+        "context_hash": {"type": "string", "minLength": 1},
+        "source_ir_hash": {"type": "string", "minLength": 1},
+        "external": {"type": "boolean", "description": "True when source excerpts left the machine."},
+        "rounds": {"type": "integer", "minimum": 1},
+        "requests": {"type": "integer", "minimum": 1},
+        "snapshots": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["repository_id", "revision", "revision_kind", "content_fingerprint"],
+            "additionalProperties": false,
+            "properties": {
+              "repository_id": {"type": "string", "minLength": 1},
+              "revision": {"type": "string", "minLength": 1},
+              "revision_kind": {"enum": ["commit", "content"]},
+              "content_fingerprint": {"type": "string", "minLength": 1}
+            }
+          }
+        }
+      }
+    },
+    "components": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "name", "kind", "responsibility", "repository_id", "members", "evidence", "classification", "confidence"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string", "pattern": "^arch:[0-9a-f]{16}$", "description": "Hash of the repository and the normalized name, so it is stable across runs and does not depend on the model."},
+          "name": {"type": "string", "minLength": 1, "maxLength": 80},
+          "kind": {"enum": ["frontend", "backend-service", "api", "database", "storage", "background-job", "library", "external-service", "configuration", "other"]},
+          "responsibility": {"type": "string", "minLength": 1, "maxLength": 300},
+          "repository_id": {"type": "string", "minLength": 1},
+          "members": {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1},
+            "description": "Repository-relative paths of the files that belong to the component. Each must exist in the snapshot."
+          },
+          "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidenceId"}, "minItems": 1},
+          "classification": {"enum": ["proposed", "inferred"]},
+          "confidence": {"enum": ["high", "medium", "low"]}
+        }
+      }
+    },
+    "connections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "source", "target", "kind", "label", "evidence", "classification", "confidence", "cross_repository"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string", "pattern": "^archc:[0-9a-f]{16}$"},
+          "source": {"type": "string", "pattern": "^arch:[0-9a-f]{16}$"},
+          "target": {"type": "string", "pattern": "^arch:[0-9a-f]{16}$"},
+          "kind": {"enum": ["calls", "reads", "writes", "serves", "depends-on", "publishes", "renders"]},
+          "label": {"type": "string", "minLength": 1, "maxLength": 80},
+          "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidenceId"}},
+          "classification": {"enum": ["proposed", "inferred"]},
+          "confidence": {"enum": ["high", "medium", "low"]},
+          "cross_repository": {"type": "boolean"},
+          "candidate_id": {"type": "string", "description": "A confirmed cross-repository candidate that this connection restates. Only a confirmed candidate can make a cross-repository connection inferred."}
+        }
+      }
+    },
+    "alternatives": {
+      "type": "array",
+      "description": "Competing interpretations the model reported instead of choosing one.",
+      "items": {
+        "type": "object",
+        "required": ["about", "statement", "evidence"],
+        "additionalProperties": false,
+        "properties": {
+          "about": {"type": "array", "items": {"type": "string"}},
+          "statement": {"type": "string", "minLength": 1, "maxLength": 300},
+          "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidenceId"}}
+        }
+      }
+    },
+    "rejected": {
+      "type": "object",
+      "description": "Counts of model output that failed validation, by reason. The rejected text is never stored.",
+      "additionalProperties": {"type": "integer", "minimum": 0}
+    }
+  },
+  "$defs": {
+    "evidenceId": {"type": "string", "pattern": "^ctx:[0-9a-f]{16}$"}
+  }
+}

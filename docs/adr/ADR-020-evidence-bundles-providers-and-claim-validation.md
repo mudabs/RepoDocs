@@ -1,5 +1,7 @@
 # ADR-020: Evidence Bundles, Provider Adapters, Consent, and Claim Validation
 
+> Amended by ADR-026: the no-source-text rule applies to this evidence bundle. Architecture discovery uses a separate context bundle with its own consent.
+
 - Status: Accepted
 - Date: 2026-11-15
 

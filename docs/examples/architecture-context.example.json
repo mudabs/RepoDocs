@@ -1,0 +1,107 @@
+{
+  "context_version": "1.0",
+  "policy": {
+    "selection_version": "1.0",
+    "redaction_version": "1.1",
+    "budgets": {
+      "max_rounds": 3,
+      "max_requests": 6,
+      "max_files_per_round": 8,
+      "max_excerpt_bytes": 8192,
+      "max_file_bytes": 65536,
+      "max_context_bytes": 204800,
+      "max_response_bytes": 32768,
+      "max_inventory_paths": 500
+    }
+  },
+  "source_ir_hash": "9999999999999999999999999999999999999999999999999999999999999999",
+  "snapshots": [
+    {
+      "repository_id": "shop",
+      "revision": "0123456789abcdef0123456789abcdef01234567",
+      "revision_kind": "commit",
+      "content_fingerprint": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+    }
+  ],
+  "inventory": [
+    {
+      "repository_id": "shop",
+      "paths": [
+        "README.md",
+        "orders.json",
+        "package.json",
+        "public/",
+        "public/app.js",
+        "public/index.html",
+        "server.js"
+      ],
+      "truncated": false
+    }
+  ],
+  "documents": [
+    {
+      "id": "ctx:34a8f919307fd1cf",
+      "repository_id": "shop",
+      "path": "README.md",
+      "content_hash": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "kind": "readme",
+      "line_start": 1,
+      "line_end": 2,
+      "text": "# Shop\nA small store: a static page and an Express API that keeps orders in orders.json.\n",
+      "redactions": 0,
+      "truncated": false
+    },
+    {
+      "id": "ctx:8547537416b965da",
+      "repository_id": "shop",
+      "path": "package.json",
+      "content_hash": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+      "kind": "manifest",
+      "line_start": 1,
+      "line_end": 4,
+      "text": "{\n  \"name\": \"shop\",\n  \"dependencies\": {\"express\": \"4.19.2\"}\n}\n",
+      "redactions": 0,
+      "truncated": false
+    },
+    {
+      "id": "ctx:73d069239867407c",
+      "repository_id": "shop",
+      "path": "public/app.js",
+      "content_hash": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+      "kind": "source",
+      "line_start": 1,
+      "line_end": 1,
+      "text": "fetch('/api/orders').then(r => r.json()).then(render);\n",
+      "redactions": 0,
+      "truncated": false
+    },
+    {
+      "id": "ctx:409bcf5bb6718f5b",
+      "repository_id": "shop",
+      "path": "server.js",
+      "content_hash": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+      "kind": "source",
+      "line_start": 1,
+      "line_end": 5,
+      "text": "const express = require('express');\nconst fs = require('fs');\nconst app = express();\napp.get('/api/orders', (req, res) => res.json(JSON.parse(fs.readFileSync('orders.json'))));\napp.use(express.static('public'));\n",
+      "redactions": 0,
+      "truncated": false
+    }
+  ],
+  "omitted": [
+    {
+      "repository_id": "shop",
+      "path": ".env",
+      "reason": "denied-name"
+    }
+  ],
+  "usage": {
+    "rounds": 1,
+    "requests": 1,
+    "context_bytes": 418
+  },
+  "redaction": {
+    "rules_version": "1.1",
+    "replacements": 0
+  }
+}
