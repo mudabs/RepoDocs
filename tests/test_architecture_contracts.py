@@ -85,6 +85,7 @@ VIEW_BREAKS = [
     lambda d: d["components"][0].pop("members"),
     lambda d: d["connections"][0].update(kind="runs-before"),
     lambda d: d["connections"][0].update(evidence=["evidence:abc"]),
+    lambda d: d["connections"][0].update(evidence=[]),
     lambda d: d["connections"][0].pop("cross_repository"),
     lambda d: d.update(status="stale"),
     lambda d: d.update(model_output="<script>"),
