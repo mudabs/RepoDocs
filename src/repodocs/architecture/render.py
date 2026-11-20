@@ -35,6 +35,7 @@ class DiagramNode:
     classification: str
     group: str
     evidence: tuple[str, ...] = ()
+    members: tuple[str, ...] = ()  # names of the components a group node stands for
 
 
 @dataclass(frozen=True)
@@ -112,7 +113,7 @@ def project(view: dict[str, Any]) -> list[Diagram]:
     overview = Diagram(OVERVIEW_NAME, notes=notes + [f"Grouped: more than {OVERVIEW_LIMIT} components; see the detail diagrams"])
     for (repository, kind), members in sorted(groups.items()):
         classification = "inferred" if all(item["classification"] == "inferred" for item in members) else "proposed"
-        overview.nodes.append(DiagramNode(group_key(repository, kind), f"{kind} ({len(members)})", kind, classification, repository))
+        overview.nodes.append(DiagramNode(group_key(repository, kind), f"{kind} ({len(members)})", kind, classification, repository, (), tuple(item["name"] for item in members)))
     counts: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for link in view["connections"]:
         pair = (group_key(*where[link["source"]]), group_key(*where[link["target"]]))
