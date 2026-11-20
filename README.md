@@ -103,6 +103,10 @@ When a project contains PostgreSQL table facts, `repodocs generate` produces **`
 - `repodocs validate` checks Mermaid syntax with a built-in Python validator that needs no Node.js or browser tooling and enforces attribute type syntax. It is not the Mermaid renderer and does not prove that a diagram renders.
 - `erd.mmd` is tracked in `artifact-manifest.json`, protected against unexpected edits, and safely retired when database facts are no longer present. See ADR-022.
 
+### Checking diagrams with the real Mermaid renderer (optional)
+
+RepoDocs' built-in validator checks the grammar it emits and is not Mermaid. The test suite can additionally render every generated diagram with the real, pinned Mermaid renderer: run `npm ci` in `tools/mermaid` (Node 18.19 or newer, and a local Chrome or Chromium; set `PUPPETEER_EXECUTABLE_PATH` if it is not found). Without it those tests are skipped locally and a missing renderer is reported as `not-available`, never as success. Pull-request CI installs it and fails if it is missing. Ordinary Python-only use needs none of this.
+
 ### Cross-repository candidates
 
 After analysis, `scan` matches React `http_request` findings to endpoints in

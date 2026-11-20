@@ -6,3 +6,6 @@ __pycache__/
 venv/
 build/
 dist/
+
+# Optional Mermaid renderer tooling (npm ci in tools/mermaid)
+tools/mermaid/node_modules/

@@ -35,7 +35,7 @@ The diagram pipeline must construct typed relational models rather than ad-hoc s
 
 - `validate_mermaid` dispatches on the diagram header: `flowchart TD` for architecture diagrams and `erDiagram` for entity-relationship diagrams.
 - ERD validation strictly enforces the documented grammar for attribute types (`[A-Za-z][A-Za-z0-9_\-\(\)\[\]]*`), rejecting raw commas in data types. It verifies diagram header, comment syntax (`%%`), entity block delimiters (`{ ... }`), attribute tokens (type, name, keys, optional comments), relationship line syntax, and entity reference integrity. Any relationship targeting an undeclared entity fails validation.
-- The built-in validator operates natively in Python without requiring Node.js or browser installations, and checks the documented syntax rules that RepoDocs relies on. It is not the Mermaid renderer, so it does not prove that a diagram renders. Rendering with the real Mermaid renderer is not implemented and remains open work under epic #8.
+- The built-in validator operates natively in Python without requiring Node.js or browser installations, and checks the documented syntax rules that RepoDocs relies on. It is not the Mermaid renderer, so it does not prove that a diagram renders. Rendering with the real Mermaid renderer is available as optional tooling (`tools/mermaid`, ADR-026) and is required in CI, where it also renders the ERD fixtures. Users do not need it.
 
 ### Diagnostics and Evidence Reporting
 
