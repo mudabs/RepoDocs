@@ -4,7 +4,7 @@ Epic #47, issue #54. Date: 2026-11-17.
 
 ## Status in one paragraph
 
-The evaluation workflow, the scoring harness, the expected sets, and a reproducible demonstration on two real repositories are finished. **No live model was run**, so the question the issue asks (does AI-assisted discovery give users the architecture understanding they expected?) is **not answered**. The only AI-assisted numbers below come from a scripted reference replay that answers from the expected set. They test the pipeline and say nothing about model quality. Deterministic mode, measured for real, produces no application components for either repository. The owner go/no-go decision is pending and is not made here.
+The evaluation workflow, the scoring harness, the expected sets, and a reproducible demonstration on two real repositories are finished. Two **historical live smoke-test observations** with `qwen2.5-coder:1.5b` on a remote Ollama endpoint were saved earlier and are summarized below and in [`historical-live-results.json`](historical-live-results.json). They are not new runs, they used different engine revisions, and they are not verification of the current head. Both ended `partial`, and the model's architecture quality is **not accepted**: Flaskr scored component precision 0.3333, component recall 0.2, and connection recall 0; DigitalBoneBox showed unsupported endpoint labels and backend files under a UI component. The question the issue asks (does AI-assisted discovery give users the architecture understanding they expected?) is therefore **not settled**: no other model was run and no human review verdicts exist. The scripted reference replay numbers answer from the expected set and say nothing about model quality. Deterministic mode, measured for real, produces no application components for either repository. The owner go/no-go decision is pending and is not made here.
 
 ## Subjects
 
@@ -18,6 +18,28 @@ The evaluation workflow, the scoring harness, the expected sets, and a reproduci
 | Access | Public, cloned read-only into a scratch directory; no code was run | Same |
 
 Why Flaskr: it is small and clearly licensed, and it contrasts on every axis that matters here: a different language, server-rendered pages instead of a client that calls an API, a relational database instead of JSON files and an optional Redis store, and blueprints instead of routers. It is also a case where RepoDocs has no analyzer, as for DigitalBoneBox's Express code, so deterministic mode has nothing semantic to say about either. A Java or React project would have shown the existing analyzers and was avoided for that reason.
+
+## Historical live observations (saved earlier, not rerun)
+
+These come from two saved reports of live inference. Nothing was run, downloaded, or called for this report. The two runs used different engine revisions, so they are not a controlled comparison and say nothing about the current head. Paths, hostnames, credentials, and source excerpts were removed from the JSON.
+
+| | Flaskr | DigitalBoneBox |
+|---|---|---|
+| Source revision | `49943b5a94413a530761350f04e896f76e8d620e` | `602e9c53c656f55b5e69b1a4dd4c6f79e53b368c` |
+| Engine | `4c02026b9fe159341055ef10c51f2f7ad49afdcd` merged with gateway `0e36b560f86bca71e64de1f540d12726564a1e29` (scratch merge, D41/D42 retained) | preview `59d80c72845e5330517ea4a72845878eae55ae98` |
+| Model | `qwen2.5-coder:1.5b` through Ollama, remote endpoint, external consent recorded | same model and provider |
+| Status | `partial`, `incomplete-response`; 1 round, 1 request, 98.2 s | `partial`, `round-budget`; smoke test only |
+| Output | 3 components, 0 connections; 10 `unknown-component` and 6 `unsupported-component` claims rejected | 2 components, 2 connections |
+| Prompt and output tokens | 1,962 and 1,286 | 1,647 and 1,053 (1m10s logged) |
+
+**Structural support** (the pipeline and well-formedness). Both runs passed scan, generate, and validate; DigitalBoneBox also passed the context preview, provider configuration, and the real Mermaid renderer. In Flaskr, 3 of 3 citations resolve and 3 of 3 member paths exist in the snapshot. This shows the output is well formed. It does not show the claims are true.
+
+**Semantic support** (whether the claims match the source) is weak or absent:
+- Flaskr: component precision 0.3333 (1 of 3 claims matched; the others were `README.rst` and `manifest`), component recall 0.2 (1 of 5 expected; application factory, authentication, blog, and database were missed), connection recall 0 of 8, and no connection precision because none was proposed.
+- DigitalBoneBox: quality marked **not accepted**. The User Interface component was given backend member files, and the `GET /bones` and `POST /bones` labels are not supported by the cited files. No precision or recall was saved for this run.
+- Earlier 3B attempts on DigitalBoneBox hit truncation (a 14,946-token prompt cut to 2,050) and 300 s request timeouts, including with a 1,647-token compact prompt. The exact 3B tag was not saved. The 1.5B model then completed the compact prompt.
+
+Limits: one small model, one run per subject, no human review verdicts. **Current-model quality is not accepted, and the owner decision is pending.**
 
 ## Method
 
@@ -40,7 +62,7 @@ Deterministic mode, `repodocs scan` and `generate` on each repository:
 
 This is the honest depth of deterministic mode for an unsupported stack: an inventory, with no statement of what the application is or how it connects. It needs no key or network and is unchanged.
 
-Workflow and safety behavior, run with the reference replay in place of a model (a separate documentation repository is the destination; raw numbers are in [`reference-replay-run.json`](reference-replay-run.json)):
+Workflow and safety behavior, run with the scripted reference replay in place of a model (replay history, not a live run) (a separate documentation repository is the destination; raw numbers are in [`reference-replay-run.json`](reference-replay-run.json)):
 
 | Check | DigitalBoneBox | Flaskr |
 |---|---|---|
@@ -89,16 +111,16 @@ It answers from the expected set, so its scores (component recall 1.0, connectio
 
 ## Missing evidence (acceptance criteria left unchecked)
 
-- **Live inference.** Ollama 0.40.16 is installed on this machine with no model, and a model was not downloaded without consent. No provider, model identity, context budget, latency, or cost was recorded for a live run. To close this, run discovery with a configured model and fill the same table. The optional development baseline named for this epic is Qwen3 4B Instruct through Ollama, which needs a multi-gigabyte download and adequate memory.
-- **Measured quality of model output**: useful coverage, unsupported connections, and evidence correctness for a real model.
+- **Live inference beyond the historical smoke tests.** Two saved observations exist (above), but they used different engine revisions, a single 1.5B model, and partial discoveries. No run on the current head, no model of the intended size (the optional baseline named for this epic is Qwen3 4B Instruct through Ollama), no cost figure, and no external model has been recorded. A key or credential, where the endpoint needs one, is needed only at live authenticated inference (`architecture discover`). Scan, context preview, generate, and validate never need one, and a local Ollama often needs none.
+- **Measured quality of model output** beyond the two observations: useful coverage, unsupported connections, and evidence correctness on the current head.
 - **Human review verdicts.** The harness writes the review list; nobody has opened each cited location for a model's relationships.
 - **Readability and usefulness judgments** by the intended users.
 - **Redaction review of a live run.** The context for both repositories contained no secret-shaped strings (0 redactions), and `.env`-style names were denied, but that covers the first-round excerpts only, not what a model would request.
 
 ## Recommendation (not a decision)
 
-- **Do not call the experiment useful or production-ready yet.** The pipeline, safety, provenance, and reproducibility parts work and are tested; the usefulness question needs a live run.
-- **Narrow next step:** one live run on these two pinned repositories with a local model, recording the table above, followed by a human review of every connection in the review list. If a local model cannot produce supported components for DigitalBoneBox, try one external model with the separate source consent and compare.
+- **Do not call the experiment useful or production-ready yet.** The pipeline, safety, provenance, and reproducibility parts work and are tested; the usefulness question is open, and the saved live observations were not accepted.
+- **Narrow next step:** one live run on the current head, on these two pinned repositories, with a model larger than 1.5B, recording the table above, followed by a human review of every connection in the review list. If a local model cannot produce supported components for DigitalBoneBox, try one external model with the separate source consent and compare.
 - **Decide before expanding:** the large-file budget, whether the stored view should be committed so CI publication keeps its files, and whether deployment components should be a separate kind.
 - **Not recommended now:** more analyzers, a viewer with more features, or other providers.
 

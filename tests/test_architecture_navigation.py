@@ -199,7 +199,9 @@ def test_several_repositories_link_to_their_own_commits_and_remotes(tmp_path: Pa
     assert "(unconfirmed)" in artifacts["architecture-view.mmd"]
 
 
-def test_uncommitted_content_is_labelled_and_never_linked_to_a_commit(tmp_path: Path, capsys) -> None:
+def test_uncommitted_content_is_labelled_and_never_linked_to_a_commit(tmp_path: Path, capsys, monkeypatch) -> None:
+    # This checks exported provenance, not rendering; keep it independent of optional Node tooling.
+    monkeypatch.setattr("repodocs.architecture.export.mermaid_bundle", lambda _directory: "/* test bundle */")
     root_git, path = make_repository(tmp_path, "shop", "https://github.com/acme/shop")
     (path / "server.js").write_text((path / "server.js").read_text(encoding="utf-8") + "// local change\n", encoding="utf-8")
     root, config, ir = scanned(tmp_path, capsys, {"shop": path}, html=True)
@@ -213,6 +215,7 @@ def test_uncommitted_content_is_labelled_and_never_linked_to_a_commit(tmp_path: 
     assert items and all(item["link"] is None for item in items)
     assert {item["state"] for entry in evidence["components"].values() for item in entry["evidence"]} == {"working-tree"}
     assert "no source link is offered" in evidence["repositories"][0]["note"]
+    assert HTML_NAME in artifacts
     assert "github.com/acme/shop/blob" not in "".join(artifacts.values()), "a commit link was offered for uncommitted content"
 
 
