@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -54,6 +54,61 @@ class RepositorySpec:
         return data
 
 
+# Upper bounds for one architecture-discovery run (ADR-026). A project may lower them, never raise them.
+ARCHITECTURE_BUDGET_DEFAULTS: dict[str, int] = {
+    "max_rounds": 3,
+    "max_requests": 6,
+    "max_files_per_round": 8,
+    "max_excerpt_bytes": 8 * 1024,
+    "max_file_bytes": 64 * 1024,
+    "max_context_bytes": 200 * 1024,
+    "max_response_bytes": 32 * 1024,
+    "max_inventory_paths": 500,
+}
+# The version of the source-excerpt selection and redaction policy that consent is given for.
+SOURCE_POLICY_VERSION = "1.0"
+
+
+@dataclass(frozen=True)
+class ArchitectureSettings:
+    """Optional limits for architecture discovery: lower budgets and extra denied file names."""
+
+    budgets: dict[str, int] = field(default_factory=dict)
+    deny_names: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        data: dict[str, Any] = {}
+        if self.budgets:
+            data["budgets"] = dict(sorted(self.budgets.items()))
+        if self.deny_names:
+            data["deny_names"] = list(self.deny_names)
+        return data
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "ArchitectureSettings":
+        if not isinstance(data, dict):
+            raise ConfigError("architecture must be a JSON object")
+        unknown = sorted(set(data) - {"budgets", "deny_names"})
+        if unknown:
+            raise ConfigError("Unknown architecture setting: " + ", ".join(unknown))
+        budgets = data.get("budgets", {})
+        if not isinstance(budgets, dict):
+            raise ConfigError("architecture.budgets must be a JSON object")
+        for name, value in budgets.items():
+            if name not in ARCHITECTURE_BUDGET_DEFAULTS:
+                raise ConfigError(f"Unknown architecture budget: {name}")
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ConfigError(f"architecture.budgets.{name} must be a positive integer")
+            if value > ARCHITECTURE_BUDGET_DEFAULTS[name]:
+                raise ConfigError(
+                    f"architecture.budgets.{name} may only lower the default of {ARCHITECTURE_BUDGET_DEFAULTS[name]}"
+                )
+        names = data.get("deny_names", [])
+        if not isinstance(names, list) or not all(isinstance(item, str) and item for item in names):
+            raise ConfigError("architecture.deny_names must be a list of non-empty strings")
+        return cls(budgets=dict(budgets), deny_names=tuple(names))
+
+
 @dataclass(frozen=True)
 class AiSettings:
     """Optional AI interpretation. The default is disabled and local-only.
@@ -65,9 +120,20 @@ class AiSettings:
     model: str | None = None
     external_consent: bool = False
     ollama_host: str | None = None
+    # Consent to send bounded source excerpts (architecture discovery) to an external provider. It is a
+    # separate decision from external_consent and names the policy version it was given for.
+    source_excerpts_consent: bool = False
+    source_consent_policy: str | None = None
+
+    @property
+    def source_consent_current(self) -> bool:
+        return self.source_excerpts_consent and self.source_consent_policy == SOURCE_POLICY_VERSION
 
     def to_dict(self) -> dict[str, Any]:
         data: dict[str, Any] = {"provider": self.provider, "external_consent": self.external_consent}
+        if self.source_excerpts_consent:
+            data["source_excerpts_consent"] = True
+            data["source_consent_policy"] = self.source_consent_policy or SOURCE_POLICY_VERSION
         if self.model:
             data["model"] = self.model
         if self.ollama_host:
@@ -87,7 +153,16 @@ class AiSettings:
         for key in ("model", "ollama_host"):
             if data.get(key) is not None and (not isinstance(data[key], str) or not data[key]):
                 raise ConfigError(f"ai.{key} must be a non-empty string")
-        return cls(provider=provider, model=data.get("model"), external_consent=consent, ollama_host=data.get("ollama_host"))
+        source = data.get("source_excerpts_consent", False)
+        if not isinstance(source, bool):
+            raise ConfigError("ai.source_excerpts_consent must be true or false")
+        policy = data.get("source_consent_policy")
+        if policy is not None and (not isinstance(policy, str) or not policy):
+            raise ConfigError("ai.source_consent_policy must be a non-empty string")
+        return cls(
+            provider=provider, model=data.get("model"), external_consent=consent, ollama_host=data.get("ollama_host"),
+            source_excerpts_consent=source, source_consent_policy=policy if source else None,
+        )
 
 
 @dataclass
@@ -99,6 +174,7 @@ class ProjectConfig:
     output_directory: str = DEFAULT_OUTPUT_DIRECTORY
     destination_repository_id: str | None = None
     ai: AiSettings = AiSettings()
+    architecture: ArchitectureSettings = ArchitectureSettings()
 
     @property
     def config_path(self) -> Path:
@@ -206,6 +282,8 @@ class ProjectConfig:
         }
         if self.ai != AiSettings():
             data["ai"] = self.ai.to_dict()
+        if self.architecture.to_dict():
+            data["architecture"] = self.architecture.to_dict()
         return data
 
     def save(self) -> None:
@@ -278,6 +356,7 @@ class ProjectConfig:
             output_directory=output_directory,
             destination_repository_id=destination_id,
             ai=AiSettings.from_dict(data["ai"]) if "ai" in data else AiSettings(),
+            architecture=ArchitectureSettings.from_dict(data["architecture"]) if "architecture" in data else ArchitectureSettings(),
         )
 
 

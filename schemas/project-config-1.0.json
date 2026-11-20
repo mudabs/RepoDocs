@@ -65,7 +65,29 @@
           "type": "boolean",
           "description": "Explicit consent to send the redacted evidence bundle off this machine. False keeps the project local-only."
         },
-        "ollama_host": {"type": "string", "minLength": 1}
+        "ollama_host": {"type": "string", "minLength": 1},
+        "source_excerpts_consent": {
+          "type": "boolean",
+          "description": "Explicit consent to send bounded, redacted source excerpts to an external provider for architecture discovery (ADR-026). Separate from external_consent, which never covers it."
+        },
+        "source_consent_policy": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The source-excerpt policy version the consent was given for. Consent for another version does not apply."
+        }
+      },
+      "additionalProperties": false
+    },
+    "architecture": {
+      "type": "object",
+      "description": "Optional limits for architecture discovery. Budgets may only be lowered from the defaults in ADR-026.",
+      "properties": {
+        "budgets": {
+          "type": "object",
+          "propertyNames": {"enum": ["max_rounds", "max_requests", "max_files_per_round", "max_excerpt_bytes", "max_file_bytes", "max_context_bytes", "max_response_bytes", "max_inventory_paths"]},
+          "additionalProperties": {"type": "integer", "minimum": 1}
+        },
+        "deny_names": {"type": "array", "items": {"type": "string", "minLength": 1}}
       },
       "additionalProperties": false
     }

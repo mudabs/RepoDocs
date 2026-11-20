@@ -181,6 +181,30 @@ class OllamaProvider:
         return ProviderResponse(_parse_object(content, "Ollama"), model if isinstance(model, str) and model else self.model)
 
 
+def require_source_consent(provider: Provider, settings: AiSettings) -> None:
+    """Source excerpts leave the machine only with their own consent, given for the current policy.
+
+    Consent for the IR-only evidence bundle never covers excerpts. A loopback Ollama host sends
+    nothing off the machine and needs none.
+    """
+
+    if provider.external and not settings.source_consent_current:
+        raise ConsentError(
+            f"The {provider.name} provider would receive bounded, redacted source excerpts, and no consent for "
+            "that is recorded for the current policy. Review them with `repodocs architecture context`, then run "
+            "`repodocs ai-configure --consent-source-excerpts`. Consent for the evidence bundle does not cover it"
+        )
+
+
+def resolve_discovery_provider(settings: AiSettings) -> Provider | None:
+    """The provider for architecture discovery: external consent and source consent are both required."""
+
+    provider = resolve_provider(settings)
+    if provider is not None:
+        require_source_consent(provider, settings)
+    return provider
+
+
 def resolve_provider(settings: AiSettings) -> Provider | None:
     """Build the configured provider, or None when AI is disabled.
 
