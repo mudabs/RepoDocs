@@ -128,10 +128,13 @@ def _escape(value: str) -> str:
     return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
 
 
-def architecture_artifacts(config: ProjectConfig, ir: dict[str, Any], tool_directory: Path | None = None) -> tuple[dict[str, str], list[str]]:
+def architecture_artifacts(
+    config: ProjectConfig, ir: dict[str, Any], tool_directory: Path | None = None, *, include_html: bool = True
+) -> tuple[dict[str, str], list[str]]:
     """The optional artifacts of the stored view and warnings; nothing when there is no usable view.
 
     A stale or invalid view is reported and produces no artifacts, so it can never be shown as current.
+    ``include_html=False`` skips the page, which needs the optional Mermaid bundle, for checks that only compare files.
     """
 
     status, view, reason = load_view(config, ir)
@@ -149,7 +152,7 @@ def architecture_artifacts(config: ProjectConfig, ir: dict[str, Any], tool_direc
     alternatives = render_alternatives(view, citations)
     if alternatives is not None:
         artifacts[ALTERNATIVES_NAME] = alternatives
-    if config.architecture.html_export:
+    if config.architecture.html_export and include_html:
         bundle = mermaid_bundle(tool_directory)
         if bundle is None:
             raise ConfigError(
@@ -158,3 +161,44 @@ def architecture_artifacts(config: ProjectConfig, ir: dict[str, Any], tool_direc
             )
         artifacts[HTML_NAME] = build_html(view, diagrams, evidence, bundle)
     return artifacts, []
+
+
+def validate_export_page(content: str) -> None:
+    """The page is what this module builds: three scripts, locked by hash, with nothing loaded from outside."""
+
+    from html.parser import HTMLParser
+
+    from ..errors import ValidationError
+
+    class Scripts(HTMLParser):
+        def __init__(self) -> None:
+            super().__init__()
+            self.scripts: list[tuple[dict[str, str | None], str]] = []
+            self.forbidden: list[str] = []
+            self._attributes: dict[str, str | None] = {}
+            self._text: list[str] | None = None
+
+        def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+            attributes = dict(attrs)
+            if tag == "script":
+                self._attributes, self._text = attributes, []
+            if tag in ("link", "img", "iframe", "object", "embed", "form", "base") or (tag == "script" and "src" in attributes):
+                self.forbidden.append(tag)
+
+        def handle_data(self, data: str) -> None:
+            if self._text is not None:
+                self._text.append(data)
+
+        def handle_endtag(self, tag: str) -> None:
+            if tag == "script" and self._text is not None:
+                self.scripts.append((self._attributes, "".join(self._text)))
+                self._text = None
+
+    parser = Scripts()
+    parser.feed(content)
+    policy = re.search(r'Content-Security-Policy" content="([^"]+)"', content)
+    inline = [text for attributes, text in parser.scripts if attributes.get("type") != "application/json"]
+    if parser.forbidden or policy is None or len(parser.scripts) != 3 or len(inline) != 2:
+        raise ValidationError("The architecture export page does not have the expected structure")
+    if any(_hash(text) not in policy.group(1) for text in inline) or "connect-src 'none'" not in policy.group(1):
+        raise ValidationError("The architecture export page's scripts do not match its Content-Security-Policy")

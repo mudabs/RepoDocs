@@ -107,12 +107,6 @@ When a project contains PostgreSQL table facts, `repodocs generate` produces **`
 
 RepoDocs' built-in validator checks the grammar it emits and is not Mermaid. The test suite can additionally render every generated diagram with the real, pinned Mermaid renderer: run `npm ci` in `tools/mermaid` (Node 18.19 or newer, and a local Chrome or Chromium; set `PUPPETEER_EXECUTABLE_PATH` if it is not found). Without it those tests are skipped locally and a missing renderer is reported as `not-available`, never as success. Pull-request CI installs it and fails if it is missing. Ordinary Python-only use needs none of this.
 
-### Architecture views: source navigation (in progress, ADR-026)
-
-- From a stored architecture view, generation can write `architecture-view-evidence.json`: for every component and connection, the cited files, line spans, and content hashes. A link to the source on GitHub is included only for a committed snapshot of a `github.com` repository, pinned to the exact commit. Uncommitted working-tree content is labelled with its fingerprint and never linked, and other hosts get no links. When the model reported competing interpretations, generation also writes `architecture-view-alternatives.md` (each alternative, the components it concerns, and its evidence locations) and the HTML export lists them; they are never drawn into the diagram.
-- Setting `"architecture": {"html_export": true}` also writes one self-contained `architecture-view.html` that draws the diagram offline, with zoom, pan, fit, and evidence details on click. It embeds the pinned Mermaid bundle, so it needs the optional tooling (`npm ci` in `tools/mermaid`) and fails clearly without it. It contains locations and hashes, never source text, and loads nothing from the network.
-- The commands that produce these files arrive with the CLI integration (#53); the modules are in place and tested.
-
 ### Cross-repository candidates
 
 After analysis, `scan` matches React `http_request` findings to endpoints in
@@ -203,12 +197,25 @@ Reviewed fake-provider golden cases currently yield 1 inference, 4 proposals,
 3 rejections, and no reviewed unsupported inferences. These are regression
 results, not a real-model factuality benchmark. See ADR-021.
 
-### Architecture discovery: source context (in progress, ADR-026)
+### Architecture discovery (optional, ADR-026)
 
-- `repodocs architecture context` writes `.repodocs/architecture-context.json` and contacts nothing. It holds redacted, bounded excerpts of the README, manifests, and entry-point files of each scanned repository, an inventory of names, and a list of what was omitted and why (denied names such as `.env` and `*.pem`, binary, oversized, stale, links, and budget limits). Review it before consenting.
-- Sending those excerpts to an external provider needs `repodocs ai-configure --consent-source-excerpts`, in addition to `--consent-external`. Consent for the evidence bundle never covers excerpts, and consent given for an older policy version does not apply. A loopback Ollama host needs neither.
-- `architecture` in `repodocs.json` may lower the default budgets and add denied file names; it cannot raise a budget or remove a built-in denied name.
-- This step only builds the context. Discovery, diagrams, and navigation are separate, later changes (epic #47). Redaction is pattern-based, not a guarantee.
+For an application that no analyzer understands, such as a plain JavaScript and Express app, the deterministic documents list languages and dependencies but no components. Architecture discovery asks a model for a structured view of the application's components and connections, checks every claim against the scanned snapshot, and renders it. It is optional, off by default, and never changes the System IR, a cross-repository candidate, or a confirmation.
+
+Workflow:
+
+1. `repodocs scan`, then choose a provider: `repodocs ai-configure --provider ollama --model <name>` (a local model; nothing leaves the machine) or `--provider anthropic` (external).
+2. `repodocs architecture context` writes the preview `.repodocs/architecture-context.json` and contacts nothing. It is separate from the context a stored view was built from, so previewing again changes nothing already discovered. It holds redacted, bounded excerpts of each repository's README, manifests, and entry-point files, a name inventory, and what was omitted and why (denied names such as `.env` and `*.pem`, binary, oversized, stale, links, budgets). Review it.
+3. An external provider needs two consents: `--consent-external` for the evidence bundle and, separately, `--consent-source-excerpts` for these excerpts. One never implies the other, and consent for an older policy version does not apply.
+4. `repodocs architecture discover` runs a bounded exploration (at most 3 rounds, 6 requests, 8 files per round, 200 KiB of context, 32 KiB per response by default; `architecture.budgets` in `repodocs.json` can only lower them) and stores the validated view in `.repodocs/architecture-view.json`. A current stored view is reused without contacting the provider; `--refresh` runs new inference. `generate` never calls a provider.
+5. `repodocs generate` writes `architecture-view.mmd` (and detail diagrams for crowded views) and `architecture-view-evidence.json` beside the other documents when a current view is stored, plus `architecture-view-alternatives.md` when the model reported competing interpretations (each with the components it concerns and its evidence locations; they are never drawn into the diagram). With `"architecture": {"html_export": true}` it also writes one self-contained `architecture-view.html` (zoom, pan, fit, evidence on click, and a list of the alternatives). The page embeds the pinned Mermaid bundle, so it needs the optional tooling and fails clearly without it.
+6. `repodocs validate` checks the files against the current view and reports a stale or invalid view as a warning.
+
+What to expect:
+- Items are `inferred` only when they cite excerpts of their own member files, and are otherwise `proposed`, drawn dashed and labelled in the text. A connection between repositories is drawn as unconfirmed unless a confirmed candidate is bound to it: same direction, and the candidate's observed request and endpoint files are members of the two components, with evidence cited from both sides. Valid citations show that a view is well formed, not that a relationship is true: check the evidence.
+- The evidence map links to the exact commit on GitHub only for a committed snapshot of a `github.com` repository. Uncommitted content is labelled with its fingerprint and not linked. The map and page hold locations and hashes, never source text.
+- A changed scan makes the view stale: its files are retired with a warning, and the deterministic documents are unaffected. CI publication from a clean clone has no stored view (it is local state and holds source excerpts, so it is not committed). Earlier architecture files are then kept as they are, `generate` and `validate` warn that their freshness was not verified, the manifest keeps the provenance each file was recorded with, and the pull request lists them as unverified. Refresh them locally with `discover --refresh`, or remove them on purpose with `repodocs generate --retire-architecture`. A discovery that ends early is stored as `partial` with its reason (`incomplete-response`, `empty-response`, `no-progress`, a budget, or a provider error), and a `--refresh` that ends early does not replace a complete current view.
+- Exit codes are the existing ones: 2 for configuration or missing consent, 7 for provider failure, 4 for edited generated files, 5 for unresolved confirmations (`validate`). A partial discovery exits 0 with a warning.
+- Redaction is pattern-based, not a guarantee, and what a model returns is untrusted. Replayed tests prove the validation contract; they do not show how good any live model is (see the evaluation, #54).
 
 ### Publishing documentation from GitHub Actions
 

@@ -239,12 +239,36 @@ def _cmd_generate(args: argparse.Namespace) -> int:
     # The AI package is loaded only when claims have been stored; otherwise generation is
     # purely deterministic and needs nothing from it.
     ai_status, optional = "absent", {}
+    architecture_status, architecture_warnings = "absent", []
     if (config.internal_path / "ai-claims.json").exists():
         from .ai.docs import ai_artifact
 
         ai_status, optional = ai_artifact(config.internal_path, ir)
-    result = generate_docs(config, ir, optional)
-    warnings = []
+    # Stored architecture views are rendered from disk only: generate never contacts a provider.
+    # With no stored view at all (a clean clone: the view is local state) earlier architecture files are kept
+    # and reported as unverified rather than deleted. `--retire-architecture` removes them on purpose.
+    retain_architecture = False
+    if args.retire_architecture:
+        architecture_status = "retired"
+    elif (config.internal_path / "architecture-view.json").exists():
+        from .architecture.discovery import load_view
+        from .architecture.export import architecture_artifacts
+
+        architecture_status = load_view(config, ir)[0]
+        architecture, architecture_warnings = architecture_artifacts(config, ir)
+        optional = {**optional, **architecture}
+    else:
+        retain_architecture = True
+    result = generate_docs(config, ir, optional, retain_architecture=retain_architecture)
+    warnings = list(architecture_warnings)
+    kept = [name for name in result.artifacts if name.startswith("architecture-view") and name not in optional]
+    if kept:
+        architecture_status = "unverified"
+        warnings.append(
+            "No stored architecture view is available here, so these earlier files were kept and their freshness was not "
+            "verified against the current source revisions: " + ", ".join(kept) + ". Run `repodocs architecture discover` "
+            "to refresh them, or `repodocs generate --retire-architecture` to remove them"
+        )
     if ai_status in ("stale", "invalid"):
         warnings.append(
             f"Stored AI claims are {ai_status} for the current System IR and were not rendered; "
@@ -258,7 +282,8 @@ def _cmd_generate(args: argparse.Namespace) -> int:
             "destination": result.destination,
             "output_directory": config.output_path.as_posix(),
             "artifacts": result.artifacts,
-            "ai": {"claims": ai_status, "rendered": bool(optional)},
+            "ai": {"claims": ai_status, "rendered": "architecture-ai.md" in optional},
+            "architecture": {"view": architecture_status, "rendered": any(name.startswith("architecture-view") for name in optional)},
         },
         warnings=warnings,
     )
@@ -281,6 +306,20 @@ def _cmd_validate(args: argparse.Namespace) -> int:
     artifacts, ir = validate_project(config)
     if not args.allow_unresolved:
         _require_resolved_candidates(ir)
+    warnings = []
+    if (config.internal_path / "architecture-view.json").exists():
+        from .architecture.discovery import STATUS_CURRENT, load_view
+
+        view_status, _, reason = load_view(config, ir)
+        if view_status != STATUS_CURRENT:
+            warnings.append(f"The stored architecture view is {view_status}: {reason}")
+    else:
+        kept = [name for name in artifacts if name.startswith("architecture-view")]
+        if kept:
+            warnings.append(
+                "No stored architecture view is available here; these files are unedited but their freshness against the "
+                "current source revisions was not verified: " + ", ".join(kept)
+            )
     _emit(
         "validate",
         ok=True,
@@ -289,6 +328,7 @@ def _cmd_validate(args: argparse.Namespace) -> int:
             "artifacts": artifacts,
             "candidate_states": status_counts(ir),
         },
+        warnings=warnings,
     )
     return EXIT_OK
 
@@ -457,6 +497,68 @@ def _cmd_architecture_context(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _cmd_architecture_discover(args: argparse.Namespace) -> int:
+    """Run bounded architecture discovery and store the validated view. Contacts the provider only here."""
+
+    from .ai import providers
+    from .architecture.context import CONTEXT_FILENAME, build_context
+    from .architecture.discovery import STATUS_CURRENT, discover, load_view, save_view
+
+    config = ProjectConfig.load(_root(args))
+    ir = _load_scanned_ir(config)
+    validate_candidate_states(config, ir)
+    status, view, _ = load_view(config, ir)
+    if status == STATUS_CURRENT and not args.refresh and view is not None:
+        _emit("architecture-discover", ok=True, data=_discovery_summary(config, view, reused=True))
+        return EXIT_OK
+    # Consent and settings are checked before any context is sent; the context is written for review first.
+    provider = providers.resolve_discovery_provider(config.ai)
+    if provider is None:
+        raise ConfigError(
+            "Architecture discovery needs an AI provider; choose one with `repodocs ai-configure --provider ollama --model <name>`. "
+            "Scan, generate, and validate work without one"
+        )
+    preview, _ = build_context(config, ir)
+    write_json(config.internal_path / CONTEXT_FILENAME, preview)
+    new_view, context = discover(config, ir, provider)
+    # A replacement that ended early never displaces a current, complete view the user can still rely on.
+    if status == STATUS_CURRENT and view is not None and view["status"] == "complete" and new_view["status"] != "complete":
+        _emit(
+            "architecture-discover", ok=True, data={**_discovery_summary(config, view, reused=True), "replacement_discarded": new_view["partial_reason"]},
+            warnings=[f"The new discovery ended early ({new_view['partial_reason']}); the previous complete view was kept"],
+        )
+        return EXIT_OK
+    try:
+        save_view(config, new_view, context)
+    except OSError as exc:
+        raise RepoDocsError(f"The architecture view could not be stored ({exc}); the previous view, if any, was left unchanged") from exc
+    view = new_view
+    warnings = []
+    if status in ("stale", "invalid"):
+        warnings.append(f"The previous architecture view was {status} and has been replaced")
+    if view["status"] == "partial":
+        warnings.append(f"Discovery stopped early ({view['partial_reason']}); the view is partial")
+    _emit("architecture-discover", ok=True, data=_discovery_summary(config, view, reused=False), warnings=warnings)
+    return EXIT_OK
+
+
+def _discovery_summary(config: ProjectConfig, view: dict[str, Any], *, reused: bool) -> dict[str, Any]:
+    from .architecture.discovery import VIEW_FILENAME
+
+    return {
+        "status": view["status"],
+        "reused": reused,
+        "view": (config.internal_path / VIEW_FILENAME).as_posix(),
+        "components": len(view["components"]),
+        "connections": len(view["connections"]),
+        "inferred": sum(item["classification"] == "inferred" for item in view["components"] + view["connections"]),
+        "proposed": sum(item["classification"] == "proposed" for item in view["components"] + view["connections"]),
+        "rejected": view["rejected"],
+        "provenance": view["provenance"],
+        **({"partial_reason": view["partial_reason"]} if view["status"] == "partial" else {}),
+    }
+
+
 def _write_bundle(config: ProjectConfig) -> tuple[dict[str, Any], Path]:
     from .ai.bundle import build_bundle
     from .ai.claims import BUNDLE_FILENAME
@@ -593,6 +695,11 @@ def _build_parser() -> argparse.ArgumentParser:
     generate_parser = subparsers.add_parser(
         "generate", help="Generate deterministic documentation into the destination"
     )
+    generate_parser.add_argument(
+        "--retire-architecture",
+        action="store_true",
+        help="Remove the generated architecture-view files (owned and unedited only) instead of keeping or rendering them",
+    )
     generate_parser.set_defaults(handler=_cmd_generate)
 
     validate_parser = subparsers.add_parser(
@@ -666,6 +773,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "context", help="Write the bounded, redacted source context for review; sends nothing"
     )
     architecture_context.set_defaults(handler=_cmd_architecture_context)
+    architecture_discover = architecture_commands.add_parser(
+        "discover", help="Ask the configured provider for an architecture view and validate it; reuses a current stored view"
+    )
+    architecture_discover.add_argument("--refresh", action="store_true", help="Run new inference even when a current view is stored")
+    architecture_discover.set_defaults(handler=_cmd_architecture_discover)
     return parser
 
 
