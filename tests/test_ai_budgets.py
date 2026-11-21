@@ -950,8 +950,10 @@ def test_a_served_model_outside_the_profile_keeps_its_reservation_and_stops_a_co
     with pytest.raises(RunStopped) as stopped:
         go(provider)
 
-    request = provider.ledger.snapshot()["requests"][0]
-    assert request["cost_measured"] is False and request["charged_cost_usd"] == request["reserved_cost_usd"]
+    snapshot = provider.ledger.snapshot()
+    request = snapshot["requests"][0]
+    assert request["cost_measured"] is False and request["charged_cost_usd"] is None, "another model's cost is unknown, not this profile's"
+    assert snapshot["totals"]["cost_usd"] is None and snapshot["remaining"]["cost_usd"] is None
     assert stopped.value.reason == "unpriced-usage" and "substitute-model" in str(stopped.value) and fake.calls == 1
     aliased = wrap(Fake(MEASURED, count=100), PRICES, request_output_tokens=100, max_cost_usd=Decimal(1))
     go(aliased)
@@ -981,7 +983,11 @@ def test_limits_cannot_be_raised_by_building_them_directly_and_a_run_can_only_lo
 def test_a_budget_is_not_wrapped_twice() -> None:
     inner = wrap(Fake())
 
-    assert budgeted(inner, AiSettings()) is inner  # type: ignore[arg-type]
+    assert budgeted(inner, AiSettings(limits=RunLimits(context_window_tokens=100_000))) is inner  # type: ignore[arg-type]
+    with pytest.raises(ConfigError, match="exceeds the project"):
+        budgeted(inner, AiSettings(limits=RunLimits(context_window_tokens=100_000, max_requests=2)))  # type: ignore[arg-type]
+    with pytest.raises(ConfigError, match="not both"):
+        budgeted(inner, AiSettings(limits=RunLimits(context_window_tokens=100_000)), RunLimits(max_requests=1))  # type: ignore[arg-type]
     assert not hasattr(inner, "count_input_tokens"), "only the ledger counts, so an outer wrapper cannot count again"
     assert inner.request_body("s", "u", OBJECT)["messages"][0]["content"] == "u"
 
@@ -1113,3 +1119,116 @@ def test_the_context_preview_shows_the_limits_and_worst_case_cost_without_contac
     budget = result.data["budget"]
     assert budget["limits"]["max_requests"] == 6 and budget["max_estimated_cost_usd"] is None and budget["price_profile"] is None
     assert provider.counts == 0 and not provider.messages
+
+
+# ------------------------------------------------------------------ second review regressions (#81)
+def test_the_reserved_output_is_the_output_cap_the_provider_really_sends() -> None:
+    with pytest.raises(ConfigError, match="output cap of 16000 tokens but this run reserves 1000"):
+        BudgetedProvider(AnthropicProvider(None), ledger(provider="anthropic", request_output_tokens=1000))
+    smaller = BudgetedProvider(AnthropicProvider(None, max_output_tokens=500), ledger(provider="anthropic", request_output_tokens=1000))
+    assert smaller.output_cap == 500
+    fake = Fake(None, count=100)
+    fake.max_output_tokens = 300
+    provider = BudgetedProvider(fake, ledger(request_output_tokens=1000))  # type: ignore[arg-type]
+    go(provider)
+    assert provider.ledger.snapshot()["requests"][0]["output_cap_tokens"] == 300 and provider.ledger.snapshot()["totals"]["output_tokens"] == 300
+
+
+def test_the_service_refuses_a_provider_whose_output_cap_exceeds_the_run(tmp_path: Path, capsys) -> None:
+    from repodocs import service
+
+    root = service_project(tmp_path, capsys)
+    provider = Counting(full_answer)
+    provider.max_output_tokens = 16000
+
+    result = service.execute("discover", service.DiscoverRequest(root, provider=provider, limits=RunLimits(request_output_tokens=1000)))
+
+    assert result.status == "failed" and "output cap" in result.error.message and not provider.messages and provider.counts == 0
+
+
+def test_partial_usage_raises_the_charged_cost_with_the_charged_tokens() -> None:
+    fake = Fake(Usage(50_000, 100, None, None), count=100)
+    provider = wrap(fake, PRICES, request_output_tokens=100, max_cost_usd=Decimal("0.05"))
+
+    with pytest.raises(RunStopped) as stopped:
+        go(provider)
+    with pytest.raises(RunStopped):
+        go(provider)
+
+    request = provider.ledger.snapshot()["requests"][0]
+    assert stopped.value.reason == "reported-usage-over-limit" and fake.calls == 1
+    assert request["charged_input_tokens"] == 50_000 and request["charged_cost_usd"] == "0.505000", "50,000 x $10 + 100 x $50 per million"
+
+
+def test_a_cancel_during_a_token_count_sends_no_request(tmp_path: Path, capsys) -> None:
+    from repodocs import service
+
+    root = service_project(tmp_path, capsys)
+    token = service.CancellationToken()
+
+    class CancelWhileCounting(Counting):
+        def count_input_tokens(self, system: str, user: str, schema: dict) -> int:
+            token.cancel()
+            return super().count_input_tokens(system, user, schema)
+
+    provider = CancelWhileCounting(full_answer)
+    result = service.execute("discover", service.DiscoverRequest(root, provider=provider), service.RunHooks(cancel=token))
+
+    assert result.status == "cancelled" and provider.counts == 1 and not provider.messages
+    receipt = json.loads(Path(result.data["usage"]["receipt"]).read_text(encoding="utf-8"))
+    assert receipt["totals"]["requests"] == 0 and receipt["stop_reason"] == "cancelled"
+
+
+def test_a_caller_budget_and_separate_run_limits_are_refused(tmp_path: Path, capsys) -> None:
+    from repodocs import service
+    from repodocs.config import ProjectConfig
+
+    root = service_project(tmp_path, capsys)
+    provider = Counting(full_answer)
+    shared = BudgetedProvider(provider, ledger_for(provider, ProjectConfig.load(root).ai))  # type: ignore[arg-type]
+
+    result = service.execute("discover", service.DiscoverRequest(root, provider=shared, limits=RunLimits(max_requests=1)))
+
+    assert result.status == "failed" and "not both" in result.error.message and not provider.messages
+
+
+def test_a_budget_stop_before_any_request_is_a_budget_error_not_a_model_failure(tmp_path: Path, capsys) -> None:
+    from repodocs import service
+
+    root = service_project(tmp_path, capsys)
+    provider = Counting(full_answer, count=200_000)
+
+    result = service.execute("discover", service.DiscoverRequest(root, provider=provider))
+
+    assert result.status == "failed" and result.error.code == "budget" and result.error.exit_code == 7
+    assert "model returned" not in result.error.message and "context window" in result.error.message
+    assert result.data["usage"]["stop_reason"] == "context-window" and result.data["usage"]["requests"] == 0 and not provider.messages
+
+
+def test_failed_cli_runs_print_their_usage(tmp_path: Path, capsys) -> None:
+    server, hits = serve()
+    try:
+        root = scanned(tmp_path, capsys)
+        host = f"http://127.0.0.1:{server.server_port}"
+        assert invoke(root, capsys, "ai-configure", "--provider", "ollama", "--model", "llama3", "--ollama-host", host)[0] == 0
+
+        code, payload = invoke(root, capsys, "ai-interpret")
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert code == 7 and hits == [] and payload["ok"] is False
+    usage = payload["data"]["usage"]
+    assert usage["stop_reason"] == "context-window" and usage["requests"] == 0 and Path(usage["receipt"]).exists()
+    assert_valid("cli-response-1.0.json", payload)
+
+
+def test_a_failed_cli_discovery_prints_why_it_stopped(tmp_path: Path, capsys, monkeypatch) -> None:
+    root = express_project(tmp_path, capsys)
+    edit_ai(root, limits={"context_window_tokens": 4096})
+    use(monkeypatch, Scripted(generic))
+
+    code, payload = invoke(root, capsys, "architecture", "discover")
+
+    assert code == 7 and payload["data"]["usage"]["stop_reason"] == "context-window"
+    assert "model returned" not in payload["errors"][0]

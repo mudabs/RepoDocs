@@ -319,6 +319,7 @@ def discover(config: ProjectConfig, ir: dict[str, Any], provider: Provider) -> t
     resolver = ContextResolver(config, ir)
     resolver.select_initial()
     best: tuple[Validation, str] | None = None
+    stopped: RunStopped | None = None
     partial: str | None = None
     failure = ""
     repair = False
@@ -332,7 +333,7 @@ def discover(config: ProjectConfig, ir: dict[str, Any], provider: Provider) -> t
             response = provider.generate(SYSTEM_PROMPT, _user_message(resolver, context, round_number=resolver.rounds, repair=repair), RESPONSE_SCHEMA)
         except RunStopped as exc:
             # A usage limit ended the run: nothing more is sent, and the reply that passed a cap is not used.
-            partial, failure = "usage-budget", str(exc)
+            partial, failure, stopped = "usage-budget", str(exc), exc
             break
         except MalformedProviderOutput as exc:
             if not repaired:
@@ -382,6 +383,8 @@ def discover(config: ProjectConfig, ir: dict[str, Any], provider: Provider) -> t
         if not progressed:
             partial = "no-progress"
             break
+    if best is None and stopped is not None:
+        raise stopped  # a budget stop, not a model failure: the run may never have contacted the model
     if best is None:
         raise ProviderError(
             "The model returned no architecture component that passed validation"

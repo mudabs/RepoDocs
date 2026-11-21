@@ -15,7 +15,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Callable, Mapping
 
-from .ai.budgets import RunLimits, budgeted, ledger_for, write_receipt
+from .ai.budgets import RunLimits, RunStopped, budgeted, ledger_for, write_receipt
 from .ai.providers import Provider, ProviderResponse, require_source_consent
 from .common import write_json
 from .confirmations import apply_decisions, load_decisions, status_counts, unresolved_candidates
@@ -90,9 +90,13 @@ class RunHooks:
 NO_HOOKS = RunHooks()
 
 
-def _checkpoint(hooks: RunHooks, operation: str, stage: str) -> None:
+def _stop_if_cancelled(hooks: RunHooks, operation: str, stage: str) -> None:
     if hooks.cancel is not None and hooks.cancel.cancelled:
         raise Cancelled(f"{operation} was cancelled before {stage}")
+
+
+def _checkpoint(hooks: RunHooks, operation: str, stage: str) -> None:
+    _stop_if_cancelled(hooks, operation, stage)
     if hooks.progress is not None:
         hooks.progress(ProgressEvent(operation, stage))
 
@@ -157,6 +161,7 @@ _ERRORS: tuple[tuple[type[RepoDocsError], str, int], ...] = (
     (OwnershipError, "ownership", EXIT_OWNERSHIP),
     (ConfirmationError, "confirmation", EXIT_CONFIRMATION),
     (PublicationError, "publication", EXIT_PUBLICATION),
+    (RunStopped, "budget", EXIT_AI_PROVIDER),
     (ProviderError, "provider", EXIT_AI_PROVIDER),
     (ValidationError, "validation", EXIT_VALIDATION),
     (RepoDocsError, "usage", EXIT_USAGE),
@@ -168,7 +173,7 @@ def describe_error(exc: RepoDocsError) -> WorkflowError:
 
     for kind, code, exit_code in _ERRORS:
         if isinstance(exc, kind):
-            message = f"{exc}. Deterministic scan, generate, and validate are unaffected" if code == "provider" else str(exc)
+            message = f"{exc}. Deterministic scan, generate, and validate are unaffected" if code in ("provider", "budget") else str(exc)
             return WorkflowError(code, message, exit_code)
     raise TypeError(f"{type(exc).__name__} is not a RepoDocsError")  # pragma: no cover
 
@@ -372,7 +377,7 @@ def discover(request: DiscoverRequest, hooks: RunHooks = NO_HOOKS) -> WorkflowRe
         )
     require_source_consent(provider, config.ai)
     # Every request, count, retry and repair of this run is reserved in one ledger, created only after consent.
-    budget = budgeted(provider, config.ai, request.limits)
+    budget = budgeted(provider, config.ai, request.limits, before_send=lambda: _stop_if_cancelled(hooks, "discover", "provider-request"))
     preview, _ = build_context(config, ir)
     write_json(config.internal_path / CONTEXT_FILENAME, preview)
     try:
@@ -395,7 +400,9 @@ def discover(request: DiscoverRequest, hooks: RunHooks = NO_HOOKS) -> WorkflowRe
     try:
         save_view(config, new_view, context)
     except OSError as exc:
-        raise RepoDocsError(f"The architecture view could not be stored ({exc}); the previous view, if any, was left unchanged") from exc
+        error = RepoDocsError(f"The architecture view could not be stored ({exc}); the previous view, if any, was left unchanged")
+        error.receipt = usage  # type: ignore[attr-defined]
+        raise error from exc
     warnings = []
     if status in ("stale", "invalid"):
         warnings.append(f"The previous architecture view was {status} and has been replaced")

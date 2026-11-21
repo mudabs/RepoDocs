@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import ROUND_CEILING, Decimal, InvalidOperation
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 from ..common import write_json_atomic
 from ..errors import ConfigError, ConsentError, ProviderError
@@ -396,16 +396,18 @@ class Ledger:
         cost = None if self.prices is None else sum(item.charged_cost or 0 for item in self._requests)
         return sum(item.charged_input for item in self._requests), sum(item.charged_output for item in self._requests), cost
 
+    def _unpriced(self) -> bool:
+        return self.prices is not None and any(item.charged_cost is None for item in self._requests)
+
     def _cost_cap(self) -> int | None:
         return None if self.limits.max_cost_usd is None else _ceil(self.limits.max_cost_usd * _MICRO)
 
-    def _problem(self, estimate: int) -> tuple[str, str] | None:
+    def _problem(self, estimate: int, output: int) -> tuple[str, str] | None:
         limits = self.limits
         if self._stop is not None:
             return self._stop
         if len(self._requests) + 1 > limits.max_requests:  # type: ignore[operator]
             return STOP_REQUESTS, f"The next request would be number {len(self._requests) + 1}, past the run limit of {limits.max_requests}"
-        output = limits.request_output_tokens
         if estimate + output > limits.context_window_tokens:  # type: ignore[operator]
             return STOP_CONTEXT, (
                 f"The request needs up to {estimate} prompt tokens plus {output} reserved output tokens, which does not fit "
@@ -433,7 +435,7 @@ class Ledger:
         """Refuse early, before any token counting, when the run is already stopped or out of requests."""
 
         with self._lock:
-            problem = self._problem(0)
+            problem = self._problem(0, self.limits.request_output_tokens)  # type: ignore[arg-type]
             if problem:
                 raise self._refuse(problem)
 
@@ -446,14 +448,19 @@ class Ledger:
             self._counts += 1
             return True
 
-    def reserve(self, estimate_tokens: int, method: str) -> _Request:
-        """Charge a request's worst case, or raise ``RunStopped`` without sending anything."""
+    def reserve(self, estimate_tokens: int, method: str, output_cap: int | None = None) -> _Request:
+        """Charge a request's worst case, or raise ``RunStopped`` without sending anything.
 
+        ``output_cap`` is the output limit the provider will actually send; it can only be lower than the run's.
+        """
+
+        output = self.limits.request_output_tokens if output_cap is None else output_cap
+        if output > self.limits.request_output_tokens:  # type: ignore[operator]
+            raise ConfigError(f"A request would send an output cap of {output} tokens, above the run's {self.limits.request_output_tokens}")
         with self._lock:
-            problem = self._problem(estimate_tokens)
+            problem = self._problem(estimate_tokens, output)  # type: ignore[arg-type]
             if problem:
                 raise self._refuse(problem)
-            output = self.limits.request_output_tokens
             cost = None if self.prices is None else self.prices.reserve_micro_usd(estimate_tokens, output)  # type: ignore[arg-type]
             request = _Request(len(self._requests) + 1, estimate_tokens, method, output, estimate_tokens, output, cost, cost)  # type: ignore[arg-type]
             self._requests.append(request)
@@ -481,10 +488,16 @@ class Ledger:
                 else:
                     request.charged_input = max(request.charged_input, reported_prompt or 0)
                     request.charged_output = max(request.charged_output, reported_output or 0)
-                if self.prices is not None and usage.measured and model is not None and self.prices.prices_served(model):
-                    actual = self.prices.cost_micro_usd(usage)
-                    if actual is not None:
+                if self.prices is not None:
+                    if model is not None and not self.prices.prices_served(model):
+                        # Another model's rates are unknown: no figure from this profile is an upper bound for it.
+                        request.charged_cost = None
+                    elif usage.measured and model is not None and (actual := self.prices.cost_micro_usd(usage)) is not None:
                         request.charged_cost, request.cost_measured = actual, True
+                    elif request.charged_cost is not None:
+                        # Partial usage: the charged tokens at the highest applicable rates, never less than the reservation.
+                        bound = self.prices.reserve_micro_usd(request.charged_input, request.charged_output)
+                        request.charged_cost = max(request.charged_cost, bound) if bound is not None else None
             return self._overage(request)
 
     def _overage(self, request: _Request) -> RunStopped | None:
@@ -536,7 +549,7 @@ class Ledger:
             limits = self.limits
             cap = self._cost_cap()
             unmeasured = [item for item in self._requests if not item.measured]
-            unpriced = self.prices is not None and any(item.charged_cost is None for item in self._requests)
+            unpriced = self._unpriced()
             return {
                 "limits": limits.to_dict(),
                 "price_profile": None if self.prices is None else self.prices.to_dict(),
@@ -556,7 +569,7 @@ class Ledger:
                     "count_requests": max(0, limits.max_count_requests - self._counts),  # type: ignore[operator]
                     "input_tokens": max(0, limits.max_input_tokens - spent_input),  # type: ignore[operator]
                     "output_tokens": max(0, limits.max_output_tokens - spent_output),  # type: ignore[operator]
-                    "cost_usd": None if cap is None else format_usd(max(0, cap - (spent_cost or 0))),
+                    "cost_usd": None if cap is None or unpriced else format_usd(max(0, cap - (spent_cost or 0))),
                 },
                 "stop_reason": None if self._stop is None else self._stop[0],
                 "stop_message": None if self._stop is None else self._stop[1],
@@ -610,9 +623,19 @@ class BudgetedProvider:
     cannot count or reserve twice. ``request_body`` is passed through for previews.
     """
 
-    def __init__(self, provider: "Provider", ledger: Ledger) -> None:
+    def __init__(self, provider: "Provider", ledger: Ledger, *, before_send: Callable[[], None] | None = None) -> None:
+        cap = getattr(provider, "max_output_tokens", None)
+        limit = ledger.limits.request_output_tokens
+        if isinstance(cap, int) and not isinstance(cap, bool) and cap > limit:  # type: ignore[operator]
+            raise ConfigError(
+                f"The {provider.name} provider would send an output cap of {cap} tokens but this run reserves {limit}; "
+                "build the provider with the run's request_output_tokens"
+            )
         self._provider = provider
         self.ledger = ledger
+        # The cap the provider really sends, when it says; otherwise the run's, which a provider must honor.
+        self.output_cap = cap if isinstance(cap, int) and not isinstance(cap, bool) else limit
+        self._before_send = before_send
         self.name = provider.name
         self.model = provider.model
         self.external = provider.external
@@ -632,9 +655,15 @@ class BudgetedProvider:
         return estimate_tokens(serialized_request(self._provider, system, user, schema)), METHOD_BYTE_BOUND
 
     def generate(self, system: str, user: str, schema: dict[str, Any]) -> "ProviderResponse":
+        """``before_send`` (for example a cancellation check) runs before the count and again before the request."""
+
+        if self._before_send is not None:
+            self._before_send()
         self.ledger.admit()
         estimate, method = self._estimate(system, user, schema)
-        request = self.ledger.reserve(estimate, method)
+        if self._before_send is not None:
+            self._before_send()
+        request = self.ledger.reserve(estimate, method, self.output_cap)
         try:
             response = self._provider.generate(system, user, schema)
         except ProviderError as exc:
@@ -670,14 +699,28 @@ def ledger_for(provider: "Provider", settings: "AiSettings", run_limits: RunLimi
     return Ledger(limits, prices, notes=notes)
 
 
-def budgeted(provider: "Provider", settings: "AiSettings", run_limits: RunLimits | None = None) -> BudgetedProvider:
-    """Wrap a resolved provider with a new ledger, after consent. An already budgeted provider is returned as it is."""
+def budgeted(
+    provider: "Provider", settings: "AiSettings", run_limits: RunLimits | None = None, *, before_send: Callable[[], None] | None = None,
+) -> BudgetedProvider:
+    """Wrap a resolved provider with a new ledger, after consent.
+
+    A provider the caller already budgeted is used as it is, provided its ledger stays within the project's limits;
+    it cannot also be given separate run limits, which would otherwise be ignored.
+    """
 
     if provider.external and not settings.external_consent:
         raise ConsentError("A usage budget cannot be started for an external provider without recorded consent")
     if isinstance(provider, BudgetedProvider):
+        if run_limits is not None:
+            raise ConfigError("Give run limits either to the caller's ledger or to the request, not both")
+        project = settings.limits.resolved(provider.name)
+        mine = provider.ledger.limits
+        for name in (*_INTEGER_LIMITS, "max_cost_usd"):
+            ceiling, value = getattr(project, name), getattr(mine, name)
+            if ceiling is not None and (value is None or value > ceiling):
+                raise ConfigError(f"The supplied run ledger's {name} exceeds the project's ai.limits")
         return provider
-    return BudgetedProvider(provider, ledger_for(provider, settings, run_limits))
+    return BudgetedProvider(provider, ledger_for(provider, settings, run_limits), before_send=before_send)
 
 
 def write_receipt(internal_path: Path, command: str, provider: BudgetedProvider) -> dict[str, Any]:

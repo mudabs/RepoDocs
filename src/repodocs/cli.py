@@ -390,8 +390,13 @@ def _cmd_ai_interpret(args: argparse.Namespace) -> int:
     budgeted = budgets.budgeted(provider, config.ai)
     try:
         document = interpret(bundle, budgeted)
-    finally:
-        usage = budgets.write_receipt(config.internal_path, "ai-interpret", budgeted)
+    except RepoDocsError as exc:
+        exc.receipt = budgets.write_receipt(config.internal_path, "ai-interpret", budgeted)  # type: ignore[attr-defined]
+        raise
+    except BaseException:
+        budgets.write_receipt(config.internal_path, "ai-interpret", budgeted)
+        raise
+    usage = budgets.write_receipt(config.internal_path, "ai-interpret", budgeted)
     from .ai.evaluation import contribution
 
     claims_path = config.internal_path / CLAIMS_FILENAME
@@ -576,7 +581,9 @@ def main(argv: list[str] | None = None) -> int:
         return args.handler(args)
     except RepoDocsError as exc:
         error = service.describe_error(exc)
-        _emit(args.command, ok=False, errors=[error.message])
+        # A run that reached a provider shows its usage receipt even when it failed.
+        receipt = getattr(exc, "receipt", None)
+        _emit(args.command, ok=False, data=None if receipt is None else {"usage": receipt}, errors=[error.message])
         return error.exit_code
     except Exception as exc:  # pragma: no cover - defensive CLI boundary
         _emit(args.command, ok=False, errors=[f"Unexpected error: {exc}"])

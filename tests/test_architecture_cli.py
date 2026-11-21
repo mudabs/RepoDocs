@@ -130,7 +130,7 @@ def test_a_provider_failure_exits_7_with_a_machine_readable_error_and_leaves_eve
 
     code, payload = invoke(root, capsys, "architecture", "discover")
 
-    assert code == 7 and payload["ok"] is False and payload["data"] is None
+    assert code == 7 and payload["ok"] is False and payload["data"]["usage"]["requests"] == 1, "the failed request's receipt is shown"
     assert "Unable to reach Ollama" in payload["errors"][0] and "unaffected" in payload["errors"][0]
     assert_valid("cli-response-1.0.json", payload)
     assert not (root / VIEW).exists()
