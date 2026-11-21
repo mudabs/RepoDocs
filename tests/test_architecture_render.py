@@ -44,12 +44,13 @@ def synthetic(count: int, *, repositories: tuple[str, ...] = ("shop",)) -> dict:
             "id": component_id(repository, name), "name": name, "kind": kinds[index % len(kinds)], "responsibility": "x",
             "repository_id": repository, "members": ["a.js"], "evidence": evidence,
             "classification": "inferred" if index % 3 else "proposed", "confidence": "low" if index % 5 == 0 else "high",
+            "support": "supported", "support_reasons": ["observed-role-facts"],
         })
     view["components"] = components
     view["connections"] = [
         {"id": connection_id(a["id"], b["id"], "calls"), "source": a["id"], "target": b["id"], "kind": "calls", "label": f"call {i}",
          "evidence": evidence, "classification": "inferred" if i % 2 else "proposed", "confidence": "high",
-         "cross_repository": a["repository_id"] != b["repository_id"]}
+         "cross_repository": a["repository_id"] != b["repository_id"], "support": "supported", "support_reasons": ["route-in-cited-source"]}
         for i, (a, b) in enumerate(zip(components, components[1:]))
     ]
     return view

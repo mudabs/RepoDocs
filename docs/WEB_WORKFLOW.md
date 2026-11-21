@@ -10,7 +10,7 @@ This is a development contract for #64 under epic #63, not an implemented web AP
 4. Preview the redacted context, full serialized request size, omissions and limits. These operations contact no model. Budget estimates are labeled estimates; unknown usage/cost is null, never zero.
 5. Give provider/host/model/policy-bound external and source-excerpt consent when needed. A preview hash binds the request to the reviewed content. Revoking consent invalidates pending admission; a changed source/context or provider requires a fresh preview/consent check. Existing CLI consent scopes are not widened.
 6. Submit once with an idempotency key. Poll progress, stage and usage. The UI offers cancellation and renders partial/exhausted/error states explicitly. Refreshing or reconnecting never starts another run.
-7. Inspect overview/subsystem diagrams and evidence at their precise revision. Inferred/proposed relationships retain their labels; claims with resolving citations are not automatically semantically supported (#65).
+7. Inspect overview/subsystem diagrams and evidence at their precise revision. Inferred/proposed relationships retain their labels; claims with resolving citations are not automatically semantically supported. Each shows its computed `support` and reason codes (ADR-028, #65); unsupported claims are absent from the default diagram but listed with their reasons.
 8. Download Markdown, Mermaid, JSON and optional HTML/SVG artifacts that actually exist. An ERD is offered only when supported table facts exist. Downloads, zoom and scope navigation never contact a provider. Publishing remains an explicit reviewable-PR operation.
 
 ## Shared service and HTTP boundary

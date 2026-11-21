@@ -9,6 +9,7 @@ relationship is true.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .. import __version__
@@ -36,6 +37,59 @@ CONFIDENCES = ("high", "medium", "low")
 
 CLASSIFICATION_INFERRED = "inferred"
 CLASSIFICATION_PROPOSED = "proposed"
+
+# Classification says how a claim is tied to its own member files. Support says whether a deterministic
+# fact backs the claim. A resolving citation gives the first and never the second (ADR-028).
+SUPPORT_SUPPORTED = "supported"
+SUPPORT_UNVERIFIED = "unverified"
+SUPPORT_UNSUPPORTED = "unsupported"
+SUPPORT_LEVELS = (SUPPORT_SUPPORTED, SUPPORT_UNVERIFIED, SUPPORT_UNSUPPORTED)
+SUPPORT_REASONS = {
+    "observed-endpoint": "The claimed route matches an endpoint the deterministic analyzers observed in a member file.",
+    "route-in-cited-source": "The claimed route and method appear together in a cited excerpt of a member file. This is a text match, not proof of behavior.",
+    "route-called-in-cited-source": "The claimed route and method appear in a cited excerpt of a source member file, where the call is made.",
+    "route-on-one-side-only": "The route is found at only one end of this call, so the other end's part of the claim is unchecked.",
+    "confirmed-candidate": "A confirmed cross-repository decision is bound to this connection.",
+    "observed-role-facts": "A member file carries analyzer-observed facts of this component's role.",
+    "no-checkable-fact": "Nothing in this claim could be checked against an observed or literal fact. Its citations show where to look, not that it is true.",
+    "route-not-in-cited-source": "The claimed route is not in any cited excerpt of a member file. It may be built from a prefix or a file that was not cited.",
+    "method-not-in-cited-source": "The claimed route is in a cited member excerpt, but its method is not near it.",
+    "observed-role-conflict": "Analyzer-observed facts in the member files are only of a different role, for example backend endpoints for a frontend.",
+}
+_FRONTEND_FACTS = {"component", "route", "http_request"}
+_SERVER_FACTS = {"endpoint"}
+_DATA_FACTS = {"table"}
+_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS")
+_ROUTE_LABEL = re.compile(r"^(?:(" + "|".join(_METHODS) + r")\s+)?(/\S*)$", re.IGNORECASE)
+_WRITE_METHODS = re.compile(r"\b(?:post|put|patch|delete)\b", re.IGNORECASE)
+_ROUTE_WINDOW = (1, 3)  # lines before and after a route literal in which its method is looked for
+
+
+def _route_pattern(path: str) -> re.Pattern[str]:
+    """A literal route as it may be written in source: a parameter segment matches any one segment."""
+
+    parts = [
+        r"""[^/\s'"`]+""" if segment.startswith((":", "{", "<", "$")) and len(segment) > 1 else re.escape(segment)
+        for segment in path.split("/")
+    ]
+    return re.compile(r"(?<![\w.~%-])" + "/".join(parts) + r"""(?:/(?=['"`\s?#,)\]]|$)|(?![\w/-]))""")
+
+
+def _route_in(texts: list[str], method: str | None, path: str) -> str:
+    """``found``, or why the cited excerpts do not hold the route: ``route`` or ``method``."""
+
+    pattern = _route_pattern(path.split("?", 1)[0].split("#", 1)[0])
+    seen_route = False
+    for text in texts:
+        lines = text.splitlines()
+        for match in pattern.finditer(text):
+            seen_route = True
+            number = text.count("\n", 0, match.start())
+            window = "\n".join(lines[max(0, number - _ROUTE_WINDOW[0]): number + _ROUTE_WINDOW[1] + 1])
+            # A bare GET (a fetch or a link) names no method, so it fails only when a write method sits on the route's own line.
+            if method is None or re.search(rf"\b{method}\b", window, re.IGNORECASE) or (method == "GET" and not _WRITE_METHODS.search(lines[number])):
+                return "found"
+    return "method" if seen_route else "route"
 
 _STRINGS = {"type": "array", "items": {"type": "string"}}
 RESPONSE_SCHEMA: dict[str, Any] = {
@@ -115,6 +169,11 @@ class Validation:
         self.nodes = {node["id"]: node for node in ir["nodes"]}
         self.candidates = {item["id"]: item for item in ir.get("candidates", [])}
         self.evidence = {item["id"]: item for item in ir.get("evidence", [])}
+        self.facts: dict[tuple[str | None, str], set[str]] = {}
+        for node in ir["nodes"]:
+            for key in node.get("evidence_ids", []):
+                if key in self.evidence and self.evidence[key].get("path"):
+                    self.facts.setdefault((self.evidence[key].get("repository_id"), self.evidence[key]["path"]), set()).add(node["type"])
         self.rejected: dict[str, int] = {}
         self.components: dict[str, dict[str, Any]] = {}
         self.connections: dict[str, dict[str, Any]] = {}
@@ -169,11 +228,81 @@ class Validation:
         if identity in self.components:
             return self.reject("duplicate-component")
         tied = any(self.documents[key]["path"] in members for key in evidence)
+        support, reasons = self._component_support(item["kind"], repository, members)
         self.components[identity] = {
             "id": identity, "name": name, "kind": item["kind"], "responsibility": responsibility, "repository_id": repository,
             "members": members, "evidence": evidence,
             "classification": CLASSIFICATION_INFERRED if tied else CLASSIFICATION_PROPOSED, "confidence": item["confidence"],
+            "support": support, "support_reasons": reasons,
         }
+
+    def _component_support(self, kind: str, repository: str, members: list[str]) -> tuple[str, list[str]]:
+        """What the analyzers observed in the member files says about the claimed role. File names say nothing.
+
+        A file that carries both frontend and server facts (shared or server-rendered code) is never refused.
+        A role with no observed facts is unverified, not wrong: most stacks have no adapter.
+        """
+
+        found = set().union(*(self.facts.get((repository, path), set()) for path in members))
+        frontend, server, data = bool(found & _FRONTEND_FACTS), bool(found & _SERVER_FACTS), bool(found & _DATA_FACTS)
+        if kind == "frontend":
+            matches, conflicts = frontend, (server or data) and not frontend
+        elif kind in ("backend-service", "api"):
+            matches, conflicts = server, frontend and not (server or data)
+        elif kind == "database":
+            matches, conflicts = data, frontend and not data
+        else:
+            matches = conflicts = False
+        if conflicts:
+            return SUPPORT_UNSUPPORTED, ["observed-role-conflict"]
+        return (SUPPORT_SUPPORTED, ["observed-role-facts"]) if matches else (SUPPORT_UNVERIFIED, ["no-checkable-fact"])
+
+    def _observed_endpoint(self, method: str | None, path: str, members: set[tuple[str, str]]) -> bool:
+        """Whether an analyzer observed this endpoint in one of these files."""
+
+        for node in self.nodes.values():
+            attributes = node.get("attributes", {})
+            if node.get("type") != "endpoint" or attributes.get("path") != path or (method and attributes.get("http_method") not in (method, "ANY")):
+                continue
+            if any((self.evidence[key].get("repository_id"), self.evidence[key].get("path")) in members for key in node.get("evidence_ids", []) if key in self.evidence):
+                return True
+        return False
+
+    def _route_at(self, method: str | None, path: str, end: dict[str, Any], evidence: list[str]) -> str:
+        """``observed``, ``found``, ``method`` or ``route``: what an analyzer or the cited excerpts of one end's files show."""
+
+        members = {(end["repository_id"], file) for file in end["members"]}
+        if self._observed_endpoint(method, path, members):
+            return "observed"
+        texts = [self.documents[key].get("text", "") for key in evidence if (self.documents[key]["repository_id"], self.documents[key]["path"]) in members]
+        return _route_in(texts, method, path)
+
+    def _connection_support(
+        self, label: str, kind: str, source: dict[str, Any], target: dict[str, Any], evidence: list[str], bound: bool
+    ) -> tuple[str, list[str]]:
+        """Whether a deterministic fact backs a connection. A citation that merely resolves never does.
+
+        Only a label that is itself a literal route can be checked. A client request needs the route at both ends, the
+        server side and a call site (calls, reads, writes); other kinds need it at either end. Everything else stays unverified.
+        """
+
+        if bound:
+            return SUPPORT_SUPPORTED, ["confirmed-candidate"]
+        route = _ROUTE_LABEL.match(label)
+        if route is None:
+            return SUPPORT_UNVERIFIED, ["no-checkable-fact"]
+        method = route.group(1).upper() if route.group(1) else None
+        at_target = self._route_at(method, route.group(2), target, evidence)
+        at_source = self._route_at(method, route.group(2), source, evidence)
+        declared = "observed-endpoint" if at_target == "observed" else "route-in-cited-source"
+        if kind in ("calls", "reads", "writes"):
+            if at_target in ("observed", "found") and at_source == "found":
+                return SUPPORT_SUPPORTED, [declared, "route-called-in-cited-source"]
+            if at_target in ("observed", "found") or at_source == "found":
+                return SUPPORT_UNVERIFIED, ["route-on-one-side-only"]
+        elif "observed" in (at_target, at_source) or "found" in (at_target, at_source):
+            return SUPPORT_SUPPORTED, ["observed-endpoint" if "observed" in (at_target, at_source) else "route-in-cited-source"]
+        return SUPPORT_UNSUPPORTED, ["method-not-in-cited-source" if "method" in (at_target, at_source) else "route-not-in-cited-source"]
 
     def _resolve(self, name: Any, repository: Any) -> dict[str, Any] | None:
         label = _text(name, MAX_NAME)
@@ -251,10 +380,11 @@ class Validation:
         identity = connection_id(source["id"], target["id"], item["kind"])
         if identity in self.connections:
             return self.reject("duplicate-connection")
+        support, reasons = self._connection_support(label, item["kind"], source, target, evidence, cross and bool(candidate_id) and problem is None)
         data = {
             "id": identity, "source": source["id"], "target": target["id"], "kind": item["kind"], "label": label,
             "evidence": evidence, "classification": CLASSIFICATION_INFERRED if inferred else CLASSIFICATION_PROPOSED,
-            "confidence": item["confidence"], "cross_repository": cross,
+            "confidence": item["confidence"], "cross_repository": cross, "support": support, "support_reasons": reasons,
         }
         if cross and inferred:
             data["candidate_id"] = candidate_id
