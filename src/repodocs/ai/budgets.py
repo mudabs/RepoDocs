@@ -490,14 +490,16 @@ class Ledger:
                     request.charged_output = max(request.charged_output, reported_output or 0)
                 if self.prices is not None:
                     if model is not None and not self.prices.prices_served(model):
-                        # Another model's rates are unknown: no figure from this profile is an upper bound for it.
-                        request.charged_cost = None
+                        pass  # handled below, with or without usage
                     elif usage.measured and model is not None and (actual := self.prices.cost_micro_usd(usage)) is not None:
                         request.charged_cost, request.cost_measured = actual, True
                     elif request.charged_cost is not None:
                         # Partial usage: the charged tokens at the highest applicable rates, never less than the reservation.
                         bound = self.prices.reserve_micro_usd(request.charged_input, request.charged_output)
                         request.charged_cost = max(request.charged_cost, bound) if bound is not None else None
+            if self.prices is not None and model is not None and not self.prices.prices_served(model):
+                # Another model's rates are unknown: no figure from this profile is an upper bound for it.
+                request.charged_cost, request.cost_measured = None, False
             return self._overage(request)
 
     def _overage(self, request: _Request) -> RunStopped | None:
@@ -719,6 +721,10 @@ def budgeted(
             ceiling, value = getattr(project, name), getattr(mine, name)
             if ceiling is not None and (value is None or value > ceiling):
                 raise ConfigError(f"The supplied run ledger's {name} exceeds the project's ai.limits")
+        if provider.ledger.prices != ledger_for(provider, settings).prices:
+            raise ConfigError("The supplied run ledger's price profile is not the one the project applies to this provider and model")
+        if before_send is not None and provider._before_send is None:
+            provider._before_send = before_send  # the caller's budget still stops on this run's cancellation
         return provider
     return BudgetedProvider(provider, ledger_for(provider, settings, run_limits), before_send=before_send)
 

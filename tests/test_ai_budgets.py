@@ -1232,3 +1232,44 @@ def test_a_failed_cli_discovery_prints_why_it_stopped(tmp_path: Path, capsys, mo
 
     assert code == 7 and payload["data"]["usage"]["stop_reason"] == "context-window"
     assert "model returned" not in payload["errors"][0]
+
+
+def test_an_unlisted_served_model_without_usage_has_unknown_cost() -> None:
+    class Swapped(Fake):
+        def generate(self, system: str, user: str, schema: dict) -> ProviderResponse:
+            self.calls += 1
+            return ProviderResponse({"ok": True}, "other-bigger-model", None)
+
+    provider = wrap(Swapped(count=100), PRICES, request_output_tokens=100)
+    go(provider)
+
+    snapshot = provider.ledger.snapshot()
+    assert snapshot["requests"][0]["charged_cost_usd"] is None and snapshot["totals"]["cost_usd"] is None
+
+
+def test_a_caller_budget_must_use_the_projects_price_profile_and_still_stops_on_cancel(tmp_path: Path, capsys) -> None:
+    from repodocs import service
+    from repodocs.config import ProjectConfig
+
+    root = service_project(tmp_path, capsys)
+    config = ProjectConfig.load(root)
+    config.ai = replace(config.ai, prices=replace(PRICES, provider="ollama", model="replay-model"))
+    config.save()
+    provider = Counting(full_answer)
+    cheap = BudgetedProvider(provider, Ledger(ledger_for(provider, config.ai).limits, replace(PRICES, provider="ollama", model="other")))  # type: ignore[arg-type]
+
+    refused = service.execute("discover", service.DiscoverRequest(root, provider=cheap))
+
+    assert refused.status == "failed" and "price profile" in refused.error.message and not provider.messages
+    token = service.CancellationToken()
+
+    class CancelWhileCounting(Counting):
+        def count_input_tokens(self, system: str, user: str, schema: dict) -> int:
+            token.cancel()
+            return super().count_input_tokens(system, user, schema)
+
+    counting = CancelWhileCounting(full_answer)
+    own = BudgetedProvider(counting, ledger_for(counting, config.ai))  # type: ignore[arg-type]
+    result = service.execute("discover", service.DiscoverRequest(root, provider=own), service.RunHooks(cancel=token))
+
+    assert result.status == "cancelled" and counting.counts == 1 and not counting.messages
