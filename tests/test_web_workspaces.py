@@ -66,12 +66,15 @@ class Remote:
 
     def http_get(self, url: str, timeout: float, max_bytes: int) -> bytes:
         self.urls.append(url)
+        if "/git/commits/" in url:
+            return json.dumps({"sha": self.sha, "tree": {"sha": self.document["sha"]}}).encode()
         return json.dumps(self.document).encode()
 
     def run_git(self, args: list[str], **kwargs: Any) -> str:
         self.git_calls.append(list(args))
         self.git_environments.append(dict(kwargs["env"]))
-        args = [self.repository.as_uri() if item.startswith("https://github.com/") else item for item in args]
+        if "fetch" in args:
+            args = [self.repository.as_uri() if item.startswith("https://github.com/") else item for item in args]
         args[1:1] = ["-c", "protocol.file.allow=always"]
         kwargs["env"] = {**kwargs["env"], "GIT_ALLOW_PROTOCOL": "file"}
         return run_bounded(args, **kwargs)
@@ -158,7 +161,10 @@ def test_pinned_github_checkout_and_local_source_share_one_workspace(tmp_path: P
     manager = make_manager(tmp_path, remote, roots={"frontend": checkout})
     workspace = manager.acquire("Shop", [LocalSource("frontend"), GitHubSource("Octo-Org", "shop.api", remote.sha)])
 
-    assert remote.urls == [f"https://api.github.com/repos/Octo-Org/shop.api/git/trees/{remote.sha}?recursive=1"]
+    assert remote.urls == [
+        f"https://api.github.com/repos/Octo-Org/shop.api/git/commits/{remote.sha}",
+        f"https://api.github.com/repos/Octo-Org/shop.api/git/trees/{remote.document['sha']}?recursive=1",
+    ]
     ir, _ = scan_project(workspace.config)
     revisions = sorted((item["revision_kind"], item["revision"]) for item in ir["snapshots"])
     assert ("commit", remote.sha) in revisions and len(revisions) == 2
@@ -167,7 +173,7 @@ def test_pinned_github_checkout_and_local_source_share_one_workspace(tmp_path: P
     assert record["github"].git["git_revision"] == remote.sha
     assert record["github"].git["working_tree_state"] == "clean"
     assert record["github"].git["head_state"] == "detached"
-    assert "github.com" not in (workspace.root / "sources" / "octo-org-shop-api" / ".git" / "config").read_text(encoding="utf-8")
+    assert git(workspace.root / "sources" / "octo-org-shop-api", "remote", "get-url", "origin") == "https://github.com/Octo-Org/shop.api.git"
 
 
 def test_pinned_github_scan_in_pinned_mode_accepts_the_checkout(tmp_path: Path, remote: Remote) -> None:
@@ -378,7 +384,7 @@ def test_fetched_commit_must_match_the_listed_tree(tmp_path: Path, remote: Remot
 
 def test_unreachable_commit_is_an_actionable_failure_and_cleans_up(tmp_path: Path, remote: Remote) -> None:
     manager = make_manager(tmp_path, remote)
-    with pytest.raises(WorkspaceError, match="Git failed") as caught:
+    with pytest.raises(WorkspaceError, match="commit") as caught:
         manager.acquire("Shop", [GitHubSource("octo", "shop", "d" * 40)])
     assert caught.value.failures[0].source == "octo/shop"
     assert list((tmp_path / "store").iterdir()) == []
@@ -594,3 +600,39 @@ def test_retention_prunes_expired_workspaces_and_enforces_a_count(tmp_path: Path
     now[0] += 1000
     assert sorted(manager.prune()) == sorted([second.workspace_id, third.workspace_id])
     assert list(settings.store_root.iterdir()) == []
+
+
+def test_a_trickling_body_cannot_hold_a_buffered_read_past_the_deadline(serve) -> None:
+    class Trickle(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            self.send_response(200)
+            self.send_header("Content-Length", "40")
+            self.end_headers()
+            try:
+                for _ in range(40):
+                    self.wfile.write(b"x")
+                    self.wfile.flush()
+                    time.sleep(0.03)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
+        def log_message(self, *args) -> None:
+            pass
+
+    url = serve(Trickle)
+    started = time.monotonic()
+    with pytest.raises(WorkspaceError):
+        fetch_bounded(url, 0.15, 1000)
+    assert time.monotonic() - started < 0.75
+
+
+def test_commit_tree_identity_is_resolved_without_following_a_response_url(tmp_path: Path, remote: Remote) -> None:
+    remote.document["url"] = "http://127.0.0.1:1/untrusted"
+    workspace = make_manager(tmp_path, remote).acquire("Pinned", [GitHubSource("octo", "shop", remote.sha)])
+    assert len(remote.urls) == 2
+    assert remote.urls[0].endswith("/git/commits/" + remote.sha)
+    assert remote.urls[1].endswith("/git/trees/" + remote.document["sha"] + "?recursive=1")
+    assert all(url.startswith("https://api.github.com/repos/") for url in remote.urls)
+    checkout = workspace.root / "sources" / "octo-shop"
+    assert git(checkout, "remote", "get-url", "origin") == "https://github.com/octo/shop.git"
+    assert git(checkout, "rev-parse", "HEAD^{tree}") == remote.document["sha"]

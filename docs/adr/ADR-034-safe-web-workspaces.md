@@ -7,6 +7,8 @@
 
 ## Context
 
+Review update (2026-11-21): preflight first resolves the immutable commit through GitHub's commit endpoint, then requests its validated root tree SHA at a constructed fixed GitHub URL. It never treats a commit ID as a tree ID or follows a response-supplied URL. Canonical origin metadata is retained for pinned evidence links. Streaming reads allow deadline checks between individual reads, and the Git time limit covers the entire acquisition rather than resetting for each command.
+
 The browser workflow must analyze approved local checkouts and public GitHub repositories without running their code, choosing server paths, or leaving unbounded data behind. Existing scanning already records commit or content-fingerprint provenance and inspects Git state with fsmonitor, hooks and filters disabled.
 
 ## Decision

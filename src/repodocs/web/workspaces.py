@@ -202,7 +202,9 @@ def fetch_bounded(url: str, timeout: float, max_bytes: int) -> bytes:
             while True:
                 if time.monotonic() > deadline:
                     raise WorkspaceError(f"The network request exceeded {timeout:g} seconds")
-                chunk = response.read(64 * 1024)
+                # A buffered read(n) may wait indefinitely for n bytes while a peer trickles data.
+                # read1 returns after one underlying read, allowing the total deadline to be checked.
+                chunk = response.read1(min(64 * 1024, max_bytes - size + 1))
                 if not chunk:
                     break
                 size += len(chunk)
@@ -236,8 +238,8 @@ def validate_github_source(source: GitHubSource) -> None:
         raise WorkspaceError("GitHub revision must be an exact lowercase 40-character commit SHA")
 
 
-def tree_url(source: GitHubSource) -> str:
-    return f"https://api.github.com/repos/{source.owner}/{source.repository}/git/trees/{source.revision}?recursive=1"
+def tree_url(source: GitHubSource, tree_sha: str) -> str:
+    return f"https://api.github.com/repos/{source.owner}/{source.repository}/git/trees/{tree_sha}?recursive=1"
 
 
 def clone_url(source: GitHubSource) -> str:
@@ -304,14 +306,26 @@ def validate_tree(document: Any, limits: SourceLimits) -> TreeSummary:
 
 
 def preflight_github(source: GitHubSource, limits: SourceLimits, http_get: HttpGet) -> TreeSummary:
-    body = http_get(tree_url(source), limits.network_timeout_seconds, limits.max_response_bytes)
-    if len(body) > limits.max_response_bytes:
-        raise WorkspaceError(f"The response exceeded {limits.max_response_bytes} bytes")
-    try:
-        document = json.loads(body)
-    except (ValueError, RecursionError):
-        raise WorkspaceError("GitHub returned a response that is not valid JSON") from None
-    return validate_tree(document, limits)
+    def fetch_json(url: str) -> Any:
+        body = http_get(url, limits.network_timeout_seconds, limits.max_response_bytes)
+        if len(body) > limits.max_response_bytes:
+            raise WorkspaceError(f"The response exceeded {limits.max_response_bytes} bytes")
+        try:
+            return json.loads(body)
+        except (ValueError, RecursionError):
+            raise WorkspaceError("GitHub returned a response that is not valid JSON") from None
+
+    # A commit SHA is not a tree SHA. Resolve the immutable commit first, and never follow
+    # a URL supplied in the response: construct the fixed GitHub endpoint from its validated hash.
+    commit = fetch_json(f"https://api.github.com/repos/{source.owner}/{source.repository}/git/commits/{source.revision}")
+    tree = commit.get("tree") if isinstance(commit, dict) else None
+    tree_sha = tree.get("sha") if isinstance(tree, dict) else None
+    if not isinstance(commit, dict) or commit.get("sha") != source.revision or not isinstance(tree_sha, str) or not FULL_REVISION_PATTERN.fullmatch(tree_sha):
+        raise WorkspaceError("GitHub returned an invalid commit or root tree object ID")
+    summary = validate_tree(fetch_json(tree_url(source, tree_sha)), limits)
+    if summary.tree_sha != tree_sha:
+        raise WorkspaceError("GitHub returned a different root tree")
+    return summary
 
 
 # ---------------------------------------------------------------------------------------------
@@ -627,14 +641,19 @@ class WorkspaceManager:
         summary = preflight_github(source, limits, self._http_get)
         checkout.mkdir()
         environment = git_environment(checkout.parent)
+        deadline = time.monotonic() + limits.git_timeout_seconds
 
         def git(*arguments: str) -> str:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise WorkspaceError("Git acquisition exceeded its total time limit")
             return self._run_git(
                 ["git", *GIT_OPTIONS, *arguments], cwd=checkout, env=environment,
-                timeout=limits.git_timeout_seconds, watch=checkout, max_bytes=limits.max_checkout_bytes,
+                timeout=remaining, watch=checkout, max_bytes=limits.max_checkout_bytes,
             )
 
         git("init", "-q", "--template=")
+        git("remote", "add", "origin", clone_url(source))
         git("fetch", "-q", "--depth=1", "--no-tags", "--no-recurse-submodules", "--", clone_url(source), source.revision)
         if git("rev-parse", "--verify", f"{source.revision}^{{tree}}") != summary.tree_sha:
             raise WorkspaceError("The fetched commit does not match the tree GitHub listed for it")
