@@ -8,7 +8,8 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 
-from repodocs.ai.openai import OpenAIProvider
+from repodocs.ai.budgets import BudgetedProvider, Ledger, RunLimits, Usage
+from repodocs.ai.openai import OpenAIProvider, openai_usage
 from repodocs.errors import ConfigError, ProviderError
 
 
@@ -16,12 +17,19 @@ SCHEMA = {"type": "object", "properties": {"components": {"type": "array", "item
 RESPONSE = {
     "status": "completed", "model": "requested-model", "error": None, "incomplete_details": None,
     "output": [{"type": "message", "status": "completed", "role": "assistant", "content": [{"type": "output_text", "text": '{"components": ["API"]}'}]}],
-    "usage": {"input_tokens": 190, "output_tokens": 70, "input_tokens_details": {"cached_tokens": 8}, "output_tokens_details": {"reasoning_tokens": 30}},
+    "usage": {
+        "input_tokens": 190, "output_tokens": 70, "input_tokens_details": {"cached_tokens": 8, "cache_write_tokens": 2},
+        "output_tokens_details": {"reasoning_tokens": 30},
+    },
 }
+COUNT = {"object": "response.input_tokens", "input_tokens": 321}
+GENERATE = "/v1/responses"
 
 
 @contextmanager
-def endpoint(payload=RESPONSE, status=200):
+def endpoint(payload=RESPONSE, status=200, count=COUNT):
+    """A loopback stand-in for the Responses API and its input-token count endpoint."""
+
     requests = []
 
     class Handler(BaseHTTPRequestHandler):
@@ -31,7 +39,10 @@ def endpoint(payload=RESPONSE, status=200):
             if 300 <= status < 400:
                 self.send_header("Location", "/redirected")
             self.end_headers()
-            response = payload(requests[-1]["body"]) if callable(payload) else payload
+            if self.path.endswith("/input_tokens"):
+                response = count
+            else:
+                response = payload(requests[-1]["body"]) if callable(payload) else payload
             self.wfile.write(json.dumps(response).encode())
 
         def log_message(self, *args):
@@ -188,10 +199,9 @@ def discovery_response(request):
 
 
 def test_cli_stores_and_revalidates_native_openai_architecture(tmp_path, capsys, monkeypatch):
-    from conftest import invoke
+    from conftest import allow_large_context, invoke, read_ir
     from repodocs.config import ProjectConfig
     from repodocs.architecture.discovery import load_view, STATUS_CURRENT
-    from conftest import read_ir
 
     source = tmp_path / "source"
     source.mkdir()
@@ -204,13 +214,17 @@ def test_cli_stores_and_revalidates_native_openai_architecture(tmp_path, capsys,
     monkeypatch.setenv("OPENAI_API_KEY", "dummy-test-credential")
     with endpoint(discovery_response) as (url, calls):
         assert invoke(root, capsys, "ai-configure", "--provider", "openai", "--model", "requested-model", "--openai-base-url", url)[0] == 0
+        allow_large_context(root)
         code, response = invoke(root, capsys, "architecture", "discover")
         assert code == 0, response
-        assert len(calls) == 1
+        assert [call["path"] for call in calls] == ["/v1/responses/input_tokens", GENERATE], "one count, then one request"
+        usage = response["data"]["usage"]
+        assert usage["count_requests"] == 1 and usage["requests"] == 1 and usage["usage_complete"] is True
+        assert usage["input_tokens"] == 190 and usage["output_tokens"] == 70, "cached and written tokens are part of the prompt total"
         status, view, _ = load_view(ProjectConfig.load(root), read_ir(root))
         assert status == STATUS_CURRENT and view["provenance"]["provider"] == "openai"
         assert invoke(root, capsys, "architecture", "discover")[0] == 0
-        assert len(calls) == 1, "stored views are reused without another provider request"
+        assert len(calls) == 2, "stored views are reused without another provider request"
     assert "dummy-test-credential" not in (root / "repodocs.json").read_text()
 
 
@@ -226,9 +240,115 @@ def test_cli_provider_failures_are_json_exit_seven(tmp_path, capsys, monkeypatch
     assert invoke(root, capsys, "init", "demo")[0] == 0
     assert invoke(root, capsys, "add", str(source), "--id", "source", "--destination")[0] == 0
     assert invoke(root, capsys, "scan")[0] == 0
+    from conftest import allow_large_context
+
     monkeypatch.setenv("OPENAI_API_KEY", "canary-credential")
-    with endpoint({"message": "canary-credential"}, status) as (url, _):
+    with endpoint({"message": "canary-credential"}, status, count={"message": "canary-credential"}) as (url, calls):
         assert invoke(root, capsys, "ai-configure", "--provider", "openai", "--model", "requested-model", "--openai-base-url", url)[0] == 0
+        allow_large_context(root)
         code, response = invoke(root, capsys, "architecture", "discover")
     assert code == 7 and response["ok"] is False
+    assert [call["path"] for call in calls] == ["/v1/responses/input_tokens", GENERATE], "a failed count falls back to the byte bound once"
     assert "canary-credential" not in json.dumps(response)
+    receipt = json.loads(next((root / ".repodocs" / "receipts").glob("*.json")).read_text(encoding="utf-8"))
+    assert receipt["requests"][0]["estimate_method"] == "byte-bound" and "canary-credential" not in json.dumps(receipt)
+
+
+# ------------------------------------------------------------------ usage and the run budget (#67)
+def test_usage_separates_cached_and_written_tokens_and_keeps_reasoning_a_subset():
+    assert openai_usage(RESPONSE) == Usage(input_tokens=180, output_tokens=70, cache_read_tokens=8, cache_write_tokens=2, reasoning_tokens=30)
+    no_writes = {"usage": {"input_tokens": 100, "output_tokens": 5, "input_tokens_details": {"cached_tokens": 40}}}
+    assert openai_usage(no_writes) == Usage(60, 5, 40, None, None), "a category that was not reported is unknown, not zero"
+    assert not openai_usage(no_writes).measured
+    no_details = {"usage": {"input_tokens": 100, "output_tokens": 5}}
+    assert openai_usage(no_details) == Usage(100, 5, None, None) and openai_usage(no_details).prompt_tokens is None
+    assert openai_usage({"usage": {"input_tokens": 5, "output_tokens": 1, "input_tokens_details": {"cached_tokens": 9}}}) is None
+    assert openai_usage({"usage": "lots"}) is None and openai_usage({}) is None and openai_usage([]) is None
+
+
+def test_a_response_carries_its_usage_and_serving_model():
+    with endpoint() as (url, _):
+        result = OpenAIProvider("requested-model", url, api_key="dummy").generate("s", "u", SCHEMA)
+    assert result.usage == Usage(180, 70, 8, 2, 30) and result.model == "requested-model"
+
+
+@pytest.mark.parametrize("mutation", ["incomplete", "invalid-json", "refusal"])
+def test_unusable_replies_still_report_what_they_cost(mutation):
+    payload = copy.deepcopy(RESPONSE)
+    if mutation == "incomplete":
+        payload["status"], payload["incomplete_details"] = "incomplete", {"reason": "max_output_tokens"}
+    elif mutation == "invalid-json":
+        payload["output"][0]["content"][0]["text"] = "broken JSON"
+    else:
+        payload["output"][0]["content"] = [{"type": "refusal", "refusal": "no"}]
+    ledger = Ledger(RunLimits(context_window_tokens=100_000).resolved("openai"))
+    with endpoint(payload) as (url, _), pytest.raises(ProviderError) as error:
+        BudgetedProvider(OpenAIProvider("requested-model", url, api_key="dummy"), ledger).generate("s", "u", SCHEMA)
+    assert error.value.usage == Usage(180, 70, 8, 2, 30)
+    request = ledger.snapshot()["requests"][0]
+    assert request["usage_measured"] is True and request["charged_input_tokens"] == 190 and request["charged_output_tokens"] == 70
+
+
+def test_the_input_token_count_is_the_same_request_without_output_options():
+    provider = OpenAIProvider("requested-model", max_output_tokens=256, reasoning_effort="low", api_key="dummy")
+    with endpoint() as (url, calls):
+        provider.base_url = url
+        assert provider.count_input_tokens("system", "user", SCHEMA) == 321
+    (call,) = calls
+    assert call["path"] == "/v1/responses/input_tokens" and call["auth"] == "Bearer dummy"
+    assert "max_output_tokens" not in call["body"] and "store" not in call["body"]
+    assert call["body"]["text"]["format"]["schema"] == SCHEMA and call["body"]["instructions"] == "system"
+    assert call["body"]["reasoning"] == {"effort": "low"}, "everything the model receives is counted"
+
+
+@pytest.mark.parametrize("count", [{"object": "response.input_tokens", "input_tokens": 0}, {"input_tokens": 12}, {"object": "response.input_tokens"}, []])
+def test_an_unusable_count_falls_back_to_the_byte_bound(count):
+    ledger = Ledger(RunLimits(context_window_tokens=100_000).resolved("openai"))
+    with endpoint(count=count) as (url, calls):
+        BudgetedProvider(OpenAIProvider("requested-model", url, api_key="dummy"), ledger).generate("s", "u", SCHEMA)
+    assert [call["path"] for call in calls] == ["/v1/responses/input_tokens", GENERATE]
+    assert ledger.snapshot()["requests"][0]["estimate_method"] == "byte-bound"
+
+
+def test_the_configured_output_cap_and_effort_reach_the_provider():
+    from repodocs.ai.providers import resolve_provider
+    from repodocs.config import AiSettings
+
+    provider = resolve_provider(AiSettings(
+        provider="openai", model="requested-model", external_consent=True, effort="medium",
+        limits=RunLimits(context_window_tokens=64_000, request_output_tokens=3000),
+    ))
+    body = provider.request_body("s", "u", SCHEMA)
+    assert body["max_output_tokens"] == 3000 and body["reasoning"] == {"effort": "medium"}
+    assert resolve_provider(AiSettings(provider="openai", model="m", external_consent=True)).max_output_tokens == 2048, (
+        "without a configured window the cautious 4,096-token default applies"
+    )
+
+
+def test_the_shared_service_budgets_openai_and_never_completes_a_capped_reply(tmp_path, capsys):
+    from conftest import allow_large_context, invoke
+    from repodocs import service
+
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "server.js").write_text('const server = require("http");\n', encoding="utf-8")
+    root = tmp_path / "docs"
+    root.mkdir()
+    assert invoke(root, capsys, "init", "demo")[0] == 0
+    assert invoke(root, capsys, "add", str(source), "--id", "source", "--destination")[0] == 0
+    assert invoke(root, capsys, "scan")[0] == 0
+    assert invoke(root, capsys, "ai-configure", "--provider", "openai", "--model", "requested-model")[0] == 0
+    allow_large_context(root)
+
+    capped = copy.deepcopy(RESPONSE)
+    capped["status"], capped["incomplete_details"] = "incomplete", {"reason": "max_output_tokens"}
+    with endpoint(capped) as (url, calls):
+        failed = service.execute("discover", service.DiscoverRequest(root, provider=OpenAIProvider("requested-model", url, api_key="dummy")))
+    assert failed.status == "failed" and failed.view_status is None and "completed" in failed.error.message
+    assert failed.data["usage"]["usage_complete"] is True and failed.data["usage"]["input_tokens"] == 190
+    assert not (root / ".repodocs" / "architecture-view.json").exists(), "a capped reply never becomes a view"
+
+    with endpoint(discovery_response) as (url, calls):
+        result = service.execute("discover", service.DiscoverRequest(root, provider=OpenAIProvider("requested-model", url, api_key="dummy")))
+    assert result.status == "complete" and result.data["provenance"]["provider"] == "openai"
+    assert result.data["usage"]["count_requests"] == 1 and len([call for call in calls if call["path"] == GENERATE]) == 1

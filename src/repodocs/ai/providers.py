@@ -309,7 +309,7 @@ def resolve_provider(settings: AiSettings) -> Provider | None:
         provider = AnthropicProvider(settings.model, max_output_tokens=limits.request_output_tokens, effort=settings.effort)
     else:
         if settings.effort:
-            raise ConfigError("ai.effort is supported only by the anthropic provider; remove it for ollama")
+            raise ConfigError("ai.effort is supported only by the anthropic and openai providers; remove it for ollama")
         provider = OllamaProvider(
             settings.model, settings.ollama_host,
             context_window=limits.context_window_tokens, max_output_tokens=limits.request_output_tokens,

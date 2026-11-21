@@ -155,7 +155,7 @@ def test_defaults_are_explicit_and_a_runtime_that_cannot_fit_its_own_output_is_r
 
 
 def test_effort_is_explicit_and_unsupported_by_ollama() -> None:
-    with pytest.raises(ConfigError, match="only by the anthropic provider"):
+    with pytest.raises(ConfigError, match="only by the anthropic and openai providers"):
         providers.resolve_provider(AiSettings(provider="ollama", model="m", effort="low"))
     claude = providers.resolve_provider(AiSettings(provider="anthropic", external_consent=True, effort="medium"))
     assert claude.effort == "medium" and claude.max_output_tokens == 16000

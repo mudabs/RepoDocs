@@ -78,7 +78,7 @@
         },
         "effort": {
           "enum": ["low", "medium", "high"],
-          "description": "Reasoning effort sent explicitly to a provider that supports one (anthropic only). Absent means the provider default; it is never raised silently."
+          "description": "Reasoning effort sent explicitly to a provider that supports one (anthropic and openai). Absent means the provider default; it is never raised silently."
         },
         "limits": {
           "type": "object",
