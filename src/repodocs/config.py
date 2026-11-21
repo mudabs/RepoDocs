@@ -182,8 +182,11 @@ class AiSettings:
             raise ConfigError("ai.effort must be one of: " + ", ".join(EFFORTS))
         limits = RunLimits.from_dict(data["limits"]) if "limits" in data else RunLimits()
         prices = PriceProfile.from_dict(data["prices"]) if "prices" in data else None
-        if limits.max_cost_usd is not None and prices is None:
-            raise ConfigError("ai.limits.max_cost_usd needs ai.prices; RepoDocs has no built-in rates")
+        if limits.max_cost_usd is not None and (prices is None or not prices.complete):
+            raise ConfigError(
+                "ai.limits.max_cost_usd needs ai.prices with input, output, cache-read and cache-write rates "
+                "(0 for a category the provider does not bill); RepoDocs has no built-in rates"
+            )
         return cls(
             provider=provider, model=data.get("model"), external_consent=consent, ollama_host=data.get("ollama_host"),
             source_excerpts_consent=source, source_consent_policy=policy if source else None,

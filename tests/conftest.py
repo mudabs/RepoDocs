@@ -81,8 +81,12 @@ def no_token_counting_requests(monkeypatch):
     monkeypatch.setattr(AnthropicProvider, "count_input_tokens", refuse)
 
 
-def allow_large_context(root: Path, window: int = 32768) -> None:
-    """Tell the project its (replayed) local model has a larger window than the 4096-token default."""
+def allow_large_context(root: Path, window: int = 131072) -> None:
+    """Tell the project its (replayed) local model has a larger window than the 4096-token default.
+
+    Without a provider count a request is bounded at one token per byte (ADR-031), so fixture prompts of a few tens
+    of kilobytes need a window this size even though their real token count is several times smaller.
+    """
 
     path = root / "repodocs.json"
     configuration = json.loads(path.read_text(encoding="utf-8"))

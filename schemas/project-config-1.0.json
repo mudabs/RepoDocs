@@ -81,12 +81,13 @@
         },
         "limits": {
           "type": "object",
-          "description": "Run limits (ADR-031). Absent values use the provider defaults. The request and aggregate fields may only lower the hard ceilings. max_cost_usd needs prices.",
+          "description": "Run limits (ADR-031). Absent values use the provider defaults. The request and aggregate fields may only lower the hard ceilings. max_cost_usd needs prices with all four rates for the configured provider and model.",
           "additionalProperties": false,
           "properties": {
             "context_window_tokens": {"type": "integer", "minimum": 1, "description": "The runtime context window. A request must fit it including its reserved output."},
             "request_output_tokens": {"type": "integer", "minimum": 1, "maximum": 16000},
-            "max_requests": {"type": "integer", "minimum": 1, "maximum": 8},
+            "max_requests": {"type": "integer", "minimum": 1, "maximum": 6, "description": "Generation requests in a run, repairs included (the ADR-026 ceiling)."},
+            "max_count_requests": {"type": "integer", "minimum": 1, "maximum": 6, "description": "Token-count requests in a run, sent to the same approved provider. Defaults to max_requests."},
             "max_input_tokens": {"type": "integer", "minimum": 1, "maximum": 800000},
             "max_output_tokens": {"type": "integer", "minimum": 1, "maximum": 64000},
             "max_cost_usd": {"type": "number", "exclusiveMinimum": 0}
@@ -94,11 +95,14 @@
         },
         "prices": {
           "type": "object",
-          "description": "Project-supplied, versioned rates in US dollars per million tokens. RepoDocs ships and fetches none.",
-          "required": ["version", "input_usd_per_mtok", "output_usd_per_mtok"],
+          "description": "Project-supplied, versioned rates in US dollars per million tokens for one provider and model. RepoDocs ships and fetches none. A profile for another provider or model is not applied.",
+          "required": ["version", "provider", "model", "input_usd_per_mtok", "output_usd_per_mtok"],
           "additionalProperties": false,
           "properties": {
             "version": {"type": "string", "minLength": 1},
+            "provider": {"type": "string", "minLength": 1},
+            "model": {"type": "string", "minLength": 1},
+            "served_models": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "Other model identities the provider may report for this model, such as a dated snapshot of an alias."},
             "input_usd_per_mtok": {"type": "number", "minimum": 0},
             "output_usd_per_mtok": {"type": "number", "minimum": 0},
             "cache_read_usd_per_mtok": {"type": "number", "minimum": 0},

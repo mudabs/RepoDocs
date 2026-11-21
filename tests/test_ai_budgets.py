@@ -21,7 +21,7 @@ import pytest
 from conftest import allow_large_context, invoke
 from repodocs.ai import budgets, providers
 from repodocs.ai.budgets import (
-    BudgetedProvider, Ledger, PriceProfile, RunLimits, RunStopped, Usage, budgeted, estimate_tokens, usage_from_counts,
+    BudgetedProvider, Ledger, PriceProfile, RunLimits, RunStopped, Usage, budgeted, estimate_tokens, ledger_for, usage_from_counts,
 )
 from repodocs.ai.providers import AnthropicProvider, OllamaProvider, ProviderResponse
 from repodocs.architecture.discovery import discover
@@ -83,7 +83,8 @@ def go(provider: BudgetedProvider) -> ProviderResponse:
     return provider.generate("system", "user", OBJECT)
 
 
-PRICES = PriceProfile("2026-11-01", Decimal(10), Decimal(50))
+PRICES = PriceProfile("2026-11-01", "ollama", "fake", Decimal(10), Decimal(50), Decimal(0), Decimal(0), served_models=("served",))
+PRICE_SETTINGS = {"version": "2026-11-01", "provider": "anthropic", "model": "claude-opus-5-5"}
 
 
 # ------------------------------------------------------------------ usage contracts
@@ -108,7 +109,8 @@ def test_usage_settings_round_trip_and_stay_within_the_ceilings(tmp_path: Path) 
     ai = AiSettings.from_dict({
         "provider": "anthropic", "external_consent": True, "effort": "low",
         "limits": {"context_window_tokens": 1_000_000, "request_output_tokens": 8000, "max_requests": 3, "max_cost_usd": 1.5},
-        "prices": {"version": "2026-11-01", "input_usd_per_mtok": 5, "output_usd_per_mtok": 25.5, "cache_write_usd_per_mtok": 6.25},
+        "prices": {**PRICE_SETTINGS, "input_usd_per_mtok": 5, "output_usd_per_mtok": 25.5, "cache_read_usd_per_mtok": 0.5,
+                   "cache_write_usd_per_mtok": 6.25, "served_models": ["claude-opus-5-5-20261101"]},
     })
 
     assert AiSettings.from_dict(ai.to_dict()) == ai
@@ -116,7 +118,8 @@ def test_usage_settings_round_trip_and_stay_within_the_ceilings(tmp_path: Path) 
 
 
 @pytest.mark.parametrize("ai, message", [
-    ({"limits": {"max_requests": 9}}, "may only lower the ceiling of 8"),
+    ({"limits": {"max_requests": 7}}, "may only lower the ceiling of 6"),
+    ({"limits": {"max_count_requests": 7}}, "may only lower the ceiling of 6"),
     ({"limits": {"request_output_tokens": 16001}}, "ceiling of 16000"),
     ({"limits": {"max_input_tokens": 800_001}}, "ceiling"),
     ({"limits": {"max_output_tokens": 64_001}}, "ceiling"),
@@ -124,14 +127,18 @@ def test_usage_settings_round_trip_and_stay_within_the_ceilings(tmp_path: Path) 
     ({"limits": {"max_requests": True}}, "positive integer"),
     ({"limits": {"surprise": 1}}, "Unknown ai.limits"),
     ({"limits": {"max_cost_usd": 1}}, "needs ai.prices"),
-    ({"limits": {"max_cost_usd": 0}, "prices": {"version": "v", "input_usd_per_mtok": 1, "output_usd_per_mtok": 1}}, "greater than zero"),
+    ({"limits": {"max_cost_usd": 0}, "prices": {**PRICE_SETTINGS, "input_usd_per_mtok": 1, "output_usd_per_mtok": 1}}, "greater than zero"),
+    ({"limits": {"max_cost_usd": 1}, "prices": {**PRICE_SETTINGS, "input_usd_per_mtok": 1, "output_usd_per_mtok": 1}}, "cache-read and cache-write"),
+    ({"prices": {"version": "v", "model": "m", "input_usd_per_mtok": 1, "output_usd_per_mtok": 1}}, "provider is required"),
+    ({"prices": {"version": "v", "provider": "anthropic", "input_usd_per_mtok": 1, "output_usd_per_mtok": 1}}, "model is required"),
+    ({"prices": {**PRICE_SETTINGS, "input_usd_per_mtok": 1, "output_usd_per_mtok": 1, "served_models": "x"}}, "served_models"),
     ({"limits": []}, "JSON object"),
     ({"effort": "max"}, "ai.effort must be one of"),
     ({"prices": {"input_usd_per_mtok": 1, "output_usd_per_mtok": 1}}, "version"),
-    ({"prices": {"version": "v", "input_usd_per_mtok": 1}}, "output_usd_per_mtok is required"),
-    ({"prices": {"version": "v", "input_usd_per_mtok": -1, "output_usd_per_mtok": 1}}, "non-negative"),
-    ({"prices": {"version": "v", "input_usd_per_mtok": "1", "output_usd_per_mtok": 1}}, "must be a number"),
-    ({"prices": {"version": "v", "input_usd_per_mtok": 1, "output_usd_per_mtok": 1, "live": True}}, "Unknown ai.prices"),
+    ({"prices": {**PRICE_SETTINGS, "input_usd_per_mtok": 1}}, "output_usd_per_mtok is required"),
+    ({"prices": {**PRICE_SETTINGS, "input_usd_per_mtok": -1, "output_usd_per_mtok": 1}}, "non-negative"),
+    ({"prices": {**PRICE_SETTINGS, "input_usd_per_mtok": "1", "output_usd_per_mtok": 1}}, "must be a number"),
+    ({"prices": {**PRICE_SETTINGS, "input_usd_per_mtok": 1, "output_usd_per_mtok": 1, "live": True}}, "Unknown ai.prices"),
 ])
 def test_invalid_usage_settings_are_refused(ai: dict, message: str) -> None:
     with pytest.raises(ConfigError, match=message):
@@ -139,7 +146,8 @@ def test_invalid_usage_settings_are_refused(ai: dict, message: str) -> None:
 
 
 def test_defaults_are_explicit_and_a_runtime_that_cannot_fit_its_own_output_is_refused() -> None:
-    assert RunLimits().resolved("anthropic") == RunLimits(200_000, 16000, 8, 800_000, 64_000)
+    assert RunLimits().resolved("anthropic") == RunLimits(200_000, 16000, 6, 800_000, 64_000, None, 6)
+    assert RunLimits(max_requests=2).resolved("anthropic").max_count_requests == 2, "one count per request by default"
     assert RunLimits().resolved("ollama").context_window_tokens == 4096
     assert RunLimits().resolved("ollama").request_output_tokens == 2048
     with pytest.raises(ConfigError, match="smaller than the context window"):
@@ -160,7 +168,7 @@ def test_ai_configure_keeps_the_usage_settings_it_does_not_edit(tmp_path: Path, 
     configuration = json.loads(path.read_text(encoding="utf-8"))
     configuration["ai"].update(
         effort="high", limits={"max_requests": 2},
-        prices={"version": "2026-11-01", "input_usd_per_mtok": 5, "output_usd_per_mtok": 25},
+        prices={**PRICE_SETTINGS, "input_usd_per_mtok": 5, "output_usd_per_mtok": 25},
     )
     path.write_text(json.dumps(configuration), encoding="utf-8")
     assert_valid("project-config-1.0.json", configuration)
@@ -191,7 +199,9 @@ class Recorder(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         self.hits.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
-        body = json.dumps({"model": "llama3", "message": {"content": "{}"}, "prompt_eval_count": 50, "eval_count": 7}).encode()
+        body = json.dumps({
+            "model": "llama3", "message": {"content": "{}"}, "done": True, "done_reason": "stop", "prompt_eval_count": 50, "eval_count": 7,
+        }).encode()
         self.send_response(200)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -218,7 +228,11 @@ def test_a_real_ollama_request_too_large_for_its_default_window_is_never_sent() 
         with pytest.raises(RunStopped, match="4096-token context window"):
             provider.generate("system", "x" * 40_000, OBJECT)
         assert hits == []
+        with pytest.raises(RunStopped, match="4096-token context window"):
+            provider.generate("system", "small", OBJECT)
+        assert hits == [], "a stopped run stays stopped; a smaller request does not resume it under the old stop reason"
 
+        provider = budgeted(providers.resolve_provider(settings), settings)
         response = provider.generate("system", "small", OBJECT)
     finally:
         server.shutdown()
@@ -228,7 +242,7 @@ def test_a_real_ollama_request_too_large_for_its_default_window_is_never_sent() 
     assert sent["options"] == {"num_ctx": 4096, "num_predict": 2048}, "the window and output cap are sent explicitly"
     assert response.usage == Usage(50, 7, 0, 0)
     request = provider.ledger.snapshot()["requests"][0]
-    assert request["estimate_method"] == "fallback-estimate" and request["usage_measured"] is True
+    assert request["estimate_method"] == "byte-bound" and request["usage_measured"] is True
     assert request["charged_input_tokens"] == 50 and request["charged_output_tokens"] == 7
 
 
@@ -242,7 +256,7 @@ def test_the_fallback_estimate_covers_the_whole_serialized_request_and_is_labele
     fake = Fake()
     wrapped = wrap(fake)
     go(wrapped)
-    assert wrapped.ledger.snapshot()["requests"][0]["estimate_method"] == "fallback-estimate"
+    assert wrapped.ledger.snapshot()["requests"][0]["estimate_method"] == "byte-bound"
     counted = wrap(Fake(count=321))
     go(counted)
     assert counted.ledger.snapshot()["requests"][0]["estimate_method"] == "provider-count"
@@ -329,7 +343,7 @@ def test_a_cost_cap_without_rates_is_refused_rather_than_guessed() -> None:
 
 
 def test_the_estimated_maximum_cost_is_bounded_by_the_caps_and_absent_without_rates() -> None:
-    open_ended = ledger(PRICES, max_input_tokens=100_000, max_output_tokens=10_000, request_output_tokens=4000, max_requests=8)
+    open_ended = ledger(PRICES, max_input_tokens=100_000, max_output_tokens=10_000, request_output_tokens=4000, max_requests=6)
     assert open_ended.snapshot()["max_estimated_cost_usd"] == "1.500000", "100k * $10 + 10k * $50 per million tokens"
     capped = ledger(PRICES, max_cost_usd=Decimal("0.25"))
     assert capped.snapshot()["max_estimated_cost_usd"] == "0.250000"
@@ -391,22 +405,26 @@ def test_an_interrupt_keeps_the_reservation_and_is_not_swallowed() -> None:
 
 
 def test_cache_write_rates_are_reserved_at_the_highest_applicable_rate() -> None:
-    prices = PriceProfile("v1", Decimal(10), Decimal(50), cache_read_usd_per_mtok=Decimal(1), cache_write_usd_per_mtok=Decimal("12.5"))
+    prices = PriceProfile("v1", "ollama", "fake", Decimal(10), Decimal(50), cache_read_usd_per_mtok=Decimal(1), cache_write_usd_per_mtok=Decimal("12.5"))
 
     assert prices.reserve_micro_usd(1_000_000, 0) == 12_500_000, "an input token may be billed as a cache write"
     assert prices.cost_micro_usd(Usage(100_000, 10_000, 200_000, 50_000)) == 1_000_000 + 500_000 + 200_000 + 625_000
 
 
-def test_cache_tokens_without_a_rate_leave_the_cost_unknown_and_reserved() -> None:
+def test_cache_tokens_without_a_rate_leave_the_cost_unknown() -> None:
+    partial = PriceProfile("v1", "ollama", "fake", Decimal(10), Decimal(50), served_models=("served",))
     cached = Usage(100, 40, 5000, 0)
-    assert PRICES.cost_micro_usd(cached) is None
-    provider = wrap(Fake(cached, count=500), PRICES, request_output_tokens=200)
+    assert partial.cost_micro_usd(cached) is None and not partial.complete
+    assert partial.reserve_micro_usd(10, 10) is None, "a worst case cannot be reserved without every rate"
+    provider = wrap(Fake(cached, count=500), partial, request_output_tokens=200)
 
     go(provider)
 
-    request = provider.ledger.snapshot()["requests"][0]
-    assert request["usage_measured"] is False and request["cost_measured"] is False
-    assert request["charged_cost_usd"] == request["reserved_cost_usd"], "the cost stays at its worst case"
+    snapshot = provider.ledger.snapshot()
+    request = snapshot["requests"][0]
+    assert request["usage_measured"] is True and request["cost_measured"] is False, "the tokens are measured, the cost is not"
+    assert request["charged_cost_usd"] is None and request["reserved_cost_usd"] is None
+    assert snapshot["totals"]["cost_usd"] is None and snapshot["max_estimated_cost_usd"] is None, "unknown, not zero"
     assert request["charged_input_tokens"] == 5100, "but the tokens are known"
 
 
@@ -573,7 +591,7 @@ def test_a_failed_token_count_falls_back_to_the_labeled_estimate(monkeypatch) ->
 
     go(provider)
 
-    assert provider.ledger.snapshot()["requests"][0]["estimate_method"] == "fallback-estimate"
+    assert provider.ledger.snapshot()["requests"][0]["estimate_method"] == "byte-bound"
 
 
 def serve_reply(reply: dict) -> tuple[HTTPServer, str]:
@@ -594,11 +612,18 @@ def serve_reply(reply: dict) -> tuple[HTTPServer, str]:
     return server, f"http://127.0.0.1:{server.server_port}"
 
 
+FINISHED = {"done": True, "done_reason": "stop"}
+
+
 @pytest.mark.parametrize("reply, message, usage", [
-    ({"message": {"content": "{}"}, "done_reason": "length", "prompt_eval_count": 10, "eval_count": 20}, "cut off", Usage(10, 20, 0, 0)),
-    ({"message": {"content": "{}"}, "prompt_eval_count": 4000, "eval_count": 96}, "filled the 4096-token context window", Usage(4000, 96, 0, 0)),
-    ({"message": {"content": "nope"}, "prompt_eval_count": 10, "eval_count": 3}, "not valid JSON", Usage(10, 3, 0, 0)),
-])
+    ({"message": {"content": "{}"}, "done": True, "done_reason": "length", "prompt_eval_count": 10, "eval_count": 20}, "cut off", Usage(10, 20, 0, 0)),
+    ({"message": {"content": "{}"}, **FINISHED, "prompt_eval_count": 4000, "eval_count": 96}, "filled the 4096-token context window", Usage(4000, 96, 0, 0)),
+    ({"message": {"content": "nope"}, **FINISHED, "prompt_eval_count": 10, "eval_count": 3}, "not valid JSON", Usage(10, 3, 0, 0)),
+    ({"message": {"content": "{}"}, "done": False, "prompt_eval_count": 10, "eval_count": 3}, "finished completion", Usage(10, 3, 0, 0)),
+    ({"message": {"content": "{}"}, "done": True, "done_reason": "load", "prompt_eval_count": 10, "eval_count": 3}, "finished completion", Usage(10, 3, 0, 0)),
+    ({"message": {"content": "{}"}, "done": True, "prompt_eval_count": 10, "eval_count": 3}, "finished completion", Usage(10, 3, 0, 0)),
+    ({"message": {"content": "{}"}, "prompt_eval_count": 10, "eval_count": 3}, "finished completion", Usage(10, 3, 0, 0)),
+], ids=["length", "filled-window", "malformed", "not-done", "load", "no-reason", "no-done"])
 def test_ollama_truncation_is_an_error_that_still_reports_its_usage(reply: dict, message: str, usage: Usage) -> None:
     server, host = serve_reply(reply)
     try:
@@ -611,7 +636,7 @@ def test_ollama_truncation_is_an_error_that_still_reports_its_usage(reply: dict,
 
 
 def test_ollama_usage_that_was_not_reported_stays_unknown() -> None:
-    server, host = serve_reply({"message": {"content": "{}"}, "eval_count": 5})
+    server, host = serve_reply({"message": {"content": "{}"}, **FINISHED, "eval_count": 5})
     try:
         response = OllamaProvider("llama3", host).generate("s", "u", OBJECT)
     finally:
@@ -656,7 +681,7 @@ def test_discovery_exploration_and_one_repair_share_one_cap(tmp_path: Path, caps
     view, _ = discover(config, ir, provider)
 
     assert scripted.script == [more], "the repair and the first exploration used both requests; the third was never sent"
-    assert view["status"] == "partial" and view["partial_reason"] == "provider-error"
+    assert view["status"] == "partial" and view["partial_reason"] == "usage-budget", "a budget stop is not a provider failure"
     snapshot = provider.ledger.snapshot()
     assert snapshot["totals"]["requests"] == 2 and snapshot["stop_reason"] == "request-limit"
     assert [item["outcome"] for item in snapshot["requests"]] == ["provider-error", "ok"]
@@ -687,7 +712,10 @@ def edit_ai(root: Path, **values: Any) -> None:
 def test_discovery_writes_a_valid_local_receipt_and_reports_usage(tmp_path: Path, capsys, monkeypatch) -> None:
     root = express_project(tmp_path, capsys)
     allow_large_context(root)
-    edit_ai(root, prices={"version": "2026-11-01", "input_usd_per_mtok": 0, "output_usd_per_mtok": 0})
+    edit_ai(root, prices={
+        "version": "2026-11-01", "provider": "ollama", "model": "replay-model", "served_models": ["replayed:replay-model"],
+        "input_usd_per_mtok": 0, "output_usd_per_mtok": 0, "cache_read_usd_per_mtok": 0, "cache_write_usd_per_mtok": 0,
+    })
     use(monkeypatch, Scripted(generic))
 
     code, payload = invoke(root, capsys, "architecture", "discover")
@@ -695,7 +723,7 @@ def test_discovery_writes_a_valid_local_receipt_and_reports_usage(tmp_path: Path
     assert code == 0, payload["errors"]
     usage = payload["data"]["usage"]
     assert usage["requests"] == 1 and usage["stop_reason"] is None and usage["usage_complete"] is False
-    assert usage["remaining"]["requests"] == 7 and usage["max_estimated_cost_usd"] == "0.000000"
+    assert usage["remaining"]["requests"] == 5 and usage["max_estimated_cost_usd"] == "0.000000"
     assert_valid("cli-response-1.0.json", payload)
     (path,) = receipts(root)
     assert path.as_posix() == usage["receipt"]
@@ -703,7 +731,7 @@ def test_discovery_writes_a_valid_local_receipt_and_reports_usage(tmp_path: Path
     assert_valid("usage-receipt-1.0.json", receipt)
     assert receipt["command"] == "architecture-discover" and receipt["price_profile"]["version"] == "2026-11-01"
     assert receipt["requests"][0]["usage"] is None and receipt["requests"][0]["usage_measured"] is False, "no usage was reported, so none is invented"
-    assert receipt["limits"]["context_window_tokens"] == 32768
+    assert receipt["limits"]["context_window_tokens"] == 131072
     text = path.read_text(encoding="utf-8")
     context = json.loads((root / ".repodocs" / "architecture-context.json").read_text(encoding="utf-8"))
     assert all(item["text"][:30] not in text for item in context["documents"] if len(item["text"]) > 30), "a receipt holds no source text"
@@ -712,7 +740,7 @@ def test_discovery_writes_a_valid_local_receipt_and_reports_usage(tmp_path: Path
 def test_a_run_that_hits_its_cap_reports_why_it_stopped(tmp_path: Path, capsys, monkeypatch) -> None:
     root = express_project(tmp_path, capsys)
     allow_large_context(root)
-    edit_ai(root, limits={"context_window_tokens": 32768, "max_requests": 1})
+    edit_ai(root, limits={"context_window_tokens": 131072, "max_requests": 1})
     ask = lambda message: full_answer(message, requests=[{"repository_id": "shop", "path": "lib/storage.js", "line_start": 1, "line_end": 20}], complete=False)  # noqa: E731
     use(monkeypatch, Scripted(ask, ask))
 
@@ -778,9 +806,310 @@ def test_the_new_settings_validate_against_the_published_config_schema() -> None
         "ai": {
             "provider": "anthropic", "external_consent": False, "effort": "medium",
             "limits": {"context_window_tokens": 4096, "max_requests": 2, "max_cost_usd": 0.5},
-            "prices": {"version": "v1", "input_usd_per_mtok": 5, "output_usd_per_mtok": 25, "cache_write_usd_per_mtok": 6.25},
+            "prices": {
+                "version": "v1", "provider": "anthropic", "model": "claude-opus-5-5", "input_usd_per_mtok": 5, "output_usd_per_mtok": 25,
+                "cache_read_usd_per_mtok": 0.5, "cache_write_usd_per_mtok": 6.25,
+            },
         },
     }
     assert_valid("project-config-1.0.json", config)
     assert replace(AiSettings(), limits=RunLimits(max_requests=2)).to_dict()["limits"] == {"max_requests": 2}
 
+
+
+# ------------------------------------------------------------------ review regressions (#81)
+def test_reported_usage_over_the_admitted_cap_stops_the_run_instead_of_succeeding() -> None:
+    fake = Fake(Usage(input_tokens=1000, output_tokens=1, cache_read_tokens=0, cache_write_tokens=0), count=1)
+    provider = BudgetedProvider(fake, Ledger(RunLimits(context_window_tokens=4096, request_output_tokens=8, max_input_tokens=10).resolved("ollama")))  # type: ignore[arg-type]
+
+    with pytest.raises(RunStopped) as stopped:
+        go(provider)
+    with pytest.raises(RunStopped):
+        go(provider)
+
+    assert stopped.value.reason == "reported-usage-over-limit" and "cannot be undone" in str(stopped.value)
+    assert fake.calls == 1, "nothing further is sent after the overage"
+    snapshot = provider.ledger.snapshot()
+    assert snapshot["stop_reason"] == "reported-usage-over-limit" and snapshot["totals"]["input_tokens"] == 1000
+    assert snapshot["requests"][0]["exceeded_reservation"] is True and snapshot["remaining"]["input_tokens"] == 0
+
+
+def test_reported_cost_over_the_cap_stops_the_run() -> None:
+    fake = Fake(Usage(input_tokens=50_000, output_tokens=10, cache_read_tokens=0, cache_write_tokens=0), count=10)
+    provider = wrap(fake, PRICES, request_output_tokens=10, max_cost_usd=Decimal("0.01"))
+
+    with pytest.raises(RunStopped) as stopped:
+        go(provider)
+
+    assert stopped.value.reason == "reported-usage-over-limit" and "USD" in str(stopped.value)
+
+
+def test_partial_usage_above_the_reservation_is_charged_at_what_was_reported() -> None:
+    provider = wrap(Fake(Usage(5000, None, None, None), count=100), request_output_tokens=50)
+
+    go(provider)
+
+    request = provider.ledger.snapshot()["requests"][0]
+    assert request["usage_measured"] is False and request["charged_input_tokens"] == 5000, "a reported count is never discarded"
+    assert request["charged_output_tokens"] == 50 and request["exceeded_reservation"] is True
+
+
+@pytest.mark.parametrize("text", [
+    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" * 40,
+    "東京都の非同期処理とデータベース" * 60,
+    "{}[]();:,.!?<>/\\|`~@#$%^&*-_=+'\"" * 50,
+    "🙂🚀✅" * 100,
+], ids=["hash", "cjk", "punctuation", "emoji"])
+def test_the_byte_bound_is_never_smaller_than_the_encoded_size(text: str) -> None:
+    bound = estimate_tokens(text)
+
+    assert bound >= len(text.encode("utf-8")) + budgets.REQUEST_OVERHEAD_TOKENS
+    assert bound >= len(text), "at least one token per character and per byte"
+
+
+def test_token_count_requests_have_their_own_bounded_allowance_and_are_recorded() -> None:
+    fake = Fake(MEASURED, count=10)
+    provider = wrap(fake, max_requests=3, max_count_requests=2)
+
+    for _ in range(3):
+        go(provider)
+
+    snapshot = provider.ledger.snapshot()
+    assert fake.counts == 2 and fake.calls == 3
+    assert [item["estimate_method"] for item in snapshot["requests"]] == ["provider-count", "provider-count", "byte-bound"]
+    assert snapshot["totals"]["count_requests"] == 2 and snapshot["remaining"]["count_requests"] == 0
+
+
+def test_no_count_request_is_sent_once_a_run_has_stopped() -> None:
+    fake = Fake(MEASURED, count=10)
+    provider = wrap(fake, max_requests=1)
+
+    go(provider)
+    with pytest.raises(RunStopped):
+        go(provider)
+
+    assert fake.counts == 1 and provider.ledger.snapshot()["totals"]["count_requests"] == 1
+
+
+def test_concurrent_counts_cannot_pass_their_allowance() -> None:
+    fake = Fake(None, count=10)
+    provider = wrap(fake, max_requests=6, max_count_requests=3, request_output_tokens=10)
+    barrier = threading.Barrier(12)
+
+    def worker() -> None:
+        barrier.wait()
+        try:
+            go(provider)
+        except RunStopped:
+            pass
+
+    threads = [threading.Thread(target=worker) for _ in range(12)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert fake.counts == 3 and fake.calls == 6
+
+
+def test_the_anthropic_client_never_retries_internally(monkeypatch) -> None:
+    fake_sdk(monkeypatch)
+    import anthropic
+
+    built: list[dict] = []
+    original = anthropic.Anthropic
+    monkeypatch.setattr(anthropic, "Anthropic", lambda **kwargs: built.append(kwargs) or original(**kwargs))
+
+    AnthropicProvider(None).generate("s", "u", OBJECT)
+
+    assert built and built[0]["max_retries"] == 0, "a retry inside the SDK would be a request the ledger never reserved"
+
+
+def test_a_price_profile_for_another_model_is_not_applied() -> None:
+    other = AiSettings(prices=replace(PRICES, model="cheaper-model"))
+
+    ledger = ledger_for(Fake(), other)  # type: ignore[arg-type]
+
+    assert ledger.prices is None and ledger.snapshot()["max_estimated_cost_usd"] is None
+    assert any("does not apply" in note for note in ledger.snapshot()["notes"])
+    capped = AiSettings(prices=replace(PRICES, model="cheaper-model"), limits=RunLimits(max_cost_usd=Decimal(1)))
+    with pytest.raises(ConfigError, match="not ollama/fake"):
+        ledger_for(Fake(), capped)  # type: ignore[arg-type]
+
+
+def test_a_served_model_outside_the_profile_keeps_its_reservation_and_stops_a_cost_capped_run() -> None:
+    class Swapped(Fake):
+        def generate(self, system: str, user: str, schema: dict) -> ProviderResponse:
+            self.calls += 1
+            return ProviderResponse({"ok": True}, "substitute-model", MEASURED)
+
+    fake = Swapped(count=100)
+    provider = wrap(fake, PRICES, request_output_tokens=100, max_cost_usd=Decimal(1))
+
+    go(provider)
+    with pytest.raises(RunStopped) as stopped:
+        go(provider)
+
+    request = provider.ledger.snapshot()["requests"][0]
+    assert request["cost_measured"] is False and request["charged_cost_usd"] == request["reserved_cost_usd"]
+    assert stopped.value.reason == "unpriced-usage" and "substitute-model" in str(stopped.value) and fake.calls == 1
+    aliased = wrap(Fake(MEASURED, count=100), PRICES, request_output_tokens=100, max_cost_usd=Decimal(1))
+    go(aliased)
+    assert aliased.ledger.snapshot()["requests"][0]["cost_measured"] is True, "a listed served model is priced"
+
+
+def test_a_cost_cap_needs_every_billed_rate() -> None:
+    incomplete = PriceProfile("v1", "ollama", "fake", Decimal(1), Decimal(1), cache_read_usd_per_mtok=Decimal(0))
+
+    with pytest.raises(ConfigError, match="cache-write"):
+        Ledger(RunLimits(max_cost_usd=Decimal(1)).resolved("ollama"), incomplete)
+
+
+def test_limits_cannot_be_raised_by_building_them_directly_and_a_run_can_only_lower_them() -> None:
+    with pytest.raises(ConfigError, match="ceiling of 6"):
+        RunLimits(max_requests=7)
+    with pytest.raises(ConfigError, match="positive integer"):
+        RunLimits(max_input_tokens=0)
+    project = RunLimits(max_requests=4, max_input_tokens=1000)
+
+    run = project.narrowed(RunLimits(max_requests=6, max_input_tokens=500, max_output_tokens=10))
+
+    assert (run.max_requests, run.max_input_tokens, run.max_output_tokens) == (4, 500, 10)
+    assert project.narrowed(None) is project
+
+
+def test_a_budget_is_not_wrapped_twice() -> None:
+    inner = wrap(Fake())
+
+    assert budgeted(inner, AiSettings()) is inner  # type: ignore[arg-type]
+    assert not hasattr(inner, "count_input_tokens"), "only the ledger counts, so an outer wrapper cannot count again"
+    assert inner.request_body("s", "u", OBJECT)["messages"][0]["content"] == "u"
+
+
+# ------------------------------------------------------------------ the shared service owns the budget (#69)
+def service_project(tmp_path: Path, capsys) -> Path:
+    from test_service import project
+
+    return project(tmp_path, capsys)
+
+
+class Counting(Scripted):
+    """A scripted local provider with an exact request body and a token counter."""
+
+    def __init__(self, *script: Any, count: int = 500) -> None:
+        super().__init__(*script)
+        self.counts = 0
+        self.count = count
+        self.bodies = 0
+
+    def request_body(self, system: str, user: str, schema: dict) -> dict:
+        self.bodies += 1
+        return {"model": self.model, "system": system, "user": user, "schema": schema}
+
+    def count_input_tokens(self, system: str, user: str, schema: dict) -> int:
+        self.counts += 1
+        return self.count
+
+
+def test_the_service_budgets_an_injected_provider_and_reports_its_receipt(tmp_path: Path, capsys) -> None:
+    from repodocs import service
+
+    root = service_project(tmp_path, capsys)
+    provider = Counting(full_answer)
+
+    result = service.execute("discover", service.DiscoverRequest(root, provider=provider))
+
+    assert result.status == "complete", result.error
+    usage = result.data["usage"]
+    assert usage["requests"] == 1 and usage["count_requests"] == 1 and provider.counts == 1
+    receipt = json.loads(Path(usage["receipt"]).read_text(encoding="utf-8"))
+    assert_valid("usage-receipt-1.0.json", receipt)
+    assert receipt["requests"][0]["estimate_method"] == "provider-count", "the cancellation wrapper did not hide the counter"
+
+
+def test_service_run_limits_only_lower_the_project_limits_and_a_budget_stop_is_reported(tmp_path: Path, capsys) -> None:
+    from repodocs import service
+
+    root = service_project(tmp_path, capsys)
+    ask = lambda message: full_answer(message, requests=[{"repository_id": "shop", "path": "lib/storage.js", "line_start": 1, "line_end": 20}], complete=False)  # noqa: E731
+    provider = Counting(ask, ask)
+
+    result = service.execute("discover", service.DiscoverRequest(root, provider=provider, limits=RunLimits(max_requests=1)))
+
+    assert result.status == "partial" and result.data["partial_reason"] == "usage-budget"
+    assert result.data["usage"]["stop_reason"] == "request-limit" and len(provider.messages) == 1
+
+
+def test_a_failed_service_run_still_returns_its_receipt(tmp_path: Path, capsys) -> None:
+    from repodocs import service
+
+    root = service_project(tmp_path, capsys)
+
+    result = service.execute("discover", service.DiscoverRequest(root, provider=Counting(ProviderError("connection reset"))))
+
+    assert result.status == "failed" and result.error.code == "provider"
+    receipt = json.loads(Path(result.data["usage"]["receipt"]).read_text(encoding="utf-8"))
+    assert receipt["totals"]["requests"] == 1 and receipt["requests"][0]["outcome"] == "provider-error"
+
+
+def test_a_cancelled_service_run_counts_and_sends_nothing_more_and_records_the_stop(tmp_path: Path, capsys) -> None:
+    from repodocs import service
+
+    root = service_project(tmp_path, capsys)
+    token = service.CancellationToken()
+
+    def ask_then_cancel(message: dict) -> dict:
+        token.cancel()
+        return full_answer(message, requests=[{"repository_id": "shop", "path": "lib/storage.js", "line_start": 1, "line_end": 20}], complete=False)
+
+    provider = Counting(ask_then_cancel, full_answer)
+
+    result = service.execute("discover", service.DiscoverRequest(root, provider=provider), service.RunHooks(cancel=token))
+
+    assert result.status == "cancelled" and len(provider.messages) == 1 and provider.counts == 1
+    receipt = json.loads(Path(result.data["usage"]["receipt"]).read_text(encoding="utf-8"))
+    assert receipt["stop_reason"] == "cancelled" and receipt["totals"]["count_requests"] == 1
+
+
+def test_the_service_never_counts_before_both_consents(tmp_path: Path, capsys) -> None:
+    from repodocs import service
+    from repodocs.config import ProjectConfig
+
+    root = service_project(tmp_path, capsys)
+    config = ProjectConfig.load(root)
+    config.ai = replace(config.ai, external_consent=False)
+    config.save()
+    provider = Counting(full_answer)
+    provider.external = True
+
+    result = service.execute("discover", service.DiscoverRequest(root, provider=provider))
+
+    assert result.status == "failed" and provider.counts == 0 and provider.bodies == 0 and not provider.messages
+    assert not (root / ".repodocs" / "receipts").exists()
+
+
+def test_a_caller_supplied_budget_is_used_as_it_is(tmp_path: Path, capsys) -> None:
+    from repodocs import service
+    from repodocs.config import ProjectConfig
+
+    root = service_project(tmp_path, capsys)
+    provider = Counting(full_answer)
+    shared = BudgetedProvider(provider, ledger_for(provider, ProjectConfig.load(root).ai, RunLimits(max_requests=2)))  # type: ignore[arg-type]
+
+    result = service.execute("discover", service.DiscoverRequest(root, provider=shared))
+
+    assert result.status == "complete" and shared.ledger.snapshot()["totals"]["requests"] == 1
+    assert result.data["usage"]["remaining"]["requests"] == 1, "the caller's ledger, not a second one"
+
+
+def test_the_context_preview_shows_the_limits_and_worst_case_cost_without_contacting_the_provider(tmp_path: Path, capsys) -> None:
+    from repodocs import service
+
+    root = service_project(tmp_path, capsys)
+    provider = Counting(full_answer)
+
+    result = service.execute("context", service.ContextRequest(root, provider=provider))
+
+    budget = result.data["budget"]
+    assert budget["limits"]["max_requests"] == 6 and budget["max_estimated_cost_usd"] is None and budget["price_profile"] is None
+    assert provider.counts == 0 and not provider.messages

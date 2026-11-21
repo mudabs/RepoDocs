@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://repodocs.dev/schemas/usage-receipt-1.0.json",
   "title": "RepoDocs model usage receipt",
-  "description": "A local record of one run's model requests, limits and usage. It holds counts and outcomes only, never a prompt, a response or a credential. A null token count was not reported by the provider and is not zero. Charged totals count a request without complete usage at its reserved worst case, so they are upper bounds. A fallback-estimate is derived from request size and is not an exact token count.",
+  "description": "A local record of one run's model requests, limits and usage. It holds counts and outcomes only, never a prompt, a response or a credential. A null token count was not reported by the provider and is not zero. Charged totals count a request without complete usage at its reserved worst case, so they are upper bounds. A byte-bound is one token per UTF-8 byte of the serialized request plus framing; it bounds byte-level and byte-fallback tokenizers and is not a token count. Token-count requests are counted separately and not priced.",
   "type": "object",
   "required": [
     "receipt_version", "run_id", "command", "recorded_at", "provider", "requested_model", "external", "limits",
@@ -20,12 +20,13 @@
     "limits": {
       "type": "object",
       "description": "The effective limits for the run, with defaults and ceilings applied.",
-      "required": ["context_window_tokens", "request_output_tokens", "max_requests", "max_input_tokens", "max_output_tokens"],
+      "required": ["context_window_tokens", "request_output_tokens", "max_requests", "max_count_requests", "max_input_tokens", "max_output_tokens"],
       "additionalProperties": false,
       "properties": {
         "context_window_tokens": {"type": "integer", "minimum": 1},
         "request_output_tokens": {"type": "integer", "minimum": 1},
         "max_requests": {"type": "integer", "minimum": 1},
+        "max_count_requests": {"type": "integer", "minimum": 1},
         "max_input_tokens": {"type": "integer", "minimum": 1},
         "max_output_tokens": {"type": "integer", "minimum": 1},
         "max_cost_usd": {"type": "number", "exclusiveMinimum": 0}
@@ -36,10 +37,13 @@
         {"type": "null"},
         {
           "type": "object",
-          "required": ["version", "input_usd_per_mtok", "output_usd_per_mtok"],
+          "required": ["version", "provider", "model", "input_usd_per_mtok", "output_usd_per_mtok"],
           "additionalProperties": false,
           "properties": {
             "version": {"type": "string", "minLength": 1},
+            "provider": {"type": "string", "minLength": 1},
+            "model": {"type": "string", "minLength": 1},
+            "served_models": {"type": "array", "items": {"type": "string", "minLength": 1}},
             "input_usd_per_mtok": {"type": "number", "minimum": 0},
             "output_usd_per_mtok": {"type": "number", "minimum": 0},
             "cache_read_usd_per_mtok": {"type": "number", "minimum": 0},
@@ -55,7 +59,7 @@
         "type": "object",
         "required": [
           "index", "outcome", "served_model", "estimate_tokens", "estimate_method", "output_cap_tokens", "usage", "usage_measured",
-          "charged_input_tokens", "charged_output_tokens", "reserved_cost_usd", "charged_cost_usd", "cost_measured"
+          "exceeded_reservation", "charged_input_tokens", "charged_output_tokens", "reserved_cost_usd", "charged_cost_usd", "cost_measured"
         ],
         "additionalProperties": false,
         "properties": {
@@ -63,7 +67,7 @@
           "outcome": {"enum": ["in-flight", "ok", "provider-error", "interrupted"]},
           "served_model": {"type": ["string", "null"]},
           "estimate_tokens": {"type": "integer", "minimum": 0},
-          "estimate_method": {"enum": ["provider-count", "fallback-estimate"]},
+          "estimate_method": {"enum": ["provider-count", "byte-bound"]},
           "output_cap_tokens": {"type": "integer", "minimum": 1},
           "usage": {
             "oneOf": [
@@ -83,6 +87,7 @@
             ]
           },
           "usage_measured": {"type": "boolean"},
+          "exceeded_reservation": {"type": "boolean", "description": "Reported usage was larger than the reserved prompt bound or output cap."},
           "charged_input_tokens": {"type": "integer", "minimum": 0},
           "charged_output_tokens": {"type": "integer", "minimum": 0},
           "reserved_cost_usd": {"type": ["string", "null"]},
@@ -93,10 +98,11 @@
     },
     "totals": {
       "type": "object",
-      "required": ["requests", "input_tokens", "output_tokens", "cost_usd", "unmeasured_requests", "usage_complete"],
+      "required": ["requests", "count_requests", "input_tokens", "output_tokens", "cost_usd", "unmeasured_requests", "usage_complete"],
       "additionalProperties": false,
       "properties": {
         "requests": {"type": "integer", "minimum": 0},
+        "count_requests": {"type": "integer", "minimum": 0},
         "input_tokens": {"type": "integer", "minimum": 0},
         "output_tokens": {"type": "integer", "minimum": 0},
         "cost_usd": {"type": ["string", "null"]},
@@ -106,16 +112,17 @@
     },
     "remaining": {
       "type": "object",
-      "required": ["requests", "input_tokens", "output_tokens", "cost_usd"],
+      "required": ["requests", "count_requests", "input_tokens", "output_tokens", "cost_usd"],
       "additionalProperties": false,
       "properties": {
         "requests": {"type": "integer", "minimum": 0},
+        "count_requests": {"type": "integer", "minimum": 0},
         "input_tokens": {"type": "integer", "minimum": 0},
         "output_tokens": {"type": "integer", "minimum": 0},
         "cost_usd": {"type": ["string", "null"]}
       }
     },
-    "stop_reason": {"enum": [null, "cancelled", "request-limit", "context-window", "input-token-limit", "output-token-limit", "cost-limit"]},
+    "stop_reason": {"enum": [null, "cancelled", "request-limit", "context-window", "input-token-limit", "output-token-limit", "cost-limit", "reported-usage-over-limit", "unpriced-usage"]},
     "stop_message": {"type": ["string", "null"]},
     "notes": {"type": "array", "items": {"type": "string"}}
   }

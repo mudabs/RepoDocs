@@ -398,7 +398,7 @@ def test_ollama_adapter_speaks_the_chat_api_over_loopback() -> None:
         def do_POST(self) -> None:  # noqa: N802
             seen["path"] = self.path
             seen["body"] = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-            reply = json.dumps({"model": "llama3:8b", "message": {"role": "assistant", "content": '{"claims": []}'}}).encode()
+            reply = json.dumps({"model": "llama3:8b", "message": {"role": "assistant", "content": '{"claims": []}'}, "done": True, "done_reason": "stop"}).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(reply)))
@@ -440,10 +440,13 @@ def test_ollama_adapter_speaks_the_chat_api_over_loopback() -> None:
     "just a string",
 ])
 def test_malformed_ollama_responses_are_provider_errors(tmp_path, capsys, reply) -> None:
+    # A finished frame, so the malformed content itself is what is refused.
+    sent = {**reply, "done": True, "done_reason": "stop"} if isinstance(reply, dict) else reply
+
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self) -> None:  # noqa: N802
             self.rfile.read(int(self.headers["Content-Length"]))
-            body = json.dumps(reply).encode()
+            body = json.dumps(sent).encode()
             self.send_response(200)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
@@ -476,7 +479,7 @@ def test_ollama_model_field_of_the_wrong_type_falls_back_to_the_requested_model(
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self) -> None:  # noqa: N802
             self.rfile.read(int(self.headers["Content-Length"]))
-            body = json.dumps({"model": {"name": "x"}, "message": {"content": '{"claims": []}'}}).encode()
+            body = json.dumps({"model": {"name": "x"}, "message": {"content": '{"claims": []}'}, "done": True, "done_reason": "stop"}).encode()
             self.send_response(200)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()

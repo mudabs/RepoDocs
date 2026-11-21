@@ -110,7 +110,9 @@ class AnthropicProvider:
         # The SDK follows redirects by default. A redirect would send the evidence bundle to a
         # target nobody approved, so the transport is built here without that, and the client
         # (which closes it) is a context manager.
-        return anthropic.Anthropic(http_client=anthropic.DefaultHttpxClient(follow_redirects=False))
+        # The SDK also retries failed requests internally by default. Each retry would be a request the run ledger
+        # never reserved, so retries are off; a failed request is reported, not repeated.
+        return anthropic.Anthropic(max_retries=0, http_client=anthropic.DefaultHttpxClient(follow_redirects=False))
 
     def count_input_tokens(self, system: str, user: str, schema: dict[str, Any]) -> int:
         """The provider's own count of this request. Callers use it only after consent for this provider."""
@@ -241,6 +243,10 @@ class OllamaProvider:
         usage = _ollama_usage(payload)
         if payload.get("done_reason") == "length":
             raise _failed(ProviderError("The Ollama output was cut off at the token limit"), usage)
+        # Only a finished completion is an answer. An unfinished frame, or one that ended for another reason
+        # (a model load or unload, an abort), is incomplete even when its content happens to parse.
+        if payload.get("done") is not True or payload.get("done_reason") != "stop":
+            raise _failed(ProviderError("Ollama did not report a finished completion (done_reason was not stop)"), usage)
         if usage is not None and usage.measured and usage.prompt_tokens + usage.output_tokens >= self.context_window:  # type: ignore[operator]
             raise _failed(ProviderError(
                 f"The prompt and output filled the {self.context_window}-token context window, so the runtime may have "

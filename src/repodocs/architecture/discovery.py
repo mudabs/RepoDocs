@@ -16,6 +16,7 @@ from ..ai.bundle import REDACTION_RULES_VERSION, redact_text
 from ..ai.providers import Provider
 from ..common import canonical_json, scrub, sha256_text, write_json_atomic
 from ..config import AI_PROVIDER_ANTHROPIC, AI_PROVIDER_OLLAMA, ProjectConfig
+from ..ai.budgets import RunStopped
 from ..errors import MalformedProviderOutput, ProviderError
 from ..ir import ir_hash
 from .context import CONTEXT_VERSION, SELECTION_VERSION, ContextResolver, context_hash, is_denied, well_formed_path
@@ -329,6 +330,10 @@ def discover(config: ProjectConfig, ir: dict[str, Any], provider: Provider) -> t
             break
         try:
             response = provider.generate(SYSTEM_PROMPT, _user_message(resolver, context, round_number=resolver.rounds, repair=repair), RESPONSE_SCHEMA)
+        except RunStopped as exc:
+            # A usage limit ended the run: nothing more is sent, and the reply that passed a cap is not used.
+            partial, failure = "usage-budget", str(exc)
+            break
         except MalformedProviderOutput as exc:
             if not repaired:
                 repaired = repair = True
@@ -465,7 +470,7 @@ def _raw_from_view(view: dict[str, Any]) -> dict[str, Any]:
 
 PARTIAL_REASONS = (
     "round-budget", "request-budget", "context-budget", "response-budget", "timeout",
-    "provider-error", "incomplete-response", "empty-response", "no-progress",
+    "provider-error", "incomplete-response", "empty-response", "no-progress", "usage-budget",
 )
 _VIEW_KEYS = {"view_version", "status", "partial_reason", "provenance", "components", "connections", "alternatives", "rejected"}
 _PROVENANCE_KEYS = {
