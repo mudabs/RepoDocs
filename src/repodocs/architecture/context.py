@@ -3,6 +3,11 @@
 The context is built only from files in the scan's snapshot, read through the same hash check the
 analyzers use. Nothing here executes, imports, or builds repository code, follows links, or reaches
 the network. Repository text is data: it is never interpreted, only redacted and bounded.
+
+Selection (ADR-029) ranks substantive source by role and size, spreads the first round across
+repositories and across backend, frontend and storage files, and picks coherent spans of long files.
+The inventory, the reference index, the diagnostics and a reserve for the instructions count against
+the same total budget as the excerpts. References come from static imports in opened files only.
 """
 
 from __future__ import annotations
@@ -16,10 +21,14 @@ from ..ai.bundle import REDACTION_RULES_VERSION, redact_text
 from ..common import canonical_json, sha256_bytes, sha256_text
 from ..config import ARCHITECTURE_BUDGET_DEFAULTS, ProjectConfig
 from ..ir import ir_hash
+from .source_index import (
+    CODE_SUFFIXES, CONFIG_CANDIDATE_SUFFIXES, LAYERS, ROLE_TOKENS, SUPPORTED_SUFFIXES, choose_span as pick_span,
+    extract_references, is_asset, is_noise, is_vendored, layer_of, path_tokens, resolve_reference,
+)
 
 
 CONTEXT_VERSION = "1.0"
-SELECTION_VERSION = "1.0"
+SELECTION_VERSION = "1.1"
 CONTEXT_FILENAME = "architecture-context.json"
 
 # Names that hold secrets or no architecture. A project may add names and can never remove these.
@@ -42,6 +51,18 @@ ENTRY_NAMES = {
 }
 MAX_LINES = 200
 BINARY_PROBE = 8192
+README_MAX_LINES = 40
+MANIFEST_MAX_LINES = 80
+MIN_SUBSTANTIVE_BYTES = 350  # about ten lines; smaller files rank after every substantive file
+INVENTORY_FILES_PER_DIRECTORY = 12
+INSTRUCTION_RESERVE_BYTES = 6 * 1024  # the system prompt, the response schema and the message envelope of discovery
+MAX_OMITTED = 100
+MAX_UNOPENED = 5
+CONTAINER_NAMES = {"dockerfile", "docker-compose.yml", "docker-compose.yaml"}
+INDEX_NOTE = (
+    "Static import statements found in the opened files of JavaScript, TypeScript, Python and Java. "
+    "They show what a file names, not runtime order, calls, or data flow, and nothing about unopened files."
+)
 
 
 def is_denied(path: str, extra: tuple[str, ...] = ()) -> bool:
@@ -62,6 +83,7 @@ def well_formed_path(path: str) -> bool:
     return all(part not in ("", ".", "..") for part in path.split("/")) and all(ord(char) >= 32 for char in path)
 
 
+
 class ContextResolver:
     """Selects and serves bounded, redacted excerpts of one scan's snapshot."""
 
@@ -75,12 +97,18 @@ class ContextResolver:
             root = config.resolve_repository(config.repository(snapshot["repository_id"]))
             self.repositories[snapshot["repository_id"]] = (root, {item["path"]: item for item in snapshot["files"]})
         self.documents: dict[str, dict[str, Any]] = {}
+        self.references: dict[tuple[str, str], list[tuple[int, str, tuple[str, ...]]]] = {}
         self.omitted: dict[tuple[str, str, str], dict[str, str]] = {}
         self.context_bytes = 0
         self.replacements = 0
         self.rounds = 0
         self.requests = 0
         self._round_files = 0
+        self._full = False
+        self._pools: dict[str, dict[str, list[tuple[tuple[int, int, str], str]]]] = {}
+        self._inventory: list[dict[str, Any]] | None = None
+        self._paths = {repository_id: set(files) for repository_id, (_, files) in self.repositories.items()}
+        self._denied = {repository_id: sorted(path for path in files if self.is_denied(path)) for repository_id, (_, files) in self.repositories.items()}
 
     # -------------------------------------------------------------- rounds and requests
     def start_round(self) -> bool:
@@ -132,8 +160,15 @@ class ContextResolver:
         except OSError:
             return None
 
-    def fetch(self, repository_id: str, path: str, line_start: int = 1, line_end: int | None = None, *, kind: str | None = None) -> str | None:
-        """Add one excerpt and return its ID, or record why it was refused and return None."""
+    def fetch(
+        self, repository_id: str, path: str, line_start: int = 1, line_end: int | None = None, *, kind: str | None = None,
+        choose_span: bool = False,
+    ) -> str | None:
+        """Add one excerpt and return its ID, or record why it was refused and return None.
+
+        ``choose_span`` lets the resolver pick the span: a short head of a README or manifest, or the
+        block-aligned window of a long source file that holds the most definitions and routes.
+        """
 
         if repository_id not in self.repositories:
             self._omit(repository_id, path, "not-in-snapshot")
@@ -170,6 +205,12 @@ class ContextResolver:
         except UnicodeDecodeError:
             self._omit(repository_id, path, "not-text")
             return None
+        kind = kind or kind_of(path)
+        if choose_span:
+            if kind == "source":
+                line_start, line_end = pick_span(lines, MAX_LINES, self.budgets["max_excerpt_bytes"])
+            else:
+                line_start, line_end = 1, README_MAX_LINES if kind == "readme" else MANIFEST_MAX_LINES
         start = max(1, int(line_start))
         end = min(len(lines), int(line_end) if line_end else start + MAX_LINES - 1, start + MAX_LINES - 1)
         if start > max(len(lines), 1):
@@ -184,53 +225,240 @@ class ContextResolver:
             self._omit(repository_id, path, "duplicate")
             return None
         text, count = redact_text("\n".join(selected) + ("\n" if selected else ""))
+        key = (repository_id, path)
+        # References come from the whole file already read within the byte bound, not only from the excerpt.
+        indexed = key not in self.references and PurePosixPath(path).suffix.lower() in SUPPORTED_SUFFIXES
         size = len(text.encode("utf-8"))
-        if self.context_bytes + size > self.budgets["max_context_bytes"]:
-            self._omit(repository_id, path, "budget-exhausted")
-            return None
         self.context_bytes += size
-        self.replacements += count
-        self._round_files += 1
         self.documents[document_id] = {
             "id": document_id, "repository_id": repository_id, "path": path, "content_hash": entry["content_hash"],
-            "kind": kind or kind_of(path), "line_start": start, "line_end": end, "text": text, "redactions": count,
+            "kind": kind, "line_start": start, "line_end": end, "text": text, "redactions": count,
             "truncated": end < len(lines), "requested_in_round": self.rounds,
         }
+        if indexed:
+            self.references[key] = extract_references(path, lines)
+        if self.total_bytes() > self.budgets["max_context_bytes"]:
+            self.context_bytes -= size
+            del self.documents[document_id]
+            if indexed:
+                del self.references[key]
+            self._omit(repository_id, path, "budget-exhausted")
+            self._full = True
+            return None
+        self.replacements += count
+        self._round_files += 1
         return document_id
 
     # -------------------------------------------------------------- the first round
+    def _pool(self, repository_id: str) -> dict[str, list[tuple[tuple[int, int, str], str]]]:
+        """Substantive source and config files of a repository by layer, best first, as ``(sort key, path)``."""
+
+        if repository_id in self._pools:
+            return self._pools[repository_id]
+        pool: dict[str, list[tuple[tuple[int, int, str], str]]] = {layer: [] for layer in LAYERS}
+        for path, entry in self.repositories[repository_id][1].items():
+            name = path.rsplit("/", 1)[-1].lower()
+            suffix = PurePosixPath(name).suffix
+            if (
+                self.is_denied(path) or is_asset(path) or is_vendored(path) or name in README_NAMES or name in MANIFEST_NAMES
+                or suffix not in CODE_SUFFIXES | CONFIG_CANDIDATE_SUFFIXES
+            ):
+                continue
+            entry_point = name in ENTRY_NAMES or name.endswith("application.java")
+            role = bool(path_tokens(path) & ROLE_TOKENS)
+            if entry["size"] > self.budgets["max_file_bytes"]:
+                if entry_point or role:
+                    self._omit(repository_id, path, "too-large")
+                continue
+            if entry["size"] == 0 or (entry["size"] < MIN_SUBSTANTIVE_BYTES and not entry_point):
+                continue
+            # A tiny entry point is usually a re-export or wrapper: it is kept for a small repository but follows every substantive file.
+            score = min(entry["size"], 6144) // 96 + 40 * entry_point + 25 * role - 45 * is_noise(path) - 20 * (suffix in CONFIG_CANDIDATE_SUFFIXES)
+            score -= 1000 * (entry["size"] < MIN_SUBSTANTIVE_BYTES)
+            pool[layer_of(path)].append(((-score, path.count("/"), path), path))
+        self._pools[repository_id] = {layer: sorted(items) for layer, items in pool.items()}
+        return self._pools[repository_id]
+
+    def _queue(self, repository_id: str) -> list[str]:
+        """The order in which one repository's files are requested in the first round.
+
+        One language manifest and the best source file come first, then the README (a short head), then
+        the layers in turn so that a large backend cannot crowd out the frontend or storage, and last the
+        remaining manifests, with container files after language manifests.
+        """
+
+        files = sorted(self.repositories[repository_id][1], key=lambda item: (item.count("/"), item))
+        names = [(path, path.rsplit("/", 1)[-1].lower()) for path in files if not self.is_denied(path)]
+        manifests = [path for path, name in names if name in MANIFEST_NAMES]
+        manifests.sort(key=lambda path: path.rsplit("/", 1)[-1].lower() in CONTAINER_NAMES)
+        readme = [path for path, name in names if name in README_NAMES][:1]
+        lanes = {layer: [path for _, path in items] for layer, items in self._pool(repository_id).items()}
+        heads = [items[0] for items in self._pool(repository_id).values() if items]
+        queue = manifests[:1]
+        if heads:
+            best = min(heads)[1]
+            lanes[layer_of(best)].remove(best)
+            queue.append(best)
+        queue += readme
+        while any(lanes.values()):
+            for layer in LAYERS:
+                if lanes[layer]:
+                    queue.append(lanes[layer].pop(0))
+        return queue + manifests[1:]
+
     def select_initial(self) -> None:
-        """README, manifests, and entry points of every repository: the start of round one."""
+        """The start of round one: a fair, layered share of every repository within the round and total budgets."""
 
         self.start_round()
-        for repository_id in sorted(self.repositories):
-            files = sorted(self.repositories[repository_id][1], key=lambda item: (item.count("/"), item))
-            names = [(path, path.rsplit("/", 1)[-1].lower()) for path in files if not self.is_denied(path)]
-            chosen = [path for path, name in names if name in README_NAMES][:1]
-            chosen += [path for path, name in names if name in MANIFEST_NAMES]
-            chosen += [path for path, name in names if name in ENTRY_NAMES or name.endswith("application.java")]
-            seen: set[str] = set()
-            for path in chosen:
-                if path not in seen:
-                    seen.add(path)
-                    self.fetch(repository_id, path)
+        queues = {repository_id: self._queue(repository_id) for repository_id in sorted(self.repositories)}
+        limit = self.budgets["max_files_per_round"]
+        while any(queues.values()) and self._round_files < limit and not self._full:
+            for repository_id, queue in queues.items():  # one file per repository in turn
+                while queue and self._round_files < limit and not self._full:
+                    if self.fetch(repository_id, queue.pop(0), choose_span=True):
+                        break
 
     # -------------------------------------------------------------- the bundle
     def inventory(self) -> list[dict[str, Any]]:
+        """Names of directories and files, with assets and crowded directories summarized as counts.
+
+        The listing is cut by path count and by its share of the total budget; shallow paths survive.
+        """
+
+        if self._inventory is not None:
+            return self._inventory
         limit = self.budgets["max_inventory_paths"]
+        share = self.budgets["max_context_bytes"] // 5 // max(1, len(self.repositories))
         result = []
         for repository_id in sorted(self.repositories):
             paths = [path for path in self.repositories[repository_id][1] if not self.is_denied(path)]
-            directories = {parent + "/" for path in paths for parent in _parents(path)}
-            listing = sorted(directories) + sorted(paths)
-            result.append({"repository_id": repository_id, "paths": listing[:limit], "truncated": len(listing) > limit})
+            assets: dict[str, int] = {}
+            by_directory: dict[str, list[str]] = {}
+            for path in sorted(paths, key=lambda item: (item.count("/"), item)):
+                directory = path.rsplit("/", 1)[0] if "/" in path else ""
+                if is_asset(path):
+                    assets[directory] = assets.get(directory, 0) + 1
+                else:
+                    by_directory.setdefault(directory, []).append(path)
+            more = [
+                {"directory": directory, "count": len(members) - INVENTORY_FILES_PER_DIRECTORY}
+                for directory, members in sorted(by_directory.items()) if len(members) > INVENTORY_FILES_PER_DIRECTORY
+            ]
+            files = sorted(
+                (path for members in by_directory.values() for path in members[:INVENTORY_FILES_PER_DIRECTORY]),
+                key=lambda item: (item.count("/"), item),
+            )
+            directories = {parent + "/" for path in files for parent in _parents(path)}
+            listing = sorted(directories) + files
+            item = {
+                "repository_id": repository_id, "paths": listing[:limit], "truncated": len(listing) > limit,
+                "more_files": more, "assets": [{"directory": directory, "count": count} for directory, count in sorted(assets.items())],
+            }
+            while len(canonical_json(item).encode("utf-8")) > share and item["paths"]:
+                item["paths"] = item["paths"][: len(item["paths"]) * 3 // 4]
+                item["truncated"] = True
+            result.append(item)
+        self._inventory = result
         return result
 
+    def _status(self) -> dict[tuple[str, str], str]:
+        """``read`` for a file whose excerpt is the whole file, ``excerpted`` for a span of it."""
+
+        status: dict[tuple[str, str], str] = {}
+        for document in self.documents.values():
+            key = (document["repository_id"], document["path"])
+            whole = document["line_start"] == 1 and not document["truncated"]
+            status[key] = "read" if whole or status.get(key) == "read" else "excerpted"
+        return status
+
+    def index(self) -> tuple[dict[str, Any], int]:
+        """Static references of the opened files, and how many redactions the specifiers needed."""
+
+        limit = self.budgets["max_context_bytes"] // 8
+        status = self._status()
+        used, redactions, truncated = len(INDEX_NOTE), 0, False
+        files = []
+        for repository_id, path in sorted(self.references):
+            paths = self._paths[repository_id]
+            references = []
+            for line, specifier, names in self.references[(repository_id, path)]:
+                specifier, count = redact_text(specifier)
+                target = resolve_reference(path, specifier, names, paths)
+                if target is not None and self.is_denied(target):
+                    target = None
+                references.append({
+                    "line": line, "specifier": specifier, "target": target,
+                    "status": "unresolved" if target is None else status.get((repository_id, target), "unopened"),
+                })
+                redactions += count
+            entry = {
+                "repository_id": repository_id, "path": path,
+                "content_hash": self.repositories[repository_id][1][path]["content_hash"], "references": references,
+            }
+            while entry["references"] and used + len(canonical_json(entry).encode("utf-8")) > limit:
+                entry["references"].pop()
+                truncated = True
+            if entry["references"]:
+                used += len(canonical_json(entry).encode("utf-8"))
+                files.append(entry)
+        return {"note": INDEX_NOTE, "files": files, "truncated": truncated}, redactions
+
+    def coverage(self) -> list[dict[str, Any]]:
+        """Per repository: what was opened, which layers have files but none opened, and the best unopened files."""
+
+        opened: dict[str, set[str]] = {}
+        for document in self.documents.values():
+            opened.setdefault(document["repository_id"], set()).add(document["path"])
+        result = []
+        for repository_id in sorted(self.repositories):
+            seen = opened.get(repository_id, set())
+            pool = self._pool(repository_id)
+            layers = [
+                {"layer": layer, "files": len(items), "opened": sum(1 for _, path in items if path in seen)}
+                for layer, items in pool.items() if items
+            ]
+            unopened = sorted((key, path) for items in pool.values() for key, path in items if path not in seen)
+            result.append({
+                "repository_id": repository_id, "candidate_files": sum(item["files"] for item in layers), "opened_files": len(seen),
+                "layers": layers, "missing_layers": [item["layer"] for item in layers if item["layer"] != "other" and not item["opened"]],
+                "unopened_priority": [path for _, path in unopened[:MAX_UNOPENED]],
+            })
+        return result
+
+    def omitted_view(self) -> tuple[list[dict[str, str]], dict[str, int], bool]:
+        """Omissions with the material reasons first, each reason's total, and whether the list was cut."""
+
+        entries = dict(self.omitted)
+        for repository_id, denied in self._denied.items():
+            for path in denied:
+                entries[(repository_id, path, "denied-name")] = {"repository_id": repository_id, "path": path, "reason": "denied-name"}
+        ordered = [entries[key] for key in sorted(entries, key=lambda key: (key[2] == "denied-name", key))]
+        counts: dict[str, int] = {}
+        for item in ordered:
+            counts[item["reason"]] = counts.get(item["reason"], 0) + 1
+        return ordered[:MAX_OMITTED], dict(sorted(counts.items())), len(ordered) > MAX_OMITTED
+
+    def reserved_bytes(self) -> int:
+        """Room kept for the instructions the provider receives with the context."""
+
+        return min(INSTRUCTION_RESERVE_BYTES, self.budgets["max_context_bytes"] // 4)
+
+    def metadata(self) -> dict[str, Any]:
+        omitted, counts, cut = self.omitted_view()
+        index, _ = self.index()
+        return {
+            "inventory": self.inventory(), "index": index, "coverage": self.coverage(),
+            "omitted": omitted, "omitted_counts": counts, "omitted_truncated": cut,
+        }
+
+    def total_bytes(self) -> int:
+        """Everything counted against ``max_context_bytes``: excerpts, inventory, index, diagnostics and the instruction reserve."""
+
+        return self.context_bytes + self.reserved_bytes() + len(canonical_json(self.metadata()).encode("utf-8"))
+
     def bundle(self) -> dict[str, Any]:
-        for repository_id, (_, files) in sorted(self.repositories.items()):
-            for path in sorted(files):
-                if self.is_denied(path):
-                    self._omit(repository_id, path, "denied-name")
+        metadata = self.metadata()
+        _, index_redactions = self.index()
         return {
             "context_version": CONTEXT_VERSION,
             "policy": {"selection_version": SELECTION_VERSION, "redaction_version": REDACTION_RULES_VERSION, "budgets": dict(self.budgets)},
@@ -239,11 +467,13 @@ class ContextResolver:
                 {key: snapshot[key] for key in ("repository_id", "revision", "revision_kind", "content_fingerprint")}
                 for snapshot in self.ir["snapshots"]
             ],
-            "inventory": self.inventory(),
+            **metadata,
             "documents": sorted(self.documents.values(), key=lambda item: (item["repository_id"], item["path"], item["line_start"])),
-            "omitted": [self.omitted[key] for key in sorted(self.omitted)],
-            "usage": {"rounds": self.rounds, "requests": self.requests, "context_bytes": self.context_bytes},
-            "redaction": {"rules_version": REDACTION_RULES_VERSION, "replacements": self.replacements},
+            "usage": {
+                "rounds": self.rounds, "requests": self.requests, "context_bytes": self.context_bytes,
+                "metadata_bytes": len(canonical_json(metadata).encode("utf-8")), "reserved_bytes": self.reserved_bytes(),
+            },
+            "redaction": {"rules_version": REDACTION_RULES_VERSION, "replacements": self.replacements + index_redactions},
         }
 
 

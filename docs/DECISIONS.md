@@ -53,6 +53,12 @@
 |---|---|---|
 | D43 | Owner-approved local/self-hosted web first; public hosting and videos deferred. ADR-027 specifies React/TypeScript with Vite and an optional thin FastAPI/Uvicorn adapter over the shared Python service, polling, bounded single-process jobs, versioned local metadata, ephemeral credentials and explicit restart/cancellation states. The CLI requires no backend. Technical contracts and release thresholds are submitted for review in #64; runtime implementation follows in #65-77. D42 is reserved for the unmerged private-gateway work in #62. | Deliver a useful browser workflow without a duplicate engine, funded service or speculative distributed infrastructure |
 
+## Source context selection (#66)
+
+| ID | Decision | Rationale |
+|---|---|---|
+| D45 | Architecture-discovery context selection (ADR-029) ranks substantive source by role and size, spreads the first round across repositories and across backend, frontend and storage files by name and location, picks a block-aligned span of a long file, and counts the inventory, a compact static-import reference index, diagnostics and an instruction reserve against `max_context_bytes`. The index covers literal imports of opened JavaScript, TypeScript, Python and Java files only and records no runtime order; targets are `read`, `excerpted`, `unopened` or `unresolved`. Missing layers, unopened priority files and omissions are reported. Consent, disclosure ceilings, deny list, redaction and actual-read bounds are unchanged; selection version 1.1 invalidates views stored from 1.0 contexts | Makes the bounded context show behavior across subsystems and repositories, and makes omissions and the real total size explicit, without reading or claiming more than before |
+
 ## Remaining open decisions: require validation/approval
 | ID | Question | Key tradeoff |
 |---|---|---|

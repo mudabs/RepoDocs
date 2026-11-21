@@ -295,6 +295,8 @@ def _user_message(resolver: ContextResolver, context: dict[str, Any], *, round_n
         "rounds_left": resolver.budgets["max_rounds"] - resolver.rounds,
         "files_per_request_round": resolver.budgets["max_files_per_round"],
         "inventory": context["inventory"],
+        "reference_index": context.get("index", {}),
+        "coverage": context.get("coverage", []),
         "excerpts": [
             {key: item[key] for key in ("id", "repository_id", "path", "kind", "line_start", "line_end", "text")}
             for item in context["documents"]
@@ -327,8 +329,16 @@ def discover(config: ProjectConfig, ir: dict[str, Any], provider: Provider) -> t
         if not resolver.count_request():
             partial = "request-budget"
             break
+        user_message = _user_message(resolver, context, round_number=resolver.rounds, repair=repair)
+        build_request = getattr(provider, "request_body", None)
+        payload = build_request(SYSTEM_PROMPT, user_message, RESPONSE_SCHEMA) if build_request else {
+            "model": provider.model, "system": SYSTEM_PROMPT, "user": user_message, "schema": RESPONSE_SCHEMA,
+        }
+        if len(canonical_json(payload).encode("utf-8")) > resolver.budgets["max_context_bytes"]:
+            partial = "context-budget"
+            break
         try:
-            response = provider.generate(SYSTEM_PROMPT, _user_message(resolver, context, round_number=resolver.rounds, repair=repair), RESPONSE_SCHEMA)
+            response = provider.generate(SYSTEM_PROMPT, user_message, RESPONSE_SCHEMA)
         except MalformedProviderOutput as exc:
             if not repaired:
                 repaired = repair = True
