@@ -25,7 +25,8 @@ REPOSITORY_ROLES = (ROLE_SOURCE, ROLE_DESTINATION)
 AI_PROVIDER_NONE = "none"
 AI_PROVIDER_ANTHROPIC = "anthropic"
 AI_PROVIDER_OLLAMA = "ollama"
-AI_PROVIDERS = (AI_PROVIDER_NONE, AI_PROVIDER_ANTHROPIC, AI_PROVIDER_OLLAMA)
+AI_PROVIDER_OPENAI = "openai"
+AI_PROVIDERS = (AI_PROVIDER_NONE, AI_PROVIDER_ANTHROPIC, AI_PROVIDER_OLLAMA, AI_PROVIDER_OPENAI)
 
 FULL_REVISION_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 
@@ -136,6 +137,7 @@ class AiSettings:
     limits: RunLimits = RunLimits()
     effort: str | None = None
     prices: PriceProfile | None = None
+    openai_base_url: str | None = None
 
     @property
     def source_consent_current(self) -> bool:
@@ -156,6 +158,8 @@ class AiSettings:
             data["effort"] = self.effort
         if self.prices:
             data["prices"] = self.prices.to_dict()
+        if self.openai_base_url:
+            data["openai_base_url"] = self.openai_base_url
         return data
 
     @classmethod
@@ -168,7 +172,7 @@ class AiSettings:
         consent = data.get("external_consent", False)
         if not isinstance(consent, bool):
             raise ConfigError("ai.external_consent must be true or false")
-        for key in ("model", "ollama_host"):
+        for key in ("model", "ollama_host", "openai_base_url"):
             if data.get(key) is not None and (not isinstance(data[key], str) or not data[key]):
                 raise ConfigError(f"ai.{key} must be a non-empty string")
         source = data.get("source_excerpts_consent", False)
@@ -190,7 +194,7 @@ class AiSettings:
         return cls(
             provider=provider, model=data.get("model"), external_consent=consent, ollama_host=data.get("ollama_host"),
             source_excerpts_consent=source, source_consent_policy=policy if source else None,
-            limits=limits, effort=effort, prices=prices,
+            limits=limits, effort=effort, prices=prices, openai_base_url=data.get("openai_base_url"),
         )
 
 

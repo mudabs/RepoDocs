@@ -204,6 +204,24 @@ results, not a real-model factuality benchmark. See ADR-021.
 
 ### Architecture discovery (optional, ADR-026)
 
+#### Native OpenAI configuration
+
+The optional `openai` provider uses the Responses API directly, with no additional SDK dependency. Select an explicit model your API account can access:
+
+```powershell
+repodocs ai-configure --provider openai --model <model-id>
+repodocs architecture context
+# Review the bounded, redacted preview before authorizing source disclosure.
+repodocs ai-configure --consent-external --consent-source-excerpts
+repodocs architecture discover
+```
+
+Supply `OPENAI_API_KEY` securely in the current process before discovery; never put its value in CLI arguments, project files or source control. A ChatGPT subscription is not used as an API credential. Scan, preview, generation and validation do not need a key. Live API usage is billed by the provider.
+
+Aggregate input/output/request/cost caps and local receipts use the same usage contract as the other providers (ADR-031). Set the actual model's context capacity and a versioned price profile when enforcing a monetary cap; unknown prices or usage are not reported as zero. Reasoning usage is part of output usage, not an extra billable total added twice.
+
+The transport requests schema-constrained output with `store: false`, refuses incomplete/refused responses, bounds response bytes, and follows no redirects or model fallbacks. Provider-side retention and account/model availability still require operator review. The default base is `https://api.openai.com/v1`; `--openai-base-url` selects another Responses endpoint under the same consent checks and HTTPS policy (loopback HTTP exists for local tests). Native OpenAI access is distinct from the private Ollama gateway in #62.
+
 For an application that no analyzer understands, such as a plain JavaScript and Express app, the deterministic documents list languages and dependencies but no components. Architecture discovery asks a model for a structured view of the application's components and connections, checks every claim against the scanned snapshot, and renders it. It is optional, off by default, and never changes the System IR, a cross-repository candidate, or a confirmation.
 
 Workflow:

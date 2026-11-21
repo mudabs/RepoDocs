@@ -16,7 +16,7 @@ from .. import __version__
 from ..ai.bundle import REDACTION_RULES_VERSION, redact_text
 from ..ai.providers import Provider
 from ..common import canonical_json, scrub, sha256_text, write_json_atomic
-from ..config import AI_PROVIDER_ANTHROPIC, AI_PROVIDER_OLLAMA, ProjectConfig
+from ..config import AI_PROVIDER_ANTHROPIC, AI_PROVIDER_OLLAMA, AI_PROVIDER_OPENAI, ProjectConfig
 from ..ai.budgets import RunStopped
 from ..errors import MalformedProviderOutput, ProviderError
 from ..ir import ir_hash
@@ -676,7 +676,7 @@ def check_envelope(view: Any) -> str:
         return "the stored view's provenance is malformed"
     snapshots = provenance["snapshots"]
     if (
-        provenance["provider"] not in (AI_PROVIDER_ANTHROPIC, AI_PROVIDER_OLLAMA)
+        provenance["provider"] not in (AI_PROVIDER_ANTHROPIC, AI_PROVIDER_OLLAMA, AI_PROVIDER_OPENAI)
         or not all(_filled(provenance[key]) for key in ("requested_model", "served_model", "engine_version", "prompt_version"))
         or not isinstance(provenance["external"], bool)
         or not (_count(provenance["rounds"]) and _count(provenance["requests"]))
