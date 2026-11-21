@@ -22,6 +22,12 @@ This is a development contract for #64 under epic #63, not an implemented web AP
 - A workspace retains one active job and at most one queued job by default. Idempotency covers the normalized request and source/context hashes, not credentials. Queue admission reserves the configured worst-case allowance. #67 defines measured/estimated/unknown accounting and prevents retries from bypassing aggregate caps.
 - A result references existing IR/view hashes and opaque artifact handles, not embedded copies of the IR, executable markup or provider responses. The service resolves handles through an owned manifest and checks access, path containment and unexpected edits before returning bytes.
 
+## Security boundary (ADR-033, #71)
+
+- `repodocs.web.security` is implemented and tested without HTTP. #72 must call `SessionGuard.authorize` first on every request (and `open_session` for the first same-origin contact, which needs no OAuth), apply `response_headers`, and never add CORS headers. Non-loopback exposure needs `AccessConfig` with an HTTPS origin and an auth token.
+- Provider credentials arrive per request into `ProviderSessions`, stay in memory and are never returned (`public_view` is the browser form). Consent receipts come from `ConsentLedger.grant` after the preview. #69 must run every model, token-count and retry request through `RunGate.call`, so revoked, expired, missing or mismatched consent starts nothing.
+- Not provided: persistent or secure credential storage, login rate limiting, an HTTP server and UI rendering. Loopback trusts local processes of the same machine.
+
 ## State and recovery rules
 
 | State | Meaning | Result treatment |

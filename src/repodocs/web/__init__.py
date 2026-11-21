@@ -1,1 +1,1 @@
-"""Local web adapter support. Nothing here analyzes sources; it only prepares what the shared engine reads."""
+"""Local web adapter support: the access boundary and server-owned workspaces. Nothing here analyzes sources; the HTTP adapter is added by #72."""
