@@ -771,7 +771,7 @@ def test_the_ollama_adapter_replays_the_same_view(tmp_path: Path, capsys) -> Non
 
     def respond(handler) -> None:
         body = json.loads(handler.server.requests[-1][2])
-        reply = json.dumps({"model": "qwen-replay", "message": {"content": json.dumps(reply_from(body["messages"][1]["content"]))}}).encode()
+        reply = json.dumps({"model": "qwen-replay", "message": {"content": json.dumps(reply_from(body["messages"][1]["content"]))}, "done": True, "done_reason": "stop"}).encode()
         handler.send_response(200)
         handler.send_header("Content-Length", str(len(reply)))
         handler.end_headers()

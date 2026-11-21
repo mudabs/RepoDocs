@@ -15,6 +15,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Callable, Mapping
 
+from .ai.budgets import RunLimits, RunStopped, budgeted, ledger_for, write_receipt
 from .ai.providers import Provider, ProviderResponse, require_source_consent
 from .common import write_json
 from .confirmations import apply_decisions, load_decisions, status_counts, unresolved_candidates
@@ -89,9 +90,13 @@ class RunHooks:
 NO_HOOKS = RunHooks()
 
 
-def _checkpoint(hooks: RunHooks, operation: str, stage: str) -> None:
+def _stop_if_cancelled(hooks: RunHooks, operation: str, stage: str) -> None:
     if hooks.cancel is not None and hooks.cancel.cancelled:
         raise Cancelled(f"{operation} was cancelled before {stage}")
+
+
+def _checkpoint(hooks: RunHooks, operation: str, stage: str) -> None:
+    _stop_if_cancelled(hooks, operation, stage)
     if hooks.progress is not None:
         hooks.progress(ProgressEvent(operation, stage))
 
@@ -120,10 +125,15 @@ class ContextRequest(ProjectRequest):
 
 @dataclass(frozen=True)
 class DiscoverRequest(ProjectRequest):
-    """``provider`` is this run's own object, already holding any credential. It is required unless a current view is reused."""
+    """``provider`` is this run's own object, already holding any credential. It is required unless a current view is reused.
+
+    ``limits`` are this run's own usage limits. They can only lower the project's ``ai.limits`` (ADR-031). The service
+    wraps the provider in a run ledger after the consent checks, unless the caller passes one already budgeted.
+    """
 
     provider: Provider | None = None
     refresh: bool = False
+    limits: RunLimits | None = None
 
 
 @dataclass(frozen=True)
@@ -151,6 +161,7 @@ _ERRORS: tuple[tuple[type[RepoDocsError], str, int], ...] = (
     (OwnershipError, "ownership", EXIT_OWNERSHIP),
     (ConfirmationError, "confirmation", EXIT_CONFIRMATION),
     (PublicationError, "publication", EXIT_PUBLICATION),
+    (RunStopped, "budget", EXIT_AI_PROVIDER),
     (ProviderError, "provider", EXIT_AI_PROVIDER),
     (ValidationError, "validation", EXIT_VALIDATION),
     (RepoDocsError, "usage", EXIT_USAGE),
@@ -162,7 +173,7 @@ def describe_error(exc: RepoDocsError) -> WorkflowError:
 
     for kind, code, exit_code in _ERRORS:
         if isinstance(exc, kind):
-            message = f"{exc}. Deterministic scan, generate, and validate are unaffected" if code == "provider" else str(exc)
+            message = f"{exc}. Deterministic scan, generate, and validate are unaffected" if code in ("provider", "budget") else str(exc)
             return WorkflowError(code, message, exit_code)
     raise TypeError(f"{type(exc).__name__} is not a RepoDocsError")  # pragma: no cover
 
@@ -226,6 +237,10 @@ class _CancellableProvider:
         self._inner = inner
         self._hooks = hooks
         self.name, self.model, self.external = inner.name, inner.model, inner.external
+        # The exact request body is a pure function; keep it visible through this wrapper. Token counting is
+        # not forwarded: the run ledger inside is its only caller (ADR-031).
+        if hasattr(inner, "request_body"):
+            self.request_body = inner.request_body
 
     def generate(self, system: str, user: str, schema: dict[str, Any]) -> ProviderResponse:
         _checkpoint(self._hooks, "discover", "provider-request")
@@ -282,6 +297,11 @@ def preview_context(request: ContextRequest, hooks: RunHooks = NO_HOOKS) -> Work
     reasons: dict[str, int] = {}
     for item in bundle["omitted"]:
         reasons[item["reason"]] = reasons.get(item["reason"], 0) + 1
+    budget: dict[str, Any] | None = None
+    if request.provider is not None:
+        # The limits and worst-case cost a run would start with. Nothing is counted or sent.
+        snapshot = ledger_for(request.provider, config.ai).snapshot()
+        budget = {key: snapshot[key] for key in ("limits", "price_profile", "max_estimated_cost_usd", "notes")}
     data = {
         "context": path.as_posix(),
         "context_version": bundle["context_version"],
@@ -294,6 +314,7 @@ def preview_context(request: ContextRequest, hooks: RunHooks = NO_HOOKS) -> Work
         "provider": config.ai.provider,
         "provider_is_external": None if request.provider is None else bool(request.provider.external),
         "source_consent": config.ai.source_consent_current,
+        "budget": budget,
     }
     return WorkflowResult("context", STATUS_COMPLETE, data, view_status=_view_status(config, ir))
 
@@ -355,35 +376,50 @@ def discover(request: DiscoverRequest, hooks: RunHooks = NO_HOOKS) -> WorkflowRe
             "`repodocs ai-configure --consent-external` to allow it"
         )
     require_source_consent(provider, config.ai)
+    # Every request, count, retry and repair of this run is reserved in one ledger, created only after consent.
+    budget = budgeted(provider, config.ai, request.limits, before_send=lambda: _stop_if_cancelled(hooks, "discover", "provider-request"))
     preview, _ = build_context(config, ir)
     write_json(config.internal_path / CONTEXT_FILENAME, preview)
-    new_view, context = run_discovery(config, ir, _CancellableProvider(provider, hooks))
-    _checkpoint(hooks, "discover", "storing-view")
+    try:
+        new_view, context = run_discovery(config, ir, _CancellableProvider(budget, hooks))
+        _checkpoint(hooks, "discover", "storing-view")
+    except BaseException as exc:
+        if isinstance(exc, Cancelled):
+            budget.cancel()
+        receipt = write_receipt(config.internal_path, "architecture-discover", budget)
+        if isinstance(exc, RepoDocsError):
+            exc.receipt = receipt  # type: ignore[attr-defined]
+        raise
+    usage = write_receipt(config.internal_path, "architecture-discover", budget)
     # A replacement that ended early never displaces a current, complete view the user can still rely on.
     if status == STATUS_CURRENT and view is not None and view["status"] == "complete" and new_view["status"] != "complete":
         return _discovered(
-            config, view, reused=True, view_status=status, discarded=new_view["partial_reason"],
+            config, view, reused=True, view_status=status, discarded=new_view["partial_reason"], usage=usage,
             warnings=(f"The new discovery ended early ({new_view['partial_reason']}); the previous complete view was kept",),
         )
     try:
         save_view(config, new_view, context)
     except OSError as exc:
-        raise RepoDocsError(f"The architecture view could not be stored ({exc}); the previous view, if any, was left unchanged") from exc
+        error = RepoDocsError(f"The architecture view could not be stored ({exc}); the previous view, if any, was left unchanged")
+        error.receipt = usage  # type: ignore[attr-defined]
+        raise error from exc
     warnings = []
     if status in ("stale", "invalid"):
         warnings.append(f"The previous architecture view was {status} and has been replaced")
     if new_view["status"] == "partial":
         warnings.append(f"Discovery stopped early ({new_view['partial_reason']}); the view is partial")
-    return _discovered(config, new_view, reused=False, view_status=STATUS_CURRENT, warnings=tuple(warnings))
+    return _discovered(config, new_view, reused=False, view_status=STATUS_CURRENT, usage=usage, warnings=tuple(warnings))
 
 
 def _discovered(
     config: ProjectConfig, view: dict[str, Any], *, reused: bool, view_status: str, discarded: str | None = None,
-    warnings: tuple[str, ...] = (),
+    usage: dict[str, Any] | None = None, warnings: tuple[str, ...] = (),
 ) -> WorkflowResult:
     data = _discovery_summary(config, view, reused=reused)
     if discarded is not None:
         data["replacement_discarded"] = discarded
+    if usage is not None:
+        data["usage"] = usage
     # The run is partial when the view it ended with, or the replacement it discarded, was incomplete.
     status = STATUS_PARTIAL if discarded is not None or view["status"] == "partial" else STATUS_COMPLETE
     return WorkflowResult("discover", status, data, warnings, view_status=view_status)
@@ -493,4 +529,9 @@ def execute(operation: str, request: ProjectRequest, hooks: RunHooks = NO_HOOKS)
         return OPERATIONS[operation](request, hooks)
     except RepoDocsError as exc:
         error = describe_error(exc)
-        return WorkflowResult(operation, STATUS_CANCELLED if isinstance(exc, Cancelled) else STATUS_FAILED, error=error)
+        # A run that reached a provider keeps its usage receipt even when it failed or was cancelled.
+        receipt = getattr(exc, "receipt", None)
+        return WorkflowResult(
+            operation, STATUS_CANCELLED if isinstance(exc, Cancelled) else STATUS_FAILED,
+            data=None if receipt is None else {"usage": receipt}, error=error,
+        )

@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .ai.budgets import EFFORTS, PriceProfile, RunLimits
 from .common import slugify, write_json
 from .errors import ConfigError
 
@@ -130,6 +131,11 @@ class AiSettings:
     # separate decision from external_consent and names the policy version it was given for.
     source_excerpts_consent: bool = False
     source_consent_policy: str | None = None
+    # Usage settings (ADR-031): run limits within hard ceilings, an explicit reasoning effort for providers
+    # that support one, and a project-supplied price profile. Absent values mean the documented defaults.
+    limits: RunLimits = RunLimits()
+    effort: str | None = None
+    prices: PriceProfile | None = None
 
     @property
     def source_consent_current(self) -> bool:
@@ -144,6 +150,12 @@ class AiSettings:
             data["model"] = self.model
         if self.ollama_host:
             data["ollama_host"] = self.ollama_host
+        if self.limits.to_dict():
+            data["limits"] = self.limits.to_dict()
+        if self.effort:
+            data["effort"] = self.effort
+        if self.prices:
+            data["prices"] = self.prices.to_dict()
         return data
 
     @classmethod
@@ -165,9 +177,20 @@ class AiSettings:
         policy = data.get("source_consent_policy")
         if policy is not None and (not isinstance(policy, str) or not policy):
             raise ConfigError("ai.source_consent_policy must be a non-empty string")
+        effort = data.get("effort")
+        if effort is not None and effort not in EFFORTS:
+            raise ConfigError("ai.effort must be one of: " + ", ".join(EFFORTS))
+        limits = RunLimits.from_dict(data["limits"]) if "limits" in data else RunLimits()
+        prices = PriceProfile.from_dict(data["prices"]) if "prices" in data else None
+        if limits.max_cost_usd is not None and (prices is None or not prices.complete):
+            raise ConfigError(
+                "ai.limits.max_cost_usd needs ai.prices with input, output, cache-read and cache-write rates "
+                "(0 for a category the provider does not bill); RepoDocs has no built-in rates"
+            )
         return cls(
             provider=provider, model=data.get("model"), external_consent=consent, ollama_host=data.get("ollama_host"),
             source_excerpts_consent=source, source_consent_policy=policy if source else None,
+            limits=limits, effort=effort, prices=prices,
         )
 
 

@@ -192,7 +192,7 @@ def stop(*servers: HTTPServer) -> None:
 
 
 def ollama_reply(handler: BaseHTTPRequestHandler) -> None:
-    body = json.dumps({"model": "m", "message": {"content": '{"claims": []}'}}).encode()
+    body = json.dumps({"model": "m", "message": {"content": '{"claims": []}'}, "done": True, "done_reason": "stop"}).encode()
     handler.send_response(200)
     handler.send_header("Content-Length", str(len(body)))
     handler.end_headers()
