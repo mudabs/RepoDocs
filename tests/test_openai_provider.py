@@ -127,6 +127,28 @@ def test_missing_environment_key_has_no_network_side_effect(monkeypatch):
     assert calls == []
 
 
+@pytest.mark.parametrize("change", [("--model", "second-model"), ("--openai-base-url", "https://other.example/v1"), ("--provider", "ollama")])
+def test_changing_provider_identity_requires_new_disclosure_consent(tmp_path, capsys, change):
+    from conftest import invoke
+
+    assert invoke(tmp_path, capsys, "init", "demo")[0] == 0
+    assert invoke(tmp_path, capsys, "ai-configure", "--provider", "openai", "--model", "first-model", "--consent-external", "--consent-source-excerpts")[0] == 0
+    code, result = invoke(tmp_path, capsys, "ai-configure", *change)
+    assert code == 0
+    assert result["data"]["external_consent"] is False
+    assert result["data"].get("source_excerpts_consent", False) is False
+
+
+def test_identity_change_can_be_explicitly_reauthorized(tmp_path, capsys):
+    from conftest import invoke
+
+    assert invoke(tmp_path, capsys, "init", "demo")[0] == 0
+    assert invoke(tmp_path, capsys, "ai-configure", "--provider", "openai", "--model", "first")[0] == 0
+    code, result = invoke(tmp_path, capsys, "ai-configure", "--model", "second", "--consent-external", "--consent-source-excerpts")
+    assert code == 0 and result["data"]["external_consent"] is True
+    assert result["data"]["source_excerpts_consent"] is True
+
+
 def test_oversized_response_is_bounded(monkeypatch):
     monkeypatch.setattr("repodocs.ai.openai.MAX_RESPONSE_BYTES", 128)
     with endpoint() as (url, _), pytest.raises(ProviderError, match="byte limit"):

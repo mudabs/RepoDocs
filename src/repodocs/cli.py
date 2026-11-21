@@ -443,6 +443,17 @@ def _cmd_ai_configure(args: argparse.Namespace) -> int:
     current = config.ai
     consent = True if args.consent_external else False if args.revoke_consent else current.external_consent
     source = True if args.consent_source_excerpts else False if args.revoke_source_consent else current.source_excerpts_consent
+    selected = args.provider or current.provider
+    changed = (
+        selected != current.provider
+        or (args.model is not None and args.model != current.model)
+        or (selected == "ollama" and args.ollama_host is not None and args.ollama_host != current.ollama_host)
+        or (selected == "openai" and args.openai_base_url is not None and args.openai_base_url != current.openai_base_url)
+    )
+    if changed:
+        # An existing grant is not permission to disclose the same source to a different destination/model.
+        consent = bool(args.consent_external)
+        source = bool(args.consent_source_excerpts)
     config.ai = AiSettings(
         source_excerpts_consent=source,
         source_consent_policy=SOURCE_POLICY_VERSION if source else None,

@@ -9,7 +9,7 @@ import urllib.request
 from typing import Any
 from urllib.parse import urlsplit
 
-from ..errors import ConfigError, ProviderError
+from ..errors import ConfigError, MalformedProviderOutput, ProviderError
 from .providers import MAX_OUTPUT_TOKENS, REQUEST_TIMEOUT_SECONDS, ProviderResponse, _opener, _parse_object, is_loopback
 
 DEFAULT_BASE_URL = "https://api.openai.com/v1"
@@ -78,7 +78,7 @@ class OpenAIProvider:
         except urllib.error.HTTPError as exc:
             # Do not include the body: it can echo prompts, credentials or private endpoint details.
             raise ProviderError(f"OpenAI request failed (HTTP {exc.code}); redirects are never followed") from None
-        except (urllib.error.URLError, OSError, ValueError, UnicodeError):
+        except (urllib.error.URLError, OSError, ValueError, UnicodeError, RecursionError):
             raise ProviderError("Unable to read a valid OpenAI response") from None
         if not isinstance(payload, dict) or payload.get("status") != "completed":
             raise ProviderError("OpenAI did not return a completed response")
@@ -105,6 +105,10 @@ class OpenAIProvider:
         if len(texts) != 1:
             raise ProviderError("OpenAI must return exactly one structured JSON output")
         model = payload.get("model")
-        if not isinstance(model, str) or not model:
+        if not isinstance(model, str) or not model or len(model) > 256:
             raise ProviderError("OpenAI response is missing the serving model")
-        return ProviderResponse(_parse_object(texts[0], "OpenAI"), model)
+        try:
+            data = _parse_object(texts[0], "OpenAI")
+        except RecursionError:
+            raise MalformedProviderOutput("OpenAI output exceeds JSON nesting limits") from None
+        return ProviderResponse(data, model)
