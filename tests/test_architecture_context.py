@@ -741,3 +741,21 @@ def test_a_large_entry_point_and_the_denied_files_are_reported_as_omissions_with
     assert len(bundle["omitted"]) == 100 and bundle["omitted_truncated"] is True
     assert bundle["omitted_counts"] == {"denied-name": 130, "too-large": 1}
     assert "server.js" not in {item["path"] for item in bundle["documents"]}
+
+
+def test_the_service_cancellation_and_usage_wrappers_keep_the_request_body_for_the_final_check(tmp_path: Path, capsys) -> None:
+    from repodocs import service
+    from test_architecture_discovery import Scripted, full_answer
+    from test_service import project
+
+    root = project(tmp_path, capsys)
+
+    class LargeEnvelope(Scripted):
+        def request_body(self, system, user, schema):
+            return {"system": system, "user": user, "schema": schema, "frame": "x" * 300_000}
+
+    provider = LargeEnvelope(full_answer)
+    result = service.execute("discover", service.DiscoverRequest(root, provider=provider))
+
+    assert result.status == "failed" and "context-budget" in result.error.message
+    assert provider.messages == [], "the wrappers did not hide the provider's real request body"
