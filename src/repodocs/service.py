@@ -29,6 +29,7 @@ from .errors import (
     EXIT_VALIDATION,
     ConfigError,
     ConfirmationError,
+    ConsentError,
     OwnershipError,
     ProviderError,
     PublicationError,
@@ -345,7 +346,14 @@ def discover(request: DiscoverRequest, hooks: RunHooks = NO_HOOKS) -> WorkflowRe
             "Architecture discovery needs an AI provider; choose one with `repodocs ai-configure --provider ollama --model <name>`. "
             "Scan, generate, and validate work without one"
         )
-    # Source consent is re-checked here so an adapter cannot reach a provider without it.
+    # Both consent scopes are re-checked here, in the CLI resolver's order, because an adapter injects providers
+    # directly and so never passes through that resolver.
+    if provider.external and not config.ai.external_consent:
+        raise ConsentError(
+            f"The {provider.name} provider would send the evidence bundle off this machine and no consent is "
+            "recorded; this project is local-only. Review the bundle with `repodocs ai-bundle`, then run "
+            "`repodocs ai-configure --consent-external` to allow it"
+        )
     require_source_consent(provider, config.ai)
     preview, _ = build_context(config, ir)
     write_json(config.internal_path / CONTEXT_FILENAME, preview)

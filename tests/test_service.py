@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import threading
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,7 @@ import pytest
 from repodocs import service
 from repodocs.ai import providers
 from repodocs.ai.providers import ProviderResponse
+from repodocs.config import SOURCE_POLICY_VERSION, ProjectConfig
 from repodocs.errors import ConfigError, ConfirmationError, ConsentError, ProviderError
 from repodocs.service import (
     CancellationToken, ContextRequest, DiscoverRequest, GenerateRequest, ProgressEvent, RunHooks, ScanRequest, ValidateRequest,
@@ -225,13 +227,45 @@ def test_discovery_without_a_provider_fails_clearly_and_without_a_view(tmp_path:
     assert result.status == "failed" and result.error.code == "usage" and result.view_status is None
 
 
-def test_an_external_provider_needs_source_consent_even_when_injected(tmp_path: Path, capsys) -> None:
-    root = project(tmp_path, capsys)
+def external_provider() -> Scripted:
     provider = Scripted(full_answer)
     provider.external = True
+    return provider
+
+
+def set_consent(root: Path, *, external: bool, source: bool) -> None:
+    config = ProjectConfig.load(root)
+    config.ai = replace(
+        config.ai, external_consent=external, source_excerpts_consent=source, source_consent_policy=SOURCE_POLICY_VERSION if source else None
+    )
+    config.save()
+
+
+@pytest.mark.parametrize("external,source", [(False, False), (True, False), (False, True)])
+def test_an_injected_external_provider_needs_both_consent_scopes(tmp_path: Path, capsys, external: bool, source: bool) -> None:
+    root = project(tmp_path, capsys)
+    set_consent(root, external=external, source=source)
+    provider = external_provider()
     with pytest.raises(ConsentError):
         service.discover(DiscoverRequest(root, provider=provider))
-    assert provider.messages == []
+    result = service.execute("discover", DiscoverRequest(root, provider=provider))
+    assert result.status == "failed" and result.error.code == "usage" and result.error.exit_code == 2
+    assert provider.messages == [] and not (root / ".repodocs" / "architecture-view.json").exists()
+
+
+def test_an_injected_external_provider_with_both_consents_is_called(tmp_path: Path, capsys) -> None:
+    root = project(tmp_path, capsys)
+    set_consent(root, external=True, source=True)
+    provider = external_provider()
+    result = service.discover(DiscoverRequest(root, provider=provider))
+    assert result.status == "complete" and len(provider.messages) == 1 and result.data["provenance"]["external"] is True
+
+
+def test_a_local_provider_needs_no_consent(tmp_path: Path, capsys) -> None:
+    root = project(tmp_path, capsys)
+    set_consent(root, external=False, source=False)
+    provider = Scripted(full_answer)
+    assert service.discover(DiscoverRequest(root, provider=provider)).status == "complete" and len(provider.messages) == 1
 
 
 def test_a_current_view_is_reused_without_a_provider_and_refresh_needs_one(tmp_path: Path, capsys) -> None:
