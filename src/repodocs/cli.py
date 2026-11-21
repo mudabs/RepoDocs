@@ -443,7 +443,9 @@ def _cmd_ai_configure(args: argparse.Namespace) -> int:
     current = config.ai
     consent = True if args.consent_external else False if args.revoke_consent else current.external_consent
     source = True if args.consent_source_excerpts else False if args.revoke_source_consent else current.source_excerpts_consent
-    config.ai = AiSettings(
+    # replace() keeps the usage settings (limits, effort, prices) that this command does not edit.
+    config.ai = replace(
+        current,
         source_excerpts_consent=source,
         source_consent_policy=SOURCE_POLICY_VERSION if source else None,
         provider=args.provider or current.provider,
@@ -500,7 +502,7 @@ def _cmd_architecture_context(args: argparse.Namespace) -> int:
 def _cmd_architecture_discover(args: argparse.Namespace) -> int:
     """Run bounded architecture discovery and store the validated view. Contacts the provider only here."""
 
-    from .ai import providers
+    from .ai import budgets, providers
     from .architecture.context import CONTEXT_FILENAME, build_context
     from .architecture.discovery import STATUS_CURRENT, discover, load_view, save_view
 
@@ -520,11 +522,16 @@ def _cmd_architecture_discover(args: argparse.Namespace) -> int:
         )
     preview, _ = build_context(config, ir)
     write_json(config.internal_path / CONTEXT_FILENAME, preview)
-    new_view, context = discover(config, ir, provider)
+    budgeted = budgets.budgeted(provider, config.ai)
+    try:
+        new_view, context = discover(config, ir, budgeted)
+    finally:
+        usage = budgets.write_receipt(config.internal_path, "architecture-discover", budgeted)
     # A replacement that ended early never displaces a current, complete view the user can still rely on.
     if status == STATUS_CURRENT and view is not None and view["status"] == "complete" and new_view["status"] != "complete":
         _emit(
-            "architecture-discover", ok=True, data={**_discovery_summary(config, view, reused=True), "replacement_discarded": new_view["partial_reason"]},
+            "architecture-discover", ok=True,
+            data={**_discovery_summary(config, view, reused=True), "replacement_discarded": new_view["partial_reason"], "usage": usage},
             warnings=[f"The new discovery ended early ({new_view['partial_reason']}); the previous complete view was kept"],
         )
         return EXIT_OK
@@ -538,7 +545,7 @@ def _cmd_architecture_discover(args: argparse.Namespace) -> int:
         warnings.append(f"The previous architecture view was {status} and has been replaced")
     if view["status"] == "partial":
         warnings.append(f"Discovery stopped early ({view['partial_reason']}); the view is partial")
-    _emit("architecture-discover", ok=True, data=_discovery_summary(config, view, reused=False), warnings=warnings)
+    _emit("architecture-discover", ok=True, data={**_discovery_summary(config, view, reused=False), "usage": usage}, warnings=warnings)
     return EXIT_OK
 
 
@@ -594,7 +601,7 @@ def _cmd_ai_bundle(args: argparse.Namespace) -> int:
 
 
 def _cmd_ai_interpret(args: argparse.Namespace) -> int:
-    from .ai import providers
+    from .ai import budgets, providers
     from .ai.claims import CLAIMS_FILENAME, interpret
 
     config = ProjectConfig.load(_root(args))
@@ -604,7 +611,11 @@ def _cmd_ai_interpret(args: argparse.Namespace) -> int:
         _emit("ai-interpret", ok=True, data={"status": "disabled", "provider": "none"})
         return EXIT_OK
     bundle, bundle_path = _write_bundle(config)
-    document = interpret(bundle, provider)
+    budgeted = budgets.budgeted(provider, config.ai)
+    try:
+        document = interpret(bundle, budgeted)
+    finally:
+        usage = budgets.write_receipt(config.internal_path, "ai-interpret", budgeted)
     from .ai.evaluation import contribution
 
     claims_path = config.internal_path / CLAIMS_FILENAME
@@ -620,6 +631,7 @@ def _cmd_ai_interpret(args: argparse.Namespace) -> int:
             "rejected": len(document["rejected"]),
             "contribution": contribution(_load_scanned_ir(config), document),
             "bundle": _bundle_summary(bundle, bundle_path),
+            "usage": usage,
         },
     )
     return EXIT_OK

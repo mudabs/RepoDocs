@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import invoke, read_ir
+from conftest import allow_large_context, invoke, read_ir
 from repodocs.ai import providers
 from repodocs.ai.bundle import build_bundle, redact_text
 from repodocs.ai.claims import OUTPUT_SCHEMA, SYSTEM_PROMPT, validate_claims
@@ -341,6 +341,7 @@ def test_invalid_ai_settings_fail_on_load(tmp_path, capsys) -> None:
 def test_interpret_records_provenance_and_validated_claims(tmp_path, capsys, monkeypatch) -> None:
     root = scanned(tmp_path, capsys)
     assert invoke(root, capsys, "ai-configure", "--provider", "ollama", "--model", "fake-model")[0] == 0
+    allow_large_context(root)
     ir = read_ir(root)
     endpoint = next(node for node in ir["nodes"] if node["type"] == "endpoint")
     fake = FakeProvider({"claims": [
@@ -378,6 +379,7 @@ def test_provider_failure_exits_7_and_leaves_deterministic_output_usable(tmp_pat
     root = scanned(tmp_path, capsys)
     assert invoke(root, capsys, "generate")[0] == 0
     assert invoke(root, capsys, "ai-configure", "--provider", "ollama", "--model", "missing", "--ollama-host", "http://127.0.0.1:9")[0] == 0
+    allow_large_context(root)
 
     code, response = invoke(root, capsys, "ai-interpret")
     assert code == 7
@@ -459,6 +461,7 @@ def test_malformed_ollama_responses_are_provider_errors(tmp_path, capsys, reply)
         # Through the CLI this is the documented JSON error with exit code 7, not a crash.
         root = scanned(tmp_path, capsys)
         assert invoke(root, capsys, "ai-configure", "--provider", "ollama", "--model", "llama3", "--ollama-host", host)[0] == 0
+        allow_large_context(root)
         code, response = invoke(root, capsys, "ai-interpret")
     finally:
         server.shutdown()

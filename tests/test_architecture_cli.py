@@ -18,7 +18,7 @@ from repodocs.architecture.export import HTML_NAME, mermaid_bundle, validate_exp
 from repodocs.errors import ProviderError, ValidationError
 from repodocs.publish import render_pull_request_body
 
-from conftest import invoke, read_ir, read_manifest
+from conftest import allow_large_context, invoke, read_ir, read_manifest
 from test_ai import project as react_spring_project
 from test_architecture_discovery import FIXTURE, Scripted, full_answer
 from test_publish import FakePullRequests, build_project, FIXTURES
@@ -36,6 +36,7 @@ def express_project(tmp_path: Path, capsys, *, provider: str = "ollama") -> Path
     assert invoke(root, capsys, "scan")[0] == 0
     if provider:
         assert invoke(root, capsys, "ai-configure", "--provider", provider, "--model", "replay-model")[0] == 0
+        allow_large_context(root)
     return root
 
 
@@ -400,6 +401,7 @@ def test_unresolved_cross_repository_confirmations_still_fail_validation_and_dis
     root = react_spring_project(tmp_path, capsys)
     assert invoke(root, capsys, "scan")[0] == 0
     assert invoke(root, capsys, "ai-configure", "--provider", "ollama", "--model", "replay-model")[0] == 0
+    allow_large_context(root)
     use(monkeypatch, Scripted(generic))
     before = read_ir(root)
 
@@ -422,6 +424,7 @@ def test_unresolved_cross_repository_confirmations_still_fail_validation_and_dis
 def test_publication_sees_the_architecture_files_and_explains_their_removal(tmp_path: Path, capsys, monkeypatch) -> None:
     project = build_project(tmp_path, capsys, {"backend": FIXTURES / "basic-repo"})
     assert project.run("ai-configure", "--provider", "ollama", "--model", "replay-model")[0] == 0
+    allow_large_context(project.root)
     project.commit_docs("configure the provider", push=False)
     project.generate()
     use(monkeypatch, Scripted(generic))

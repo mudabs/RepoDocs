@@ -61,6 +61,8 @@ ADR-026 (implemented as `repodocs architecture context` and `architecture discov
 
 ADR-021 adds optional `architecture-ai.md` generation from current, revalidated claims. The deterministic overview and diagrams stay unchanged, and no model output changes graph authority or candidate decisions. Subject-bound evidence is required for inference; multi-repository claims must explicitly cite a confirmed candidate. Stale or invalid optional claims are omitted with a warning, and owned unedited obsolete AI artifacts are retired. Model prose is escaped, and validation checks the artifact against current claims. Structural validation and golden-fixture contribution checks do not prove arbitrary model wording true.
 
+ADR-031 adds run-level usage budgets in `repodocs.ai.budgets`: a thread-safe ledger per run reserves each request's worst-case tokens and cost before it is sent, reconciles complete provider usage, keeps unknown usage reserved, enforces the context window including reserved output and aggregate token, request and cost caps, and writes local receipts. `BudgetedProvider` wraps any resolved provider, so discovery retries and repairs share one allowance.
+
 ### Documentation planning
 Choose artifact type, scope, required evidence, coverage, destination, and generator. Do not generate unsupported views as if complete. Maintain dependencies from IR facts to artifacts. Generated files live in dedicated paths and are tracked by a manifest; unexpected edits fail validation rather than being overwritten.
 

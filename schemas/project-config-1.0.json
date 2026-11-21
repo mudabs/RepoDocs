@@ -74,6 +74,36 @@
           "type": "string",
           "minLength": 1,
           "description": "The source-excerpt policy version the consent was given for. Consent for another version does not apply."
+        },
+        "effort": {
+          "enum": ["low", "medium", "high"],
+          "description": "Reasoning effort sent explicitly to a provider that supports one (anthropic only). Absent means the provider default; it is never raised silently."
+        },
+        "limits": {
+          "type": "object",
+          "description": "Run limits (ADR-031). Absent values use the provider defaults. The request and aggregate fields may only lower the hard ceilings. max_cost_usd needs prices.",
+          "additionalProperties": false,
+          "properties": {
+            "context_window_tokens": {"type": "integer", "minimum": 1, "description": "The runtime context window. A request must fit it including its reserved output."},
+            "request_output_tokens": {"type": "integer", "minimum": 1, "maximum": 16000},
+            "max_requests": {"type": "integer", "minimum": 1, "maximum": 8},
+            "max_input_tokens": {"type": "integer", "minimum": 1, "maximum": 800000},
+            "max_output_tokens": {"type": "integer", "minimum": 1, "maximum": 64000},
+            "max_cost_usd": {"type": "number", "exclusiveMinimum": 0}
+          }
+        },
+        "prices": {
+          "type": "object",
+          "description": "Project-supplied, versioned rates in US dollars per million tokens. RepoDocs ships and fetches none.",
+          "required": ["version", "input_usd_per_mtok", "output_usd_per_mtok"],
+          "additionalProperties": false,
+          "properties": {
+            "version": {"type": "string", "minLength": 1},
+            "input_usd_per_mtok": {"type": "number", "minimum": 0},
+            "output_usd_per_mtok": {"type": "number", "minimum": 0},
+            "cache_read_usd_per_mtok": {"type": "number", "minimum": 0},
+            "cache_write_usd_per_mtok": {"type": "number", "minimum": 0}
+          }
         }
       },
       "additionalProperties": false

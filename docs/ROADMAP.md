@@ -41,7 +41,7 @@
 
 ## Next delivery: local web-first diagram baseline (epic #63)
 - #64 specifies workflow, shared-engine contracts, quality rubric and ADR-027; no runtime web code is included in the spike.
-- After contracts: #65 grounding, #66 useful context, #67 aggregate token/cost limits, #69 shared application service; #68 provider integration follows usage contracts.
+- After contracts: #65 grounding, #66 useful context, #67 aggregate token/cost limits (implemented, ADR-031), #69 shared application service; #68 provider integration follows usage contracts.
 - #70 safe sources and #71 local access/credential protection precede #72 bounded HTTP jobs and #73 browser workflow. #74 scoped views runs alongside this once its dependencies land.
 - #75 interactive evidence/downloads, #76 packaging and #77 CLI/web parity complete the local baseline; #54 remains the existing real-source quality gate and owner go/no-go.
 - Each issue ships in a focused PR with relevant tests and `Closes #<issue>` once acceptance criteria are met; verify issue closure and board status after merge to main.

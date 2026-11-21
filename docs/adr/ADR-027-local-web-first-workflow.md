@@ -32,6 +32,7 @@ The CLI already performs scanning, bounded discovery, deterministic rendering an
 - Existing source safety, confirmations, source-excerpt consent, ownership and provenance checks apply equally to web jobs.
 - CLI/Actions still need no persistent backend or database. The web adapter needs a running local process only while the browser workflow is in use.
 - Limits must be checked over the complete serialized request and aggregate usage (#67); current byte/request limits are not represented as token or monetary guarantees.
+- ADR-031 (#67) implements that check: aggregate token, request and cost limits over the complete serialized request, with explicit unknown usage and local receipts.
 - The release thresholds below are specified before evaluating a new model and must be reviewed with this PR. Owner usefulness go/no-go under #54/#77 remains explicit; a passing schema cannot satisfy it.
 - No runtime server, frontend, dependency installation, provider change or public deployment is implemented here. Downstream issues implement these contracts.
 
