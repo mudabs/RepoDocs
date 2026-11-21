@@ -41,6 +41,8 @@ ENTRY_NAMES = {
     "manage.py", "wsgi.py", "asgi.py", "main.go", "main.rs", "program.cs", "index.html",
 }
 MAX_LINES = 200
+INVENTORY_FILES_PER_DIRECTORY = 12
+CONTAINER_NAMES = {"dockerfile", "docker-compose.yml", "docker-compose.yaml"}
 BINARY_PROBE = 8192
 
 
@@ -203,15 +205,21 @@ class ContextResolver:
         """README, manifests, and entry points of every repository: the start of round one."""
 
         self.start_round()
+        # Every repository gets a fair share of the first round, so one large repository cannot use it all.
+        share = max(3, self.budgets["max_files_per_round"] // max(1, len(self.repositories)))
         for repository_id in sorted(self.repositories):
             files = sorted(self.repositories[repository_id][1], key=lambda item: (item.count("/"), item))
             names = [(path, path.rsplit("/", 1)[-1].lower()) for path in files if not self.is_denied(path)]
+            manifests = [path for path, name in names if name in MANIFEST_NAMES]
+            # Container files describe deployment; they come after the language manifests, never before.
+            manifests.sort(key=lambda path: path.rsplit("/", 1)[-1].lower() in CONTAINER_NAMES)
             chosen = [path for path, name in names if name in README_NAMES][:1]
-            chosen += [path for path, name in names if name in MANIFEST_NAMES]
+            chosen += manifests[:2]
             chosen += [path for path, name in names if name in ENTRY_NAMES or name.endswith("application.java")]
+            chosen += manifests[2:]
             seen: set[str] = set()
             for path in chosen:
-                if path not in seen:
+                if path not in seen and len(seen) < share:
                     seen.add(path)
                     self.fetch(repository_id, path)
 
@@ -222,7 +230,7 @@ class ContextResolver:
         for repository_id in sorted(self.repositories):
             paths = [path for path in self.repositories[repository_id][1] if not self.is_denied(path)]
             directories = {parent + "/" for path in paths for parent in _parents(path)}
-            listing = sorted(directories) + sorted(paths)
+            listing = sorted(directories) + _compact(sorted(paths))
             result.append({"repository_id": repository_id, "paths": listing[:limit], "truncated": len(listing) > limit})
         return result
 
@@ -245,6 +253,24 @@ class ContextResolver:
             "usage": {"rounds": self.rounds, "requests": self.requests, "context_bytes": self.context_bytes},
             "redaction": {"rules_version": REDACTION_RULES_VERSION, "replacements": self.replacements},
         }
+
+
+def _compact(paths: list[str]) -> list[str]:
+    """Names of files, but a directory with very many files lists a few and says how many it left out.
+
+    Data directories hold hundreds of files and would otherwise use the whole inventory budget before
+    the source directories are reached.
+    """
+
+    by_directory: dict[str, list[str]] = {}
+    for path in paths:
+        by_directory.setdefault(path.rsplit("/", 1)[0] if "/" in path else "", []).append(path)
+    listing: list[str] = []
+    for directory, members in sorted(by_directory.items()):
+        listing += members[:INVENTORY_FILES_PER_DIRECTORY]
+        if len(members) > INVENTORY_FILES_PER_DIRECTORY:
+            listing.append(f"{directory + '/' if directory else ''}(+{len(members) - INVENTORY_FILES_PER_DIRECTORY} more files, not listed)")
+    return listing
 
 
 def _parents(path: str) -> list[str]:

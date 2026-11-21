@@ -45,7 +45,8 @@ aside { width: 360px; overflow: auto; padding: 8px 12px; border-left: 1px solid 
 aside ul { padding-left: 18px; } .evidence small { display: block; color: #57606a; }
 .clickable { cursor: pointer; } button { font: inherit; } li button { background: none; border: 0; text-align: left; cursor: pointer; padding: 2px 0; text-decoration: underline; }
 .note { color: #57606a; font-size: 12px; }
-@media (prefers-color-scheme: dark) { body { background: #0d1117; color: #e6edf3; } #stage { background: #161b22; } header, aside { border-color: #30363d; } }
+/* The drawing area stays light in dark mode: Mermaid's default theme draws dark text, and edge labels are unreadable on a dark ground. */
+@media (prefers-color-scheme: dark) { body { background: #0d1117; color: #e6edf3; } header, aside { border-color: #30363d; } aside a, aside li button { color: #58a6ff; } .banner { color: #d29922; } .note, .evidence small { color: #9da7b3; } }
 """
 
 

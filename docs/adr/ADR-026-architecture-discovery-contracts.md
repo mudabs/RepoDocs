@@ -131,6 +131,8 @@ Implemented in #52 (`architecture/navigation.py`, `export.py`, `viewer_script.py
 - The static HTML export contains the diagram, an evidence map, zoom, pan, and fit-to-view. It has no backend, no remote assets, and no editor. All text is escaped, and URLs are validated against the allowlist.
 - All new files are tracked in the artifact manifest with the label `repodocs-architecture`, so ownership, retirement, no-op detection, and publication (ADR-023) apply. Publication with no stored view keeps earlier architecture files as unverified instead of deleting them (section 5). The manifest's top-level `source_ir_hash` is the current one and each kept file keeps its own recorded per-artifact value, which is how mixed provenance is represented. Nothing in the manifest or the pull request describes a kept file as current.
 
+Evaluation (#54): see `docs/evaluation/architecture-discovery/REPORT.md`. It found and fixed three defects (an inventory crowded out by data files, first-round slots spent on container files, and an unreadable dark-mode page), measured deterministic mode at zero application components on both subjects, and records two earlier live smoke tests with a 1.5B model (partial, different engine revisions, quality not accepted). The owner decision is pending.
+
 ### 8. Deterministic mode and its actual depth
 
 Deterministic mode needs no key, network, or extra dependency and is unchanged. Its depth is: framework-aware facts for the supported stacks (endpoints, routes, requests, entities, tables, OpenAPI), and manifests, languages, and dependencies for anything else. For a stack without an adapter it produces a repository and language inventory and no component or connection model. It does not understand application responsibilities. Documentation says so, and no document implies otherwise.
@@ -165,7 +167,7 @@ Schemas are `1.0` while unreleased (ADR-014). A project without the new settings
 
 ## Consequences
 
-- Architecture understanding for unfamiliar stacks becomes possible with a local model, and with a cloud model after explicit consent. Its quality is unproven until #54 measures it. Nothing here claims a mock or replay proves live model quality.
+- Architecture understanding for unfamiliar stacks becomes possible with a local model, and with a cloud model after explicit consent. Its quality is unproven: the two saved live observations in #54 were not accepted. Nothing here claims a mock or replay proves live model quality.
 - The cost is more state to keep honest: a second consent, a second persisted model, and a second set of artifacts.
 - Redaction cannot be proven complete. Excerpts raise the stakes of that gap, which is why consent is separate, the bundle is reviewable first, and local models are the default recommendation.
 
