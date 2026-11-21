@@ -14,7 +14,7 @@
       "properties": {
         "engine": {"const": "repodocs"},
         "engine_version": {"type": "string", "minLength": 1},
-        "provider": {"enum": ["anthropic", "ollama"]},
+        "provider": {"enum": ["anthropic", "ollama", "openai"]},
         "model": {"type": "string", "minLength": 1, "description": "The model that served the response, as the provider reported it."},
         "requested_model": {"type": "string", "minLength": 1},
         "external": {"type": "boolean", "description": "True when the bundle left this machine."},

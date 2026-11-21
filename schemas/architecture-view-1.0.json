@@ -22,7 +22,7 @@
       "required": ["provider", "requested_model", "served_model", "engine_version", "prompt_version", "context_version", "context_hash", "source_ir_hash", "snapshots", "external", "rounds", "requests"],
       "additionalProperties": false,
       "properties": {
-        "provider": {"enum": ["anthropic", "ollama"]},
+        "provider": {"enum": ["anthropic", "ollama", "openai"]},
         "requested_model": {"type": "string", "minLength": 1},
         "served_model": {"type": "string", "minLength": 1},
         "engine_version": {"type": "string", "minLength": 1},

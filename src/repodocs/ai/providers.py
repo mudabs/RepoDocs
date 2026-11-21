@@ -215,7 +215,11 @@ def resolve_provider(settings: AiSettings) -> Provider | None:
     if settings.provider == AI_PROVIDER_NONE:
         return None
     provider: Provider
-    if settings.provider == AI_PROVIDER_ANTHROPIC:
+    if settings.provider == "openai":
+        from .openai import OpenAIProvider
+
+        provider = OpenAIProvider(settings.model, settings.openai_base_url)
+    elif settings.provider == AI_PROVIDER_ANTHROPIC:
         provider = AnthropicProvider(settings.model)
     else:
         provider = OllamaProvider(settings.model, settings.ollama_host)

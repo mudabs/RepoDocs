@@ -450,6 +450,7 @@ def _cmd_ai_configure(args: argparse.Namespace) -> int:
         model=args.model or (current.model if not args.provider or args.provider == current.provider else None),
         external_consent=consent,
         ollama_host=args.ollama_host or current.ollama_host,
+        openai_base_url=args.openai_base_url or current.openai_base_url,
     )
     config.save()
     _emit("ai-configure", ok=True, data=config.ai.to_dict())
@@ -743,6 +744,7 @@ def _build_parser() -> argparse.ArgumentParser:
     ai_configure.add_argument("--provider", choices=AI_PROVIDERS)
     ai_configure.add_argument("--model")
     ai_configure.add_argument("--ollama-host", help="Ollama server URL (default http://localhost:11434)")
+    ai_configure.add_argument("--openai-base-url", help="Responses API base URL (HTTPS; default https://api.openai.com/v1)")
     consent = ai_configure.add_mutually_exclusive_group()
     consent.add_argument(
         "--consent-external",

@@ -330,7 +330,7 @@ def test_invalid_ai_settings_fail_on_load(tmp_path, capsys) -> None:
     root = scanned(tmp_path, capsys)
     path = root / "repodocs.json"
     config = read_json(path)
-    for bad in ({"provider": "openai"}, {"provider": "ollama", "external_consent": "yes"}, {"provider": "ollama", "model": ""}, []):
+    for bad in ({"provider": "unsupported-provider"}, {"provider": "ollama", "external_consent": "yes"}, {"provider": "ollama", "model": ""}, []):
         config["ai"] = bad
         path.write_text(json.dumps(config), encoding="utf-8")
         code, response = invoke(root, capsys, "scan")
