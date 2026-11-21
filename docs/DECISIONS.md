@@ -7,7 +7,7 @@
 |---|---|---|
 | D01 | Hybrid deterministic analysis and optional AI interpretation | Evidence plus richer explanation |
 | D02 | One shared engine for CLI, GitHub Action, agents, web | Prevent drift and duplication |
-| D03 | CLI + GitHub Action first | Fast, low-friction adoption |
+| D03 | CLI + GitHub Action established the engine; the next delivery priority is local/self-hosted web over that same engine (D43) | Preserve standalone automation while improving the browser workflow |
 | D04 | No mandatory persistent backend/database for CLI/Action | Local/self-hostable workflow |
 | D05 | Project supports multiple repos and services | Real system architecture |
 | D06 | Versioned, evidence-backed IR | Traceability and reusable generators |
@@ -46,6 +46,12 @@
 | D39 | Quality is measured by `python -m repodocs.golden` against hand-authored golden cases named by semantic selectors; types a case mentions are enumerated completely; ratios are null when undefined; evidence is checked against files on disk; AI comparisons replay a recorded response; an exact baseline is enforced by pytest; golden files are never rewritten from output (ADR-024) | Prevents a circular oracle and makes every metric change a reviewed diff |
 | D40 | Scanning never runs programs a repository configures: git runs with fsmonitor, hooks, and every filter command disabled, submodules are inspected recursively with the same hardening, a snapshot is the exact commit only when no submodule, ignored analyzed file, or other content differs from it, and an unreadable git state stops the scan. Text from analyzed source is written as escaped text or fenced code spans, Mermaid labels use Mermaid entities, `validate` rejects active Markdown and Mermaid directives, loopback AI requests ignore proxies, neither provider follows a redirect, and redaction rules are version 1.1 (ADR-025) | Repositories are untrusted, and generated output is published for review |
 | D41 | Architecture discovery (epic #47) is a separate, optional path: a bounded, redacted source-excerpt context bundle under its own consent (`ai.source_excerpts_consent`, never implied by IR-only consent) and a schema-validated, versioned, inferred architecture view that drives separate diagram files. A view is `proposed` or `inferred`, never `observed`, and never changes the IR, candidates, or confirmations; cross-repository connections stay unconfirmed unless a confirmed candidate is bound to that connection (same direction; its observed request and endpoint evidence files are member files of the two components, and both sides are cited; matching repository pairs is never enough). A view and its context are stored as one transition, a clean clone with no stored view keeps published architecture files as unverified rather than deleting them, and discovery is `complete` only on an explicit valid completion. It amends the no-source-text part of D35 and the AI-cannot-change-diagrams part of D36 for this path only (ADR-026) | Explains applications without a framework adapter without widening what the IR-only AI path may send or letting a model create authority |
+
+## Local web-first implementation contract (review in #64)
+
+| ID | Decision | Rationale |
+|---|---|---|
+| D43 | Owner-approved local/self-hosted web first; public hosting and videos deferred. ADR-027 specifies React/TypeScript with Vite and an optional thin FastAPI/Uvicorn adapter over the shared Python service, polling, bounded single-process jobs, versioned local metadata, ephemeral credentials and explicit restart/cancellation states. The CLI requires no backend. Technical contracts and release thresholds are submitted for review in #64; runtime implementation follows in #65-77. D42 is reserved for the unmerged private-gateway work in #62. | Deliver a useful browser workflow without a duplicate engine, funded service or speculative distributed infrastructure |
 
 ## Remaining open decisions: require validation/approval
 | ID | Question | Key tradeoff |

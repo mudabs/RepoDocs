@@ -39,9 +39,16 @@
 - Coordination-repository config for multi-repo projects uses the existing destination configuration with sources checked out under `sources/`.
 - Not yet demonstrated: a real documentation pull request opened on GitHub, which needs a token and a coordination repository, and the end-to-end SmartCart change-to-docs-PR run.
 
+## Next delivery: local web-first diagram baseline (epic #63)
+- #64 specifies workflow, shared-engine contracts, quality rubric and ADR-027; no runtime web code is included in the spike.
+- After contracts: #65 grounding, #66 useful context, #67 aggregate token/cost limits, #69 shared application service; #68 provider integration follows usage contracts.
+- #70 safe sources and #71 local access/credential protection precede #72 bounded HTTP jobs and #73 browser workflow. #74 scoped views runs alongside this once its dependencies land.
+- #75 interactive evidence/downloads, #76 packaging and #77 CLI/web parity complete the local baseline; #54 remains the existing real-source quality gate and owner go/no-go.
+- Each issue ships in a focused PR with relevant tests and `Closes #<issue>` once acceptance criteria are met; verify issue closure and board status after merge to main.
+
 ## Phase 5: post-MVP
 - Hosted managed AI with quotas, privacy and cost controls.
-- Web dashboard and hosted/self-hosted workers.
+- Public hosted web service, accounts, payments and videos. No public service is implied by the local/self-hosted plan.
 - More framework adapters, advanced UML, sequence verification, MCP, interactive diagrams, sophisticated incremental impact tracking.
 
 ## Acceptance criteria
@@ -56,4 +63,4 @@
 - All advertised limitations are visible in output.
 
 ## Agent's next action
-Complete Milestone 1, validate it with fixture repositories, then report the remaining gaps before beginning framework-aware analysis.
+Complete and review #64 before dependent local web implementation. Preserve the existing CLI/Actions contracts and the unresolved real-model quality acceptance in #54.
