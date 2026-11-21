@@ -2,6 +2,10 @@
 
 RepoDocs is an evidence-backed repository documentation engine. The current implementation provides the Milestone 1 foundation and first working CLI. It scans local working trees without executing repository code, stores a versioned JSON System IR, and generates deterministic Markdown and Mermaid artifacts into one configured documentation destination.
 
+## Local web-first development
+
+The next release targets a local/self-hosted browser workflow over the same Python engine. It is specified, not implemented yet: see [the workflow contract](docs/WEB_WORKFLOW.md), ADR-027 and epic #63. The CLI remains standalone. Public hosting, managed funded AI, accounts, payments and videos are deferred.
+
 ## Start here
 - `AGENTS.md`: persistent coding-agent instructions.
 - `docs/PRODUCT_REQUIREMENTS.md`: vision, scope, acceptance goals.

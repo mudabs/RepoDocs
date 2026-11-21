@@ -1,0 +1,246 @@
+[
+  {
+    "contract_version": "1.0",
+    "kind": "request",
+    "workspace_id": "fixture-shop",
+    "idempotency_key": "request-1",
+    "mode": "architecture",
+    "provider_session_id": "provider-session-1",
+    "context_hash": "context-1",
+    "consent_receipt_id": null,
+    "views": [
+      "overview",
+      "components"
+    ],
+    "limits": {
+      "max_requests": 3,
+      "max_total_tokens": 12000,
+      "max_cost_microunits": null,
+      "currency": null
+    }
+  },
+  {
+    "contract_version": "1.0",
+    "kind": "job",
+    "job_id": "job-1",
+    "workspace_id": "fixture-shop",
+    "sequence": 1,
+    "state": "queued",
+    "stage": "queued",
+    "error": null,
+    "result": null,
+    "usage": {
+      "input_tokens": null,
+      "output_tokens": null,
+      "cost_microunits": null,
+      "currency": null,
+      "accounting": "unknown"
+    }
+  },
+  {
+    "contract_version": "1.0",
+    "kind": "job",
+    "job_id": "job-1",
+    "workspace_id": "fixture-shop",
+    "sequence": 1,
+    "state": "running",
+    "stage": "discover",
+    "error": null,
+    "result": null,
+    "usage": {
+      "input_tokens": null,
+      "output_tokens": null,
+      "cost_microunits": null,
+      "currency": null,
+      "accounting": "unknown"
+    }
+  },
+  {
+    "contract_version": "1.0",
+    "kind": "job",
+    "job_id": "job-1",
+    "workspace_id": "fixture-shop",
+    "sequence": 1,
+    "state": "succeeded",
+    "stage": "finished",
+    "error": null,
+    "result": {
+      "completeness": "complete",
+      "view_hash": "view-1",
+      "source_ir_hash": "ir-1",
+      "artifact_ids": [
+        "overview-mermaid"
+      ],
+      "warnings": []
+    },
+    "usage": {
+      "input_tokens": null,
+      "output_tokens": null,
+      "cost_microunits": null,
+      "currency": null,
+      "accounting": "unknown"
+    }
+  },
+  {
+    "contract_version": "1.0",
+    "kind": "job",
+    "job_id": "job-1",
+    "workspace_id": "fixture-shop",
+    "sequence": 1,
+    "state": "partial",
+    "stage": "finished",
+    "error": {
+      "code": "budget-exhausted",
+      "message": "partial",
+      "retryable": false
+    },
+    "result": {
+      "completeness": "partial",
+      "view_hash": "view-1",
+      "source_ir_hash": "ir-1",
+      "artifact_ids": [
+        "overview-mermaid"
+      ],
+      "warnings": [
+        "Not a current complete architecture result"
+      ]
+    },
+    "usage": {
+      "input_tokens": null,
+      "output_tokens": null,
+      "cost_microunits": null,
+      "currency": null,
+      "accounting": "unknown"
+    }
+  },
+  {
+    "contract_version": "1.0",
+    "kind": "job",
+    "job_id": "job-1",
+    "workspace_id": "fixture-shop",
+    "sequence": 1,
+    "state": "budget-exhausted",
+    "stage": "finished",
+    "error": {
+      "code": "budget-exhausted",
+      "message": "budget-exhausted",
+      "retryable": false
+    },
+    "result": {
+      "completeness": "partial",
+      "view_hash": "view-1",
+      "source_ir_hash": "ir-1",
+      "artifact_ids": [
+        "overview-mermaid"
+      ],
+      "warnings": [
+        "Not a current complete architecture result"
+      ]
+    },
+    "usage": {
+      "input_tokens": null,
+      "output_tokens": null,
+      "cost_microunits": null,
+      "currency": null,
+      "accounting": "unknown"
+    }
+  },
+  {
+    "contract_version": "1.0",
+    "kind": "job",
+    "job_id": "job-1",
+    "workspace_id": "fixture-shop",
+    "sequence": 1,
+    "state": "cancelled",
+    "stage": "finished",
+    "error": {
+      "code": "cancelled",
+      "message": "cancelled",
+      "retryable": false
+    },
+    "result": null,
+    "usage": {
+      "input_tokens": null,
+      "output_tokens": null,
+      "cost_microunits": null,
+      "currency": null,
+      "accounting": "unknown"
+    }
+  },
+  {
+    "contract_version": "1.0",
+    "kind": "job",
+    "job_id": "job-1",
+    "workspace_id": "fixture-shop",
+    "sequence": 1,
+    "state": "failed",
+    "stage": "finished",
+    "error": {
+      "code": "provider-failure",
+      "message": "failed",
+      "retryable": false
+    },
+    "result": null,
+    "usage": {
+      "input_tokens": null,
+      "output_tokens": null,
+      "cost_microunits": null,
+      "currency": null,
+      "accounting": "unknown"
+    }
+  },
+  {
+    "contract_version": "1.0",
+    "kind": "job",
+    "job_id": "job-1",
+    "workspace_id": "fixture-shop",
+    "sequence": 1,
+    "state": "stale",
+    "stage": "finished",
+    "error": {
+      "code": "stale-source",
+      "message": "stale",
+      "retryable": false
+    },
+    "result": {
+      "completeness": "complete",
+      "view_hash": "view-1",
+      "source_ir_hash": "ir-1",
+      "artifact_ids": [
+        "overview-mermaid"
+      ],
+      "warnings": [
+        "Not a current complete architecture result"
+      ]
+    },
+    "usage": {
+      "input_tokens": null,
+      "output_tokens": null,
+      "cost_microunits": null,
+      "currency": null,
+      "accounting": "unknown"
+    }
+  },
+  {
+    "contract_version": "1.0",
+    "kind": "job",
+    "job_id": "job-1",
+    "workspace_id": "fixture-shop",
+    "sequence": 1,
+    "state": "interrupted",
+    "stage": "finished",
+    "error": {
+      "code": "interrupted",
+      "message": "interrupted",
+      "retryable": false
+    },
+    "result": null,
+    "usage": {
+      "input_tokens": null,
+      "output_tokens": null,
+      "cost_microunits": null,
+      "currency": null,
+      "accounting": "unknown"
+    }
+  }
+]
