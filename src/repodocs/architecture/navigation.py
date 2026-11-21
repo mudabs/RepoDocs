@@ -64,6 +64,9 @@ def repository_remotes(config: ProjectConfig, ir: dict[str, Any]) -> dict[str, t
 def evidence_map(view: dict[str, Any], context: dict[str, Any], ir: dict[str, Any], remotes: dict[str, tuple[str, str] | None]) -> dict[str, Any]:
     """Where every component, connection and alternative of a view can be checked, with exact provenance.
 
+    Every component and connection, including those the diagrams omit as unsupported, carries its support level and
+    reason codes next to its citations: a citation that resolves is a place to look, not a verdict.
+
     ``alternatives`` follows the order of the view's own list.
     """
 
@@ -101,9 +104,15 @@ def evidence_map(view: dict[str, Any], context: dict[str, Any], ir: dict[str, An
             for snapshot in sorted(snapshots.values(), key=lambda entry: entry["repository_id"])
         ],
         "components": {
-            entry["id"]: {"files": [member(entry["repository_id"], path) for path in entry["members"]], "evidence": [item(key) for key in entry["evidence"]]}
+            entry["id"]: {
+                "files": [member(entry["repository_id"], path) for path in entry["members"]], "evidence": [item(key) for key in entry["evidence"]],
+                "support": entry["support"], "support_reasons": list(entry["support_reasons"]),
+            }
             for entry in view["components"]
         },
-        "connections": {entry["id"]: {"evidence": [item(key) for key in entry["evidence"]]} for entry in view["connections"]},
+        "connections": {
+            entry["id"]: {"evidence": [item(key) for key in entry["evidence"]], "support": entry["support"], "support_reasons": list(entry["support_reasons"])}
+            for entry in view["connections"]
+        },
         "alternatives": [{"about": list(entry["about"]), "evidence": [item(key) for key in entry["evidence"]]} for entry in view["alternatives"]],
     }
