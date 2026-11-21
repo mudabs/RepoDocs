@@ -27,7 +27,7 @@ from repodocs.service import (
     CancellationToken, ContextRequest, DiscoverRequest, GenerateRequest, ProgressEvent, RunHooks, ScanRequest, ValidateRequest,
 )
 
-from conftest import invoke, read_ir
+from conftest import allow_large_context, invoke, read_ir
 from test_architecture_discovery import FIXTURE, Scripted, full_answer
 
 
@@ -40,6 +40,7 @@ def project(tmp_path: Path, capsys, *, scan: bool = True) -> Path:
     assert invoke(root, capsys, "init", "p")[0] == 0
     assert invoke(root, capsys, "add", str(tmp_path / "shop"), "--id", "shop", "--destination")[0] == 0
     assert invoke(root, capsys, "ai-configure", "--provider", "ollama", "--model", "replay-model")[0] == 0
+    allow_large_context(root)
     if scan:
         assert invoke(root, capsys, "scan")[0] == 0
     return root

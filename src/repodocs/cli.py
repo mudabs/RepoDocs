@@ -297,7 +297,9 @@ def _cmd_ai_configure(args: argparse.Namespace) -> int:
     current = config.ai
     consent = True if args.consent_external else False if args.revoke_consent else current.external_consent
     source = True if args.consent_source_excerpts else False if args.revoke_source_consent else current.source_excerpts_consent
-    config.ai = AiSettings(
+    # replace() keeps the usage settings (limits, effort, prices) that this command does not edit.
+    config.ai = replace(
+        current,
         source_excerpts_consent=source,
         source_consent_policy=SOURCE_POLICY_VERSION if source else None,
         provider=args.provider or current.provider,
@@ -375,7 +377,7 @@ def _cmd_ai_bundle(args: argparse.Namespace) -> int:
 
 
 def _cmd_ai_interpret(args: argparse.Namespace) -> int:
-    from .ai import providers
+    from .ai import budgets, providers
     from .ai.claims import CLAIMS_FILENAME, interpret
 
     config = ProjectConfig.load(_root(args))
@@ -385,7 +387,16 @@ def _cmd_ai_interpret(args: argparse.Namespace) -> int:
         _emit("ai-interpret", ok=True, data={"status": "disabled", "provider": "none"})
         return EXIT_OK
     bundle, bundle_path = _write_bundle(config)
-    document = interpret(bundle, provider)
+    budgeted = budgets.budgeted(provider, config.ai)
+    try:
+        document = interpret(bundle, budgeted)
+    except RepoDocsError as exc:
+        exc.receipt = budgets.write_receipt(config.internal_path, "ai-interpret", budgeted)  # type: ignore[attr-defined]
+        raise
+    except BaseException:
+        budgets.write_receipt(config.internal_path, "ai-interpret", budgeted)
+        raise
+    usage = budgets.write_receipt(config.internal_path, "ai-interpret", budgeted)
     from .ai.evaluation import contribution
 
     claims_path = config.internal_path / CLAIMS_FILENAME
@@ -401,6 +412,7 @@ def _cmd_ai_interpret(args: argparse.Namespace) -> int:
             "rejected": len(document["rejected"]),
             "contribution": contribution(load_scanned_ir(config), document),
             "bundle": _bundle_summary(bundle, bundle_path),
+            "usage": usage,
         },
     )
     return EXIT_OK
@@ -569,7 +581,9 @@ def main(argv: list[str] | None = None) -> int:
         return args.handler(args)
     except RepoDocsError as exc:
         error = service.describe_error(exc)
-        _emit(args.command, ok=False, errors=[error.message])
+        # A run that reached a provider shows its usage receipt even when it failed.
+        receipt = getattr(exc, "receipt", None)
+        _emit(args.command, ok=False, data=None if receipt is None else {"usage": receipt}, errors=[error.message])
         return error.exit_code
     except Exception as exc:  # pragma: no cover - defensive CLI boundary
         _emit(args.command, ok=False, errors=[f"Unexpected error: {exc}"])

@@ -36,7 +36,11 @@
         "ctx:409bcf5bb6718f5b"
       ],
       "classification": "proposed",
-      "confidence": "medium"
+      "confidence": "medium",
+      "support": "unverified",
+      "support_reasons": [
+        "no-checkable-fact"
+      ]
     },
     {
       "id": "arch:4c0ecd7c5bd6b202",
@@ -52,7 +56,11 @@
         "ctx:8547537416b965da"
       ],
       "classification": "inferred",
-      "confidence": "high"
+      "confidence": "high",
+      "support": "unverified",
+      "support_reasons": [
+        "no-checkable-fact"
+      ]
     },
     {
       "id": "arch:5bf3490666797997",
@@ -68,7 +76,11 @@
         "ctx:73d069239867407c"
       ],
       "classification": "inferred",
-      "confidence": "high"
+      "confidence": "high",
+      "support": "unverified",
+      "support_reasons": [
+        "no-checkable-fact"
+      ]
     }
   ],
   "connections": [
@@ -83,7 +95,11 @@
       ],
       "classification": "proposed",
       "confidence": "medium",
-      "cross_repository": false
+      "cross_repository": false,
+      "support": "unverified",
+      "support_reasons": [
+        "no-checkable-fact"
+      ]
     },
     {
       "id": "archc:aeaf3e6216fe548f",
@@ -97,7 +113,11 @@
       ],
       "classification": "inferred",
       "confidence": "high",
-      "cross_repository": false
+      "cross_repository": false,
+      "support": "unverified",
+      "support_reasons": [
+        "route-in-cited-source"
+      ]
     },
     {
       "id": "archc:cad86be7a32aa9c3",
@@ -110,7 +130,11 @@
       ],
       "classification": "proposed",
       "confidence": "medium",
-      "cross_repository": false
+      "cross_repository": false,
+      "support": "unverified",
+      "support_reasons": [
+        "no-checkable-fact"
+      ]
     }
   ],
   "alternatives": [

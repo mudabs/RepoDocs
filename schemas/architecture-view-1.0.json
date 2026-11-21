@@ -16,7 +16,7 @@
       "enum": ["complete", "partial"],
       "description": "partial means a budget, timeout, or provider failure stopped discovery early; statuses 'stale' and 'invalid' are computed on load, never stored."
     },
-    "partial_reason": {"enum": ["round-budget", "request-budget", "context-budget", "response-budget", "timeout", "provider-error", "incomplete-response", "empty-response", "no-progress"]},
+    "partial_reason": {"enum": ["round-budget", "request-budget", "context-budget", "response-budget", "timeout", "provider-error", "incomplete-response", "empty-response", "no-progress", "usage-budget"]},
     "provenance": {
       "type": "object",
       "required": ["provider", "requested_model", "served_model", "engine_version", "prompt_version", "context_version", "context_hash", "source_ir_hash", "snapshots", "external", "rounds", "requests"],
@@ -53,7 +53,7 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["id", "name", "kind", "responsibility", "repository_id", "members", "evidence", "classification", "confidence"],
+        "required": ["id", "name", "kind", "responsibility", "repository_id", "members", "evidence", "classification", "confidence", "support", "support_reasons"],
         "additionalProperties": false,
         "properties": {
           "id": {"type": "string", "pattern": "^arch:[0-9a-f]{16}$", "description": "Hash of the repository and the normalized name, so it is stable across runs and does not depend on the model."},
@@ -68,7 +68,9 @@
           },
           "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidenceId"}, "minItems": 1},
           "classification": {"enum": ["proposed", "inferred"]},
-          "confidence": {"enum": ["high", "medium", "low"]}
+          "confidence": {"enum": ["high", "medium", "low"]},
+          "support": {"$ref": "#/$defs/support"},
+          "support_reasons": {"$ref": "#/$defs/supportReasons"}
         }
       }
     },
@@ -76,7 +78,7 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["id", "source", "target", "kind", "label", "evidence", "classification", "confidence", "cross_repository"],
+        "required": ["id", "source", "target", "kind", "label", "evidence", "classification", "confidence", "cross_repository", "support", "support_reasons"],
         "additionalProperties": false,
         "properties": {
           "id": {"type": "string", "pattern": "^archc:[0-9a-f]{16}$"},
@@ -88,6 +90,8 @@
           "classification": {"enum": ["proposed", "inferred"]},
           "confidence": {"enum": ["high", "medium", "low"]},
           "cross_repository": {"type": "boolean"},
+          "support": {"$ref": "#/$defs/support"},
+          "support_reasons": {"$ref": "#/$defs/supportReasons"},
           "candidate_id": {"type": "string", "description": "A confirmed cross-repository candidate that this connection restates. Only a confirmed candidate can make a cross-repository connection inferred."}
         }
       }
@@ -113,6 +117,15 @@
     }
   },
   "$defs": {
-    "evidenceId": {"type": "string", "pattern": "^ctx:[0-9a-f]{16}$"}
+    "evidenceId": {"type": "string", "pattern": "^ctx:[0-9a-f]{16}$"},
+    "support": {
+      "enum": ["supported", "unverified", "unsupported"],
+      "description": "Computed by RepoDocs, never taken from the model, and separate from classification (ADR-028). supported: a deterministic fact (a matching observed request/endpoint pair, an observed role fact, or a bound confirmed candidate) backs the claim; this is not proof of behavior. unverified: nothing checkable was found, so the claim stays a proposal to review. unsupported: a checkable fact is contradicted or absent; the claim is kept for inspection and left out of the default diagrams. A resolving citation alone never yields supported."
+    },
+    "supportReasons": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"enum": ["observed-endpoint", "route-in-cited-source", "observed-request-endpoint", "route-on-one-side-only", "confirmed-candidate", "observed-role-facts", "no-checkable-fact", "route-not-in-cited-source", "method-not-in-cited-source", "observed-role-conflict"]}
+    }
   }
 }

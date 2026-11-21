@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 
 class RepoDocsError(Exception):
     """Expected user-facing RepoDocs failure."""
@@ -16,7 +18,14 @@ class ConsentError(ConfigError):
 
 
 class ProviderError(RepoDocsError):
-    """An AI provider was unavailable or returned unusable output."""
+    """An AI provider was unavailable or returned unusable output.
+
+    ``usage`` holds the provider's reported usage when the request completed but its output was
+    unusable (refused, cut off, malformed), so the run ledger can reconcile it instead of keeping
+    the worst-case reservation.
+    """
+
+    usage: Any = None
 
 
 class MalformedProviderOutput(ProviderError):

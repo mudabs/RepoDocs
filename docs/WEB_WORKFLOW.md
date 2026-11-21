@@ -10,7 +10,7 @@ This is a development contract for #64 under epic #63, not an implemented web AP
 4. Preview the redacted context, full serialized request size, omissions and limits. These operations contact no model. Budget estimates are labeled estimates; unknown usage/cost is null, never zero.
 5. Give provider/host/model/policy-bound external and source-excerpt consent when needed. A preview hash binds the request to the reviewed content. Revoking consent invalidates pending admission; a changed source/context or provider requires a fresh preview/consent check. Existing CLI consent scopes are not widened.
 6. Submit once with an idempotency key. Poll progress, stage and usage. The UI offers cancellation and renders partial/exhausted/error states explicitly. Refreshing or reconnecting never starts another run.
-7. Inspect overview/subsystem diagrams and evidence at their precise revision. Inferred/proposed relationships retain their labels; claims with resolving citations are not automatically semantically supported (#65).
+7. Inspect overview/subsystem diagrams and evidence at their precise revision. Inferred/proposed relationships retain their labels; claims with resolving citations are not automatically semantically supported. Each shows its computed `support` and reason codes (ADR-028, #65); unsupported claims are absent from the default diagram but listed with their reasons.
 8. Download Markdown, Mermaid, JSON and optional HTML/SVG artifacts that actually exist. An ERD is offered only when supported table facts exist. Downloads, zoom and scope navigation never contact a provider. Publishing remains an explicit reviewable-PR operation.
 
 ## Shared service and HTTP boundary
@@ -21,6 +21,12 @@ This is a development contract for #64 under epic #63, not an implemented web AP
 - Polling returns `sequence`, a monotonic per-job revision. Start at one-second polling, back off to five seconds and stop on terminal state. No elapsed percentage is invented. There is no automatic retry of paid work; any permitted repair counts against the same budget.
 - A workspace retains one active job and at most one queued job by default. Idempotency covers the normalized request and source/context hashes, not credentials. Queue admission reserves the configured worst-case allowance. #67 defines measured/estimated/unknown accounting and prevents retries from bypassing aggregate caps.
 - A result references existing IR/view hashes and opaque artifact handles, not embedded copies of the IR, executable markup or provider responses. The service resolves handles through an owned manifest and checks access, path containment and unexpected edits before returning bytes.
+
+## Security boundary (ADR-033, #71)
+
+- `repodocs.web.security` is implemented and tested without HTTP. #72 must call `SessionGuard.authorize` first on every request (and `open_session` for the first same-origin contact, which needs no OAuth), apply `response_headers`, and never add CORS headers. Non-loopback exposure needs `AccessConfig` with an HTTPS origin and an auth token.
+- Provider credentials arrive per request into `ProviderSessions`, stay in memory and are never returned (`public_view` is the browser form). Consent receipts come from `ConsentLedger.grant` after the preview. #69 must run every model, token-count and retry request through `RunGate.call`, so revoked, expired, missing or mismatched consent starts nothing.
+- Not provided: persistent or secure credential storage, login rate limiting, an HTTP server and UI rendering. Loopback trusts local processes of the same machine.
 
 ## State and recovery rules
 
@@ -62,5 +68,6 @@ This is a development contract for #64 under epic #63, not an implemented web AP
 ## Delivery boundaries
 
 - #65 grounding; #66 bounded source context; #67 model-aware usage; #68 OpenAI provider; #69 application seam; #70 sources; #71 security; #72 jobs; #73 browser journey; #74 scoped diagrams; #75 evidence/downloads; #76 packaging; #77 parity/quality gate.
+- #70 is implemented as the backend workspace core in `src/repodocs/web/workspaces.py` (ADR-034, D50). It returns the `ProjectConfig` that #69 consumes and adds no routes or UI. Local sources are chosen by configured name; public GitHub sources need an exact SHA, a bounded tree preflight and hardened depth-1 Git. Symlinks, submodules, private repositories and other hosts are refused.
 - This spike adds schemas, examples, tests and documentation only. No runtime API, public hosting, account/billing service, new paid calls, video generation or speculative backend is included.
 - Public deployment policy, production default model, funded quotas and changed disclosure ceilings require separate decisions. Version 1.0 of this adapter contract may evolve through reviewed PRs before the first web release; CLI/IR contracts do not change implicitly.

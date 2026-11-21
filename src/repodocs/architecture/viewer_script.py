@@ -92,20 +92,24 @@ VIEWER_SCRIPT = r"""
     details.appendChild(element('p', data.note, 'note'));
   }
 
+  function reasons(item) {
+    return item.support_reasons.map(function (code) { return 'Support (' + item.support + '): ' + (data.reasons[code] || code); });
+  }
+
   function showComponent(component) {
     var entry = data.evidence.components[component.id] || { files: [], evidence: [] };
     show(component.name, [
-      component.kind + ', ' + component.classification + ', confidence ' + component.confidence + ', repository ' + component.repository,
+      component.kind + ', ' + component.classification + ', ' + component.support + ', confidence ' + component.confidence + ', repository ' + component.repository,
       component.responsibility
-    ], entry.evidence, entry.files);
+    ].concat(reasons(component)), entry.evidence, entry.files);
   }
 
   function showConnection(connection) {
     var entry = data.evidence.connections[connection.id] || { evidence: [] };
     show(connection.source + ' to ' + connection.target, [
       connection.kind + ': ' + connection.label,
-      connection.classification + ', confidence ' + connection.confidence + (connection.cross_repository ? ', across repositories' : '')
-    ], entry.evidence, []);
+      connection.classification + ', ' + connection.support + ', confidence ' + connection.confidence + (connection.cross_repository ? ', across repositories' : '')
+    ].concat(reasons(connection)), entry.evidence, []);
   }
 
   function showKey(key) {
@@ -166,7 +170,7 @@ VIEWER_SCRIPT = r"""
   var list = document.getElementById('components');
   data.components.forEach(function (component) {
     var item = element('li');
-    var button = element('button', component.name + ' (' + component.classification + ')');
+    var button = element('button', component.name + ' (' + component.classification + ', ' + component.support + ')');
     button.type = 'button';
     button.addEventListener('click', function () { showComponent(component); });
     item.appendChild(button);
@@ -175,7 +179,7 @@ VIEWER_SCRIPT = r"""
   var links = document.getElementById('connections');
   data.connections.forEach(function (connection) {
     var item = element('li');
-    var button = element('button', connection.source + ' to ' + connection.target + ': ' + connection.label + ' (' + connection.classification + ')');
+    var button = element('button', connection.source + ' to ' + connection.target + ': ' + connection.label + ' (' + connection.classification + ', ' + connection.support + ')');
     button.type = 'button';
     button.addEventListener('click', function () { showConnection(connection); });
     item.appendChild(button);
