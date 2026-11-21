@@ -241,7 +241,7 @@ def test_classification_is_computed_and_a_model_cannot_promote_or_claim_observed
 
     item = view["components"][0]
     assert item["classification"] == "proposed", "the cited README is not one of the component's files"
-    assert set(item) == {"id", "name", "kind", "responsibility", "repository_id", "members", "evidence", "classification", "confidence"}
+    assert set(item) == {"id", "name", "kind", "responsibility", "repository_id", "members", "evidence", "classification", "confidence", "support", "support_reasons"}
     assert item["confidence"] == "high", "confidence is the model's own statement and is kept as that"
 
 
