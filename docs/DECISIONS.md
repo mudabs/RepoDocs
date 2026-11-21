@@ -52,6 +52,7 @@
 | ID | Decision | Rationale |
 |---|---|---|
 | D43 | Owner-approved local/self-hosted web first; public hosting and videos deferred. ADR-027 specifies React/TypeScript with Vite and an optional thin FastAPI/Uvicorn adapter over the shared Python service, polling, bounded single-process jobs, versioned local metadata, ephemeral credentials and explicit restart/cancellation states. The CLI requires no backend. Technical contracts and release thresholds are submitted for review in #64; runtime implementation follows in #65-77. D42 is reserved for the unmerged private-gateway work in #62. | Deliver a useful browser workflow without a duplicate engine, funded service or speculative distributed infrastructure |
+| D46 | The CLI and in-process adapters share `repodocs.service` (ADR-030): frozen requests, versioned `WorkflowResult` with distinct run (`complete`, `partial`, `failed`, `cancelled`) and view (`missing`, `current`, `stale`, `invalid`) states, cooperative cancellation and progress hooks, and a per-run `Provider` object instead of environment credentials. CLI JSON and exit codes are unchanged; only discovery contacts a provider | One implementation for CLI and browser without a server, a duplicate engine or shared credential state |
 
 ## Source context selection (#66)
 
