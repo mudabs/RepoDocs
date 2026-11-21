@@ -448,6 +448,12 @@ class Ledger:
             self._counts += 1
             return True
 
+    def release_count(self) -> None:
+        """Return a token-count request that was admitted but never sent."""
+
+        with self._lock:
+            self._counts = max(0, self._counts - 1)
+
     def reserve(self, estimate_tokens: int, method: str, output_cap: int | None = None) -> _Request:
         """Charge a request's worst case, or raise ``RunStopped`` without sending anything.
 
@@ -652,6 +658,9 @@ class BudgetedProvider:
                 counted = counter(system, user, schema)
             except ProviderError:
                 counted = None
+            except ConfigError:
+                self.ledger.release_count()  # a local configuration problem: nothing was sent
+                raise
             if isinstance(counted, int) and not isinstance(counted, bool) and counted > 0:
                 return counted, METHOD_PROVIDER_COUNT
         return estimate_tokens(serialized_request(self._provider, system, user, schema)), METHOD_BYTE_BOUND

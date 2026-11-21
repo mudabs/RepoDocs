@@ -7,6 +7,7 @@ is recorded as a subset and never added again. A missing or malformed count is u
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import urllib.error
@@ -39,6 +40,9 @@ def openai_usage(payload: Any) -> Usage | None:
     inputs = usage.get("input_tokens_details") if isinstance(usage.get("input_tokens_details"), dict) else {}
     outputs = usage.get("output_tokens_details") if isinstance(usage.get("output_tokens_details"), dict) else {}
     total, cached, written = _whole(usage.get("input_tokens")), _whole(inputs.get("cached_tokens")), _whole(inputs.get("cache_write_tokens"))
+    output, reasoning = _whole(usage.get("output_tokens")), _whole(outputs.get("reasoning_tokens"))
+    if output is not None and reasoning is not None and reasoning > output:
+        return None  # reasoning is part of output: more reasoning than output is contradictory, not usage
     base: int | None = None
     if total is not None and cached is not None:
         base = total - cached - (written or 0)
@@ -46,7 +50,25 @@ def openai_usage(payload: Any) -> Usage | None:
             return None  # contradictory counts are not usage
     elif total is not None and cached is None:
         base, written = total, None  # categories unknown: the total is kept, the request stays unmeasured
-    return usage_from_counts(base, _whole(usage.get("output_tokens")), cached, written, _whole(outputs.get("reasoning_tokens")))
+    return usage_from_counts(base, output, cached, written, reasoning)
+
+
+def check_base_url(value: str | None) -> str:
+    """The endpoint as it will be used, or ``ConfigError`` naming the rule (never the value, which may hold a secret)."""
+
+    base_url = (value or DEFAULT_BASE_URL).rstrip("/")
+    if any(c.isspace() or ord(c) < 32 for c in base_url):
+        raise ConfigError("OpenAI base URL cannot contain whitespace or control characters")
+    try:
+        url = urlsplit(base_url)
+        valid = url.hostname and url.port != 0
+    except ValueError:
+        valid = False
+    if not valid or url.username or url.password or url.query or url.fragment:
+        raise ConfigError("OpenAI base URL must be a plain HTTPS endpoint without credentials, query or fragment")
+    if url.scheme != "https" and not (url.scheme == "http" and is_loopback(base_url)):
+        raise ConfigError("OpenAI requires HTTPS; HTTP is allowed only for loopback testing")
+    return base_url
 
 
 class OpenAIProvider:
@@ -59,18 +81,7 @@ class OpenAIProvider:
         if not isinstance(model, str) or not model.strip():
             raise ConfigError("The openai provider requires an explicit model")
         self.model = model.strip()
-        self.base_url = (base_url or DEFAULT_BASE_URL).rstrip("/")
-        if any(c.isspace() or ord(c) < 32 for c in self.base_url):
-            raise ConfigError("OpenAI base URL cannot contain whitespace or control characters")
-        try:
-            url = urlsplit(self.base_url)
-            valid = url.hostname and url.port != 0
-        except ValueError:
-            valid = False
-        if not valid or url.username or url.password or url.query or url.fragment:
-            raise ConfigError("OpenAI base URL must be a plain HTTPS endpoint without credentials, query or fragment")
-        if url.scheme != "https" and not (url.scheme == "http" and is_loopback(self.base_url)):
-            raise ConfigError("OpenAI requires HTTPS; HTTP is allowed only for loopback testing")
+        self.base_url = check_base_url(base_url)
         self.external = not is_loopback(self.base_url)
         self._api_key = api_key
         if isinstance(max_output_tokens, bool) or not isinstance(max_output_tokens, int) or not 1 <= max_output_tokens <= MAX_OUTPUT_TOKENS:
@@ -115,7 +126,9 @@ class OpenAIProvider:
         except urllib.error.HTTPError as exc:
             # Do not include the body: it can echo prompts, credentials or private endpoint details.
             raise ProviderError(f"OpenAI request failed (HTTP {exc.code}); redirects are never followed") from None
-        except (urllib.error.URLError, OSError, ValueError, UnicodeError, RecursionError):
+        except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError, UnicodeError, RecursionError):
+            # http.client errors (a bad status line, a cut-off body, too many headers) can carry raw bytes the
+            # endpoint sent back, including an echo of the request, so none of their text is kept.
             raise ProviderError("Unable to read a valid OpenAI response") from None
 
     def count_input_tokens(self, system: str, user: str, schema: dict[str, Any]) -> int:
@@ -140,6 +153,7 @@ class OpenAIProvider:
         if not isinstance(output, list):
             raise _failed(ProviderError("OpenAI returned no output messages"), usage)
         texts: list[str] = []
+        messages = 0
         for item in output:
             if not isinstance(item, dict):
                 raise _failed(ProviderError("OpenAI returned malformed output"), usage)
@@ -147,6 +161,7 @@ class OpenAIProvider:
                 continue
             if item.get("type") != "message" or item.get("status") != "completed" or item.get("role") != "assistant":
                 raise _failed(ProviderError("OpenAI returned unsupported or incomplete output"), usage)
+            messages += 1
             content = item.get("content")
             if not isinstance(content, list):
                 raise _failed(ProviderError("OpenAI returned malformed message content"), usage)
@@ -154,7 +169,7 @@ class OpenAIProvider:
                 if not isinstance(block, dict) or block.get("type") != "output_text" or not isinstance(block.get("text"), str):
                     raise _failed(ProviderError("OpenAI refused the request or returned unsupported content"), usage)
                 texts.append(block["text"])
-        if len(texts) != 1:
+        if messages != 1 or len(texts) != 1:
             raise _failed(ProviderError("OpenAI must return exactly one structured JSON output"), usage)
         model = payload.get("model")
         if not isinstance(model, str) or not model or len(model) > 256:

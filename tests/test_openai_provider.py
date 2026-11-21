@@ -352,3 +352,149 @@ def test_the_shared_service_budgets_openai_and_never_completes_a_capped_reply(tm
         result = service.execute("discover", service.DiscoverRequest(root, provider=OpenAIProvider("requested-model", url, api_key="dummy")))
     assert result.status == "complete" and result.data["provenance"]["provider"] == "openai"
     assert result.data["usage"]["count_requests"] == 1 and len([call for call in calls if call["path"] == GENERATE]) == 1
+
+
+# ------------------------------------------------------------------ review regressions (PR #85)
+@contextmanager
+def raw_endpoint(reply):
+    """A loopback socket answering each request with ``reply(path, head)`` bytes: broken HTTP that a real server never sends."""
+
+    import re
+    import socket
+
+    server = socket.create_server(("127.0.0.1", 0))
+    server.settimeout(0.2)
+    paths: list[str] = []
+    stop = threading.Event()
+
+    def serve():
+        while not stop.is_set():
+            try:
+                connection, _ = server.accept()
+            except TimeoutError:
+                continue
+            with connection:
+                connection.settimeout(5)
+                data = b""
+                while b"\r\n\r\n" not in data:
+                    chunk = connection.recv(65536)
+                    if not chunk:
+                        break
+                    data += chunk
+                head, _, body = data.partition(b"\r\n\r\n")
+                length = int(re.search(rb"(?i)content-length: *(\d+)", head).group(1))
+                while len(body) < length:
+                    body += connection.recv(65536)
+                paths.append(head.split(b" ")[1].decode())
+                connection.sendall(reply(paths[-1], head, body))
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.getsockname()[1]}/v1", paths
+    finally:
+        stop.set()
+        thread.join()
+        server.close()
+
+
+def echo_request(path, head, body):
+    """A status line made of the request's own Authorization header and body: urllib reports it as BadStatusLine."""
+
+    authorization = next(line for line in head.split(b"\r\n") if line.lower().startswith(b"authorization"))
+    return authorization + b" " + body[:120] + b"\r\n\r\n"
+
+
+BROKEN_REPLIES = {
+    "echoed-status-line": echo_request,
+    "cut-off-chunked-body": lambda *_: b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n10\r\nabcde",
+    "too-many-headers": lambda *_: b"HTTP/1.1 200 OK\r\n" + b"X-Filler: canary-credential\r\n" * 120 + b"\r\n",
+}
+
+
+@pytest.mark.parametrize("broken", sorted(BROKEN_REPLIES))
+def test_broken_http_is_a_sanitized_provider_error(broken):
+    with raw_endpoint(BROKEN_REPLIES[broken]) as (url, paths), pytest.raises(ProviderError) as error:
+        OpenAIProvider("requested-model", url, api_key="canary-credential").generate("system", "user canary-prompt", SCHEMA)
+    assert paths == ["/v1/responses"]
+    assert str(error.value) == "Unable to read a valid OpenAI response"
+    assert error.value.__cause__ is None and error.value.__context__ is not None and error.value.__suppress_context__
+
+
+def test_a_count_that_fails_at_the_http_layer_falls_back_to_the_byte_bound():
+    good = json.dumps(RESPONSE).encode()
+
+    def reply(path, head, body):
+        if path.endswith("/input_tokens"):
+            return echo_request(path, head, body)
+        return b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s" % (len(good), good)
+
+    ledger = Ledger(RunLimits(context_window_tokens=100_000).resolved("openai"))
+    with raw_endpoint(reply) as (url, paths):
+        result = BudgetedProvider(OpenAIProvider("requested-model", url, api_key="canary-credential"), ledger).generate("s", "u", SCHEMA)
+    assert result.data == {"components": ["API"]} and paths == ["/v1/responses/input_tokens", GENERATE]
+    snapshot = ledger.snapshot()
+    assert snapshot["requests"][0]["estimate_method"] == "byte-bound" and snapshot["totals"]["count_requests"] == 1
+
+
+def test_the_cli_never_prints_an_echoed_credential_or_prompt(tmp_path, capsys, monkeypatch):
+    from conftest import allow_large_context, invoke
+
+    root = tmp_path / "docs"
+    root.mkdir()
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "server.js").write_text("const api = {};\n", encoding="utf-8")
+    assert invoke(root, capsys, "init", "demo")[0] == 0
+    assert invoke(root, capsys, "add", str(source), "--id", "source", "--destination")[0] == 0
+    assert invoke(root, capsys, "scan")[0] == 0
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-CANARY-123")
+    with raw_endpoint(echo_request) as (url, paths):
+        assert invoke(root, capsys, "ai-configure", "--provider", "openai", "--model", "requested-model", "--openai-base-url", url)[0] == 0
+        allow_large_context(root)
+        code, response = invoke(root, capsys, "architecture", "discover")
+    assert code == 7 and response["ok"] is False
+    assert paths == ["/v1/responses/input_tokens", GENERATE]
+    printed = json.dumps(response)
+    assert "sk-CANARY-123" not in printed and "excerpts" not in printed and "Unexpected error" not in printed
+
+
+@pytest.mark.parametrize("url", ["https://user:sk-SECRET@gw.example/v1", "https://gw.example/v1?api-key=sk-SECRET", "http://remote.example/v1"])
+def test_ai_configure_refuses_an_unusable_base_url_before_saving_anything(tmp_path, capsys, url):
+    from conftest import invoke
+
+    assert invoke(tmp_path, capsys, "init", "demo")[0] == 0
+    before = (tmp_path / "repodocs.json").read_bytes()
+    for provider in ("openai", "ollama"):
+        code, response = invoke(tmp_path, capsys, "ai-configure", "--provider", provider, "--model", "m", "--openai-base-url", url)
+        assert code != 0 and response["ok"] is False
+        assert "sk-SECRET" not in json.dumps(response) and "remote.example" not in json.dumps(response)
+    assert (tmp_path / "repodocs.json").read_bytes() == before
+
+
+def test_more_reasoning_than_output_is_contradictory_and_not_usage():
+    contradictory = copy.deepcopy(RESPONSE)
+    contradictory["usage"]["output_tokens"], contradictory["usage"]["output_tokens_details"]["reasoning_tokens"] = 10, 900
+    assert openai_usage(contradictory) is None
+    equal = copy.deepcopy(RESPONSE)
+    equal["usage"]["output_tokens_details"]["reasoning_tokens"] = 70
+    assert openai_usage(equal).reasoning_tokens == 70, "all output may be reasoning"
+
+
+@pytest.mark.parametrize("extra", [
+    {"type": "message", "status": "completed", "role": "assistant", "content": []},
+    {"type": "message", "status": "completed", "role": "assistant", "content": [{"type": "output_text", "text": '{"components": []}'}]},
+])
+def test_exactly_one_assistant_message_is_accepted(extra):
+    payload = copy.deepcopy(RESPONSE)
+    payload["output"].insert(0, extra)
+    with endpoint(payload) as (url, _), pytest.raises(ProviderError, match="exactly one"):
+        OpenAIProvider("requested-model", url, api_key="dummy").generate("s", "u", SCHEMA)
+
+
+def test_a_count_refused_for_a_missing_credential_is_not_recorded_as_sent(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    ledger = Ledger(RunLimits(context_window_tokens=100_000).resolved("openai"))
+    with endpoint() as (url, calls), pytest.raises(ConfigError, match="OPENAI_API_KEY"):
+        BudgetedProvider(OpenAIProvider("requested-model", url), ledger).generate("s", "u", SCHEMA)
+    assert calls == [] and ledger.snapshot()["totals"]["count_requests"] == 0

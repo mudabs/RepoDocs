@@ -304,6 +304,11 @@ def _cmd_ai_configure(args: argparse.Namespace) -> int:
         or (selected == "ollama" and args.ollama_host is not None and args.ollama_host != current.ollama_host)
         or (selected == "openai" and args.openai_base_url is not None and args.openai_base_url != current.openai_base_url)
     )
+    if args.openai_base_url is not None:
+        from .ai.openai import check_base_url
+
+        # Refused before anything is saved: a credential or key in the URL must never reach repodocs.json.
+        check_base_url(args.openai_base_url)
     if changed:
         # An existing grant is not permission to disclose the same source to a different destination/model.
         consent = bool(args.consent_external)
