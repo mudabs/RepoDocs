@@ -17,7 +17,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from http.cookies import CookieError, SimpleCookie
 from typing import Any, TypeVar
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 from ..errors import RepoDocsError
 
@@ -301,9 +301,12 @@ class Secret:
     __slots__ = ("_value",)
 
     def __init__(self, value: str) -> None:
-        if not value:
-            raise ValueError("A credential cannot be empty")
-        self._value = value
+        if not isinstance(value, str) or not value.strip() or len(value) > 8192:
+            raise ValueError("A credential must be a non-empty bounded string")
+        cleaned = value.strip()
+        if any(ord(character) < 32 for character in cleaned):
+            raise ValueError("A credential cannot contain control characters")
+        self._value = cleaned
 
     def reveal(self) -> str:
         return self._value
@@ -329,6 +332,29 @@ class ProviderContext:
 
 def _scope(context: ProviderContext) -> tuple[str, str, str]:
     return (context.provider, context.host, context.model)
+
+
+def _provider_endpoint(provider: str, value: str) -> str:
+    """Canonicalize authority without changing a case-sensitive API path or retaining URL secrets."""
+
+    if any(character.isspace() or ord(character) < 32 for character in value):
+        raise ValueError("Provider endpoint contains whitespace or control characters")
+    try:
+        parts = urlsplit(value if "://" in value else "https://" + value)
+        host, port = parts.hostname, parts.port
+    except ValueError:
+        raise ValueError("Provider endpoint is invalid") from None
+    if not host or parts.username is not None or parts.password is not None or parts.query or parts.fragment or port == 0:
+        raise ValueError("Provider endpoint cannot contain credentials, a query or a fragment")
+    scheme = parts.scheme.lower()
+    if "://" not in value and provider == "ollama" and _is_loopback(host):
+        scheme = "http"
+    if scheme != "https" and not (scheme == "http" and _is_loopback(host)):
+        raise ValueError("Provider endpoint requires HTTPS except on loopback")
+    authority = f"[{host.lower()}]" if ":" in host else host.lower()
+    if port is not None and port != (443 if scheme == "https" else 80):
+        authority += f":{port}"
+    return urlunsplit((scheme, authority, parts.path.rstrip("/"), "", ""))
 
 
 @dataclass(frozen=True)
@@ -360,8 +386,10 @@ class ProviderSessions:
         if not all(isinstance(v, str) and v.strip() and len(v) <= 200 for v in (provider, host, model)):
             raise ValueError("Provider, host and model are required")
         self._require_live(access)
+        if provider.strip() not in {"anthropic", "ollama", "openai"}:
+            raise ValueError("Unsupported provider")
         context = ProviderContext(
-            provider.strip(), host.strip().lower(), model.strip(), Secret(api_key) if api_key else None
+            provider.strip(), _provider_endpoint(provider.strip(), host.strip()), model.strip(), Secret(api_key) if api_key else None
         )
         handle = "ps_" + secrets.token_urlsafe(16)
         with self._lock:
@@ -546,6 +574,8 @@ class RunGate:
 
     def _context(self) -> ProviderContext:
         context = self._providers.context(self._access, self._handle)
+        if not _is_loopback(urlsplit(context.host).hostname or "") and "external" not in self._kinds:
+            raise ConsentRequired("An external provider requires external consent")
         if self._kinds:
             self._consent.check(
                 self._access,

@@ -297,7 +297,7 @@ def test_browser_view_and_errors_carry_no_secret(stack: Stack, caplog: pytest.Lo
     assert view == {
         "provider_session_id": handle,
         "provider": "openai",
-        "host": "api.example.com",
+        "host": "https://api.example.com",
         "model": "model-a",
         "credential": "stored",
     }
@@ -347,13 +347,13 @@ def test_provider_sessions_are_owned_expiring_bounded_and_clearable() -> None:
         s.providers.context(s.access, handle)
 
     small = ProviderSessions(s.guard, max_sessions=1, clock=s.clock)
-    first = small.connect(s.access, "a", "h", "m", "k")
+    first = small.connect(s.access, "openai", "h", "m", "k")
     with pytest.raises(LimitExceeded):
-        small.connect(s.access, "b", "h", "m", "k")
+        small.connect(s.access, "anthropic", "h", "m", "k")
     small.disconnect_all(s.access)
     with pytest.raises(UnknownHandle):
         small.context(s.access, first)
-    small.connect(s.access, "b", "h", "m", "k")
+    small.connect(s.access, "anthropic", "h", "m", "k")
     small.clear()
 
 
@@ -385,7 +385,7 @@ def test_concurrent_runs_never_see_each_others_credentials() -> None:
     keys = [f"sk-canary-run-{i:02d}" for i in range(runs)]
     gates = []
     for i, (access, key) in enumerate(zip(accesses, keys, strict=True)):
-        handle = s.providers.connect(access, f"provider-{i}", f"host-{i}.example", f"model-{i}", key)
+        handle = s.providers.connect(access, "openai", f"host-{i}.example", f"model-{i}", key)
         context = s.providers.context(access, handle)
         receipt = s.consent.grant(access, context, kinds=KINDS, policy="p", preview_hash=f"h{i}")
         gates.append(RunGate(s.providers, s.consent, access, provider_session_id=handle,
@@ -410,7 +410,7 @@ def test_concurrent_runs_never_see_each_others_credentials() -> None:
     for t in threads:
         t.join()
     assert not errors and len(seen) == runs * 50
-    assert all(key == keys[i] and provider == f"provider-{i}" and host == f"host-{i}.example"
+    assert all(key == keys[i] and provider == "openai" and host == f"https://host-{i}.example"
                for i, key, provider, host in seen)
 
 
@@ -551,3 +551,41 @@ def test_empty_kinds_skips_consent_but_still_needs_a_live_provider_session(stack
     stack.providers.disconnect(stack.access, handle)
     with pytest.raises(UnknownHandle):
         gate.call(lambda ctx: None)
+
+
+@pytest.mark.parametrize("host", [
+    "https://user:canary-secret@example.com/v1", "https://example.com/v1?key=canary-secret",
+    "https://example.com/#canary-secret", "http://remote.example/v1", "https://example.com:bad/v1",
+    "https://example.com/with space", "https://example.com/line\nbreak",
+])
+def test_provider_identity_refuses_url_credentials_and_unsafe_endpoints(stack: Stack, host: str, caplog) -> None:
+    with pytest.raises(ValueError) as error:
+        stack.providers.connect(stack.access, "openai", host, "model", CANARY)
+    assert "canary-secret" not in str(error.value) + caplog.text + repr(stack.providers.__dict__)
+
+
+def test_endpoint_canonicalization_preserves_path_case_and_consent_scope(stack: Stack) -> None:
+    first = stack.providers.connect(stack.access, "openai", "https://API.Example.com/MyModel/API", "m", CANARY)
+    second = stack.providers.connect(stack.access, "openai", "https://api.example.com/mymodel/api", "m", CANARY)
+    original = stack.providers.context(stack.access, first)
+    assert original.host == "https://api.example.com/MyModel/API"
+    receipt = stack.consent.grant(stack.access, original, kinds=BOTH, policy="p", preview_hash="h")
+    with pytest.raises(ConsentRequired):
+        stack.consent.check(stack.access, receipt, stack.providers.context(stack.access, second), kinds=BOTH, policy="p", preview_hash="h")
+
+
+def test_external_provider_cannot_skip_consent_with_empty_requested_scopes(stack: Stack) -> None:
+    handle = stack.providers.connect(stack.access, "openai", "https://api.example.com", "m", CANARY)
+    with pytest.raises(ConsentRequired):
+        RunGate(stack.providers, stack.consent, stack.access, provider_session_id=handle,
+                consent_receipt_id=None, kinds=frozenset(), policy="p", preview_hash="h")
+
+
+@pytest.mark.parametrize("value", [123, " ", "one\ntwo", "\x00key", "x" * 8193])
+def test_invalid_credentials_are_refused_without_echoing_them(value) -> None:
+    with pytest.raises(ValueError):
+        Secret(value)
+
+
+def test_a_credential_read_with_a_trailing_newline_is_trimmed() -> None:
+    assert Secret(CANARY + "\n").reveal() == CANARY
