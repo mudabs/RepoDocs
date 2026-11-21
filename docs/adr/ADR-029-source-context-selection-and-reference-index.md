@@ -20,14 +20,17 @@ The first-round context chose a README, every manifest and every file with an en
 ### Budget
 
 - `max_context_bytes` now bounds the excerpts, the inventory, the reference index, the diagnostics and a reserve for the instructions. `usage` reports `context_bytes` (excerpts), `metadata_bytes` and `reserved_bytes`, and an excerpt that would push the sum over the limit is refused as `budget-exhausted`.
-- The reserve is `min(6 KiB, max_context_bytes / 4)`, a constant sized for the discovery prompt, response schema and message envelope. A test fails if discovery's prompt and schema outgrow it. A budget smaller than the fixed overhead, about 2 KiB plus the inventory, yields no excerpts and says so.
-- The inventory takes at most a fifth of the budget and `max_inventory_paths`. Assets (images, fonts, media, archives) and files beyond 12 in a directory are counted per directory (`assets`, `more_files`), never listed, and shallow paths survive truncation.
+- Excerpts and metadata are measured as they travel: JSON inside the user message, which the request body encodes again as a string, so quotes, backslashes and line breaks count twice. The figures stay estimates (indentation inside the message differs slightly, and the document fields the message leaves out are still counted); the final request check below is the bound.
+- The omission list has the lowest priority. Refusals keep being recorded after an excerpt is admitted, so the list is cut, with `omitted_truncated`, whenever it would push the total over the limit, and `omitted_counts` keeps every reason's full count. An excerpt can therefore displace omission entries but never the inventory, index or coverage.
+- The reserve is `min(6 KiB, max_context_bytes / 4)`, a constant sized for the discovery prompt, response schema and message envelope. A test fails if discovery's prompt and schema outgrow it. A budget smaller than the fixed overhead, about 3 KiB with the inventory on a small repository, yields no excerpts and says so.
+- The inventory takes at most a fifth of the budget and `max_inventory_paths`. Assets (images, fonts, media, archives) and files beyond 12 in a directory are counted per directory (`assets`, `more_files`), never listed. Directories and files are listed together by depth, then name, so a root file precedes any nested directory. When the inventory exceeds its share, its longest list (paths, `more_files` or `assets`) is cut by a quarter at a time, shallowest entries kept, until it fits.
 
 ### Reference index
 
-- Opened files of JavaScript, TypeScript, Python and Java contribute their literal static imports: `import ... from`, bare `import`, re-exports, `require` and `import()` with a string literal, Python `import` and `from ... import`, and Java `import`. Comments, string contents, template or computed paths, aliases and other languages contribute nothing.
+- Opened files of JavaScript, TypeScript, Python and Java contribute their literal static imports: `import ... from`, bare `import`, re-exports, `require` and `import()` whose whole argument is one string literal, Python `import` and `from ... import`, and Java `import`. Comments, string contents, template or computed paths (`require('./plugins/' + name)`), aliases and other languages contribute nothing.
 - The parsers are the existing ones, never a new line pattern: JavaScript and TypeScript reuse the analyzers' comment- and string-masked import scanner (ADR-016), Python uses the standard-library `ast` module, which parses without executing, and Java masks comments, strings and text blocks before reading `import` declarations. Import-looking comments and examples are therefore not references. Unsupported or malformed syntax can leave references unreported, and the JavaScript scanner's regex-literal limits still apply; the index is a bounded structural listing, not a complete dependency graph.
-- References come from the whole file already read within `max_file_bytes` and the hash check, not only from the excerpt, and from no unopened file. Each file entry carries its repository, path and content hash. A reference carries line, specifier, and a target that is a snapshot file or null.
+- The whole file already read within `max_file_bytes` and the hash check is parsed, so a declaration that spans an excerpt boundary is read correctly, but only references on excerpted lines are listed: the index discloses nothing about lines the context does not show (ADR-026), and no unopened file contributes. A later excerpt of the same file adds the references on its lines. Each file entry carries its repository, path and content hash. A reference carries line, specifier, and a target that is a snapshot file or null.
+- References are resolved once, when the file is read, and a Java class resolves through a per-repository table of path suffixes, so a large repository is not scanned per reference and rebuilding the context resolves nothing again.
 - A target is `read` (the whole file is in the context), `excerpted` (a span), `unopened` (in the snapshot, not in the context) or `unresolved` (a package, alias, missing or outside path; a denied file is also `unresolved` and never named). The index is a list of what files say, sorted by line. It records no order, call, or data flow and says so in its note.
 - At most 30 references per file and 120 characters per specifier. Specifiers are redacted. The index share of the budget is an eighth.
 
@@ -39,7 +42,11 @@ The first-round context chose a README, every manifest and every file with an en
 ### Diagnostics
 
 - `coverage` per repository: candidate and opened file counts, per-layer counts, `missing_layers` (a layer that has candidate files by name and none opened) and the best five unopened candidates. A layer with no files is not reported, so no component is implied.
-- `omitted` lists material reasons first and at most 100 entries, with exact `omitted_counts` per reason and `omitted_truncated`. Large entry points and role files over the read bound are reported as `too-large`.
+- `omitted` lists material reasons first and at most 100 entries, with exact `omitted_counts` per reason and `omitted_truncated`. Large entry points and role files over the read bound are reported as `too-large`, and so is a requested span whose first line alone exceeds `max_excerpt_bytes`: nothing would be shown, so nothing is opened or counted.
+
+### The saved context
+
+- A stored view is saved with the context of the request whose reply produced its proposal, exactly as sent. Files fetched after that request, which the model never saw, are not in it, and the view's `context_hash` names it. Refusals are recorded in the context of the next request, which also tells the model what is not available. Refusals after the last request are not kept with the view.
 
 ### Unchanged
 

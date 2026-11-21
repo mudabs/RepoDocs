@@ -11,7 +11,7 @@ from jsonschema import Draft202012Validator
 
 from repodocs.ai import providers
 from repodocs.ai.providers import AnthropicProvider, OllamaProvider, require_source_consent, resolve_discovery_provider
-from repodocs.architecture.context import ContextResolver, build_context, context_hash
+from repodocs.architecture.context import ContextResolver, build_context, context_hash, sent_size
 from repodocs.common import canonical_json
 from repodocs.config import SOURCE_POLICY_VERSION, AiSettings, ProjectConfig
 from repodocs.errors import ConfigError, ConsentError
@@ -82,7 +82,7 @@ def test_the_first_round_holds_readme_manifest_and_entry_points_and_resolves_to_
     assert all(item["content_hash"] == hashes[item["path"]] for item in bundle["documents"])
     assert bundle["policy"]["selection_version"] == "1.1" and bundle["policy"]["redaction_version"] == bundle["redaction"]["rules_version"]
     usage = bundle["usage"]
-    assert (usage["rounds"], usage["requests"]) == (1, 0) and usage["context_bytes"] == sum(len(item["text"].encode()) for item in bundle["documents"])
+    assert (usage["rounds"], usage["requests"]) == (1, 0) and usage["context_bytes"] == sum(sent_size(item) for item in bundle["documents"])
 
 
 def test_the_context_is_deterministic(tmp_path: Path, capsys) -> None:
@@ -310,11 +310,11 @@ def test_the_files_per_round_and_context_budgets_are_enforced(tmp_path: Path, ca
     assert len(bundle["documents"]) <= 2
 
     (tmp_path / "small").mkdir()
-    root = project(tmp_path / "small", capsys, architecture={"budgets": {"max_context_bytes": 2250}})
+    root = project(tmp_path / "small", capsys, architecture={"budgets": {"max_context_bytes": 3000}})
     bundle, _ = build_context(ProjectConfig.load(root), read_ir(root))
     usage = bundle["usage"]
-    assert usage["context_bytes"] + usage["metadata_bytes"] + usage["reserved_bytes"] <= 2250
-    assert any(item["reason"] == "budget-exhausted" for item in bundle["omitted"])
+    assert usage["context_bytes"] + usage["metadata_bytes"] + usage["reserved_bytes"] <= 3000
+    assert bundle["omitted_counts"]["budget-exhausted"] > 0
 
 
 def test_rounds_and_requests_are_bounded(tmp_path: Path, capsys) -> None:
@@ -588,7 +588,7 @@ def test_the_inventory_index_and_diagnostics_share_the_total_budget_with_the_exc
     assert usage["metadata_bytes"] > 0 and usage["reserved_bytes"] > 0
     assert usage["context_bytes"] + usage["metadata_bytes"] + usage["reserved_bytes"] <= 14000
     metadata = {key: bundle[key] for key in ("inventory", "index", "coverage", "omitted", "omitted_counts", "omitted_truncated")}
-    assert len(canonical_json(metadata).encode()) == usage["metadata_bytes"]
+    assert sent_size(metadata) == usage["metadata_bytes"]
     assert any(item["reason"] == "budget-exhausted" for item in bundle["omitted"])
 
 
@@ -759,3 +759,118 @@ def test_the_service_cancellation_and_usage_wrappers_keep_the_request_body_for_t
 
     assert result.status == "failed" and "context-budget" in result.error.message
     assert provider.messages == [], "the wrappers did not hide the provider's real request body"
+
+
+# ------------------------------------------------------------------ review regressions (PR #84)
+def test_documents_and_metadata_are_counted_at_the_size_they_take_inside_a_request(tmp_path: Path, capsys) -> None:
+    repository = express_repository(tmp_path)
+    write(repository, "lib/quotes.js", "".join(f'const q{index} = "\\"quoted\\" \\\\ path";\n' for index in range(40)))
+    root = project(tmp_path, capsys, repository)
+    resolver = resolver_for(root)
+    resolver.start_round()
+
+    before = resolver.context_bytes
+    identifier = resolver.fetch("shop", "lib/quotes.js")
+
+    document = resolver.documents[identifier]
+    added = resolver.context_bytes - before
+    assert added == sent_size(document) == len(json.dumps(canonical_json(document), ensure_ascii=False).encode())
+    assert added > 2 * len(document["text"].encode()), "quotes, backslashes and newlines are escaped twice on the way out"
+    bundle = resolver.bundle()
+    metadata = {key: bundle[key] for key in ("inventory", "index", "coverage", "omitted", "omitted_counts", "omitted_truncated")}
+    assert bundle["usage"]["metadata_bytes"] == sent_size(metadata)
+
+
+def test_an_excerpt_with_no_line_that_fits_is_omitted_and_not_counted_as_opened(tmp_path: Path, capsys) -> None:
+    repository = express_repository(tmp_path)
+    write(repository, "lib/wide.js", "const wide = '" + "w" * 3000 + "';\nconst next = 1;\n")
+    root = project(tmp_path, capsys, repository, architecture={"budgets": {"max_excerpt_bytes": 1024}})
+    resolver = resolver_for(root)
+    resolver.start_round()
+    documents, used, opened = dict(resolver.documents), resolver.context_bytes, resolver._round_files
+
+    assert resolver.fetch("shop", "lib/wide.js", 1, 1) is None
+
+    assert resolver.documents == documents and resolver.context_bytes == used and resolver._round_files == opened
+    assert ("lib/wide.js", "too-large") in {(item["path"], item["reason"]) for item in resolver.bundle()["omitted"]}
+    assert ("shop", "lib/wide.js") not in resolver.references
+    shown = resolver.documents[resolver.fetch("shop", "lib/wide.js", 2, 2)]
+    assert (shown["line_start"], shown["line_end"], shown["text"]) == (2, 2, "const next = 1;\n")
+
+
+def test_the_index_lists_only_references_on_excerpted_lines(tmp_path: Path, capsys) -> None:
+    repository = express_repository(tmp_path)
+    write(repository, "lib/split.js", "const shown = require('./shown');\n" + "// filler\n" * 60 + "const hidden = require('./not-shown');\n")
+    write(repository, "lib/shown.js", "module.exports = 1;\n")
+    write(repository, "lib/not-shown.js", "module.exports = 2;\n")
+    root = project(tmp_path, capsys, repository)
+    resolver = resolver_for(root)
+    resolver.start_round()
+
+    assert resolver.fetch("shop", "lib/split.js", 1, 10)
+    files = {item["path"]: item for item in resolver.bundle()["index"]["files"]}
+    assert [item["specifier"] for item in files["lib/split.js"]["references"]] == ["./shown"]
+
+    assert resolver.fetch("shop", "lib/split.js", 55, 62)
+    files = {item["path"]: item for item in resolver.bundle()["index"]["files"]}
+    assert [item["specifier"] for item in files["lib/split.js"]["references"]] == ["./shown", "./not-shown"]
+
+
+def test_references_are_resolved_once_per_file_and_the_java_table_once_per_repository(tmp_path: Path, capsys, monkeypatch) -> None:
+    from repodocs.architecture import context as context_module
+
+    repository = tmp_path / "jv"
+    write(repository, "pom.xml", "<project></project>\n")
+    for index in range(30):
+        write(repository, f"src/main/java/shop/Part{index}.java", f"package shop;\nimport shop.Part{(index + 1) % 30};\nclass Part{index} {{}}\n")
+    root = project(tmp_path, capsys, repository)
+    calls = {"table": 0, "resolve": 0}
+    table, resolve = context_module.java_targets, context_module.resolve_reference
+
+    def counted_table(paths):
+        calls["table"] += 1
+        return table(paths)
+
+    def counted_resolve(*arguments):
+        calls["resolve"] += 1
+        return resolve(*arguments)
+
+    monkeypatch.setattr(context_module, "java_targets", counted_table)
+    monkeypatch.setattr(context_module, "resolve_reference", counted_resolve)
+    resolver = resolver_for(root)
+    resolver.start_round()
+    for index in range(5):
+        resolver.fetch("shop", f"src/main/java/shop/Part{index}.java")
+    resolved = calls["resolve"]
+    for _ in range(3):
+        resolver.bundle()
+        resolver.total_bytes()
+
+    assert calls["table"] == 1 and resolved == calls["resolve"], "building the context again resolves nothing again"
+    files = {item["path"]: item for item in resolver.bundle()["index"]["files"]}
+    assert files["src/main/java/shop/Part0.java"]["references"][0]["target"] == "src/main/java/shop/Part1.java"
+
+
+def test_the_inventory_lists_shallow_entries_first_and_cuts_every_list_to_fit_its_share(tmp_path: Path, capsys) -> None:
+    repository = tmp_path / "wide"
+    write(repository, "README.md", "# Wide\n")
+    write(repository, "a/b/c/deep.js", "module.exports = 1;\n")
+    write(repository, "b.js", "module.exports = 2;\n")
+    for index in range(120):
+        write(repository, f"assets{index:03d}/pic.png", b"\x89PNG")
+        for member in range(20):
+            write(repository, f"crowd{index:03d}/m{member:02d}.json", "{}")
+    root = scanned(tmp_path, capsys, {"wide": repository}, architecture={"budgets": {"max_context_bytes": 20000}})
+
+    bundle = bundle_of(root)
+
+    valid(bundle)
+    inventory = bundle["inventory"][0]
+    share = 20000 // 5
+    assert sent_size(inventory) <= share and inventory["truncated"] is True
+    assert len(inventory["assets"]) < 120 and len(inventory["more_files"]) < 120
+    paths = inventory["paths"]
+    assert "b.js" in paths, "a file at the root is listed before any nested directory"
+    depths = [path.rstrip("/").count("/") for path in paths]
+    assert depths == sorted(depths) and paths[:3] == ["README.md", "a/", "b.js"]
+

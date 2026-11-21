@@ -176,7 +176,7 @@
       }
     },
     "omitted_counts": {"type": "object", "description": "Omissions per reason, including those cut from the omitted list.", "additionalProperties": {"type": "integer", "minimum": 1}},
-    "omitted_truncated": {"type": "boolean"},
+    "omitted_truncated": {"type": "boolean", "description": "The omitted list was cut, to its entry limit or to keep the total within max_context_bytes. It is the lowest-priority part of the context."},
     "usage": {
       "type": "object",
       "required": ["rounds", "requests", "context_bytes", "metadata_bytes", "reserved_bytes"],
@@ -184,9 +184,9 @@
       "properties": {
         "rounds": {"type": "integer", "minimum": 0},
         "requests": {"type": "integer", "minimum": 0},
-        "context_bytes": {"type": "integer", "minimum": 0, "description": "Excerpt text."},
-        "metadata_bytes": {"type": "integer", "minimum": 0, "description": "Inventory, index, coverage and omissions as serialized."},
-        "reserved_bytes": {"type": "integer", "minimum": 0, "description": "Room kept for the instructions. context_bytes + metadata_bytes + reserved_bytes never exceeds max_context_bytes."}
+        "context_bytes": {"type": "integer", "minimum": 0, "description": "Documents as they appear in a request: JSON inside the user message, itself encoded as a JSON string."},
+        "metadata_bytes": {"type": "integer", "minimum": 0, "description": "Inventory, index, coverage and omissions, measured the same way."},
+        "reserved_bytes": {"type": "integer", "minimum": 0, "description": "Room kept for the instructions. A document is admitted only while context_bytes + metadata_bytes + reserved_bytes fits max_context_bytes, and the omitted list is cut to keep it there. Discovery still measures each complete request before sending it."}
       }
     },
     "redaction": {

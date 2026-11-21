@@ -140,8 +140,13 @@ def extract_references(path: str, lines: list[str]) -> list[tuple[int, str, tupl
         source = scan_source(path, text)
         for declaration in parse_imports(source):
             token = next((item for item in source.strings if item.offset >= declaration.offset), None)
-            if token is not None and token.kind == "string":
-                found.append((declaration.line, declaration.specifier, ()))
+            if token is None or token.kind != "string":
+                continue
+            # require() and import() count only when the literal is the whole argument: './locales/' + lang is computed.
+            after = source.masked[token.end:token.end + 64].lstrip()
+            if declaration.kind in ("require", "dynamic") and not after.startswith(")"):
+                continue
+            found.append((declaration.line, declaration.specifier, ()))
     elif suffix == ".py":
         try:
             tree = ast.parse(text)
@@ -162,8 +167,13 @@ def extract_references(path: str, lines: list[str]) -> list[tuple[int, str, tupl
     return sorted((item for item in found if 0 < len(item[1]) <= MAX_SPECIFIER_LENGTH), key=lambda item: item[0])[:MAX_REFERENCES_PER_FILE]
 
 
-def resolve_reference(source: str, specifier: str, names: tuple[str, ...], paths: set[str]) -> str | None:
-    """The snapshot file a literal reference names, or None. A package, alias, or missing target is None."""
+def resolve_reference(
+    source: str, specifier: str, names: tuple[str, ...], paths: set[str], java: dict[str, str] | None = None,
+) -> str | None:
+    """The snapshot file a literal reference names, or None. A package, alias, or missing target is None.
+
+    ``java`` is the repository's ``java_targets`` table; pass it when resolving many references.
+    """
 
     suffix = PurePosixPath(source).suffix.lower()
     parent = source.rsplit("/", 1)[0] if "/" in source else ""
@@ -188,10 +198,22 @@ def resolve_reference(source: str, specifier: str, names: tuple[str, ...], paths
                     return f"{candidate}.py"
         return None
     if suffix == ".java":
-        tail = "/" + specifier.replace(".", "/") + ".java"
-        matches = sorted(path for path in paths if path.endswith(tail) or path == tail[1:])
-        return matches[0] if matches else None
+        return (java if java is not None else java_targets(paths)).get(specifier.replace(".", "/") + ".java")
     return None
+
+
+def java_targets(paths: set[str]) -> dict[str, str]:
+    """Every suffix of every Java path (``com/example/Foo.java`` and shorter) mapped to its first path in sorted order.
+
+    Built once per repository, so resolving a reference is a lookup, not a scan of every path.
+    """
+
+    table: dict[str, str] = {}
+    for path in sorted(item for item in paths if item.endswith(".java")):
+        parts = path.split("/")
+        for start in range(len(parts)):
+            table.setdefault("/".join(parts[start:]), path)
+    return table
 
 
 def _normalize(parent: str, specifier: str) -> str:

@@ -480,7 +480,8 @@ def discover(config: ProjectConfig, ir: dict[str, Any], provider: Provider) -> t
 
     resolver = ContextResolver(config, ir)
     resolver.select_initial()
-    best: tuple[Validation, str] | None = None
+    # The best proposal, its served model, and the exact context of the request that produced it.
+    best: tuple[Validation, str, dict[str, Any]] | None = None
     stopped: RunStopped | None = None
     partial: str | None = None
     failure = ""
@@ -530,7 +531,7 @@ def discover(config: ProjectConfig, ir: dict[str, Any], provider: Provider) -> t
             break
         validation = validate_proposal(data, context, ir, config.architecture.deny_names)
         if validation.components:
-            best = (validation, response.model)
+            best = (validation, response.model, context)
         requests = data.get("requests") if isinstance(data.get("requests"), list) else []
         if data.get("complete") is True:
             # Only an explicit, valid completion ends discovery as complete. A final answer with no
@@ -563,8 +564,9 @@ def discover(config: ProjectConfig, ir: dict[str, Any], provider: Provider) -> t
             "The model returned no architecture component that passed validation"
             + (f" ({partial}" + (": " + failure if failure else "") + ")" if partial else "")
         )
-    validation, served_model = best
-    final_context = resolver.bundle()
+    # The saved context is the one the chosen proposal was built from and validated against. Files fetched after the
+    # last request was sent, which the model never saw, are not in it.
+    validation, served_model, final_context = best
     view = {
         "view_version": VIEW_VERSION,
         "status": "partial" if partial else "complete",

@@ -13,6 +13,7 @@ the same total budget as the excerpts. References come from static imports in op
 from __future__ import annotations
 
 import fnmatch
+import json
 import os
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -23,7 +24,7 @@ from ..config import ARCHITECTURE_BUDGET_DEFAULTS, ProjectConfig
 from ..ir import ir_hash
 from .source_index import (
     CODE_SUFFIXES, CONFIG_CANDIDATE_SUFFIXES, LAYERS, ROLE_TOKENS, SUPPORTED_SUFFIXES, choose_span as pick_span,
-    extract_references, is_asset, is_noise, is_vendored, layer_of, path_tokens, resolve_reference,
+    extract_references, is_asset, is_noise, is_vendored, java_targets, layer_of, path_tokens, resolve_reference,
 )
 
 
@@ -97,7 +98,9 @@ class ContextResolver:
             root = config.resolve_repository(config.repository(snapshot["repository_id"]))
             self.repositories[snapshot["repository_id"]] = (root, {item["path"]: item for item in snapshot["files"]})
         self.documents: dict[str, dict[str, Any]] = {}
-        self.references: dict[tuple[str, str], list[tuple[int, str, tuple[str, ...]]]] = {}
+        # Per opened file: (line, redacted specifier, redactions, resolved target), resolved once when the file is read.
+        self.references: dict[tuple[str, str], list[tuple[int, str, int, str | None]]] = {}
+        self._java: dict[str, dict[str, str]] = {}
         self.omitted: dict[tuple[str, str, str], dict[str, str]] = {}
         self.context_bytes = 0
         self.replacements = 0
@@ -216,8 +219,13 @@ class ContextResolver:
         if start > max(len(lines), 1):
             start, end = 1, min(len(lines), MAX_LINES)
         selected = lines[start - 1 : end]
+        spanned = bool(selected)
         while selected and len("\n".join(selected).encode("utf-8")) > self.budgets["max_excerpt_bytes"]:
             selected.pop()
+        if spanned and not selected:
+            # Not one line of the span fits the excerpt limit: nothing would be shown, so nothing is opened.
+            self._omit(repository_id, path, "too-large")
+            return None
         end = start + len(selected) - 1 if selected else start
         identity = sha256_text(f"{repository_id}|{path}|{entry['content_hash']}|{start}|{end}")[:16]
         document_id = f"ctx:{identity}"
@@ -226,17 +234,19 @@ class ContextResolver:
             return None
         text, count = redact_text("\n".join(selected) + ("\n" if selected else ""))
         key = (repository_id, path)
-        # References come from the whole file already read within the byte bound, not only from the excerpt.
+        # The whole file is parsed, so a declaration spanning the excerpt boundary is read correctly; only references on
+        # excerpted lines are sent (see index()).
         indexed = key not in self.references and PurePosixPath(path).suffix.lower() in SUPPORTED_SUFFIXES
-        size = len(text.encode("utf-8"))
-        self.context_bytes += size
-        self.documents[document_id] = {
+        document = {
             "id": document_id, "repository_id": repository_id, "path": path, "content_hash": entry["content_hash"],
             "kind": kind, "line_start": start, "line_end": end, "text": text, "redactions": count,
             "truncated": end < len(lines), "requested_in_round": self.rounds,
         }
+        size = sent_size(document)
+        self.context_bytes += size
+        self.documents[document_id] = document
         if indexed:
-            self.references[key] = extract_references(path, lines)
+            self.references[key] = self._resolve(repository_id, path, lines)
         if self.total_bytes() > self.budgets["max_context_bytes"]:
             self.context_bytes -= size
             del self.documents[document_id]
@@ -248,6 +258,17 @@ class ContextResolver:
         self.replacements += count
         self._round_files += 1
         return document_id
+
+    def _resolve(self, repository_id: str, path: str, lines: list[str]) -> list[tuple[int, str, int, str | None]]:
+        paths = self._paths[repository_id]
+        if repository_id not in self._java:
+            self._java[repository_id] = java_targets(paths)
+        resolved = []
+        for line, specifier, names in extract_references(path, lines):
+            redacted, count = redact_text(specifier)
+            target = resolve_reference(path, redacted, names, paths, self._java[repository_id])
+            resolved.append((line, redacted, count, None if target is not None and self.is_denied(target) else target))
+        return resolved
 
     # -------------------------------------------------------------- the first round
     def _pool(self, repository_id: str) -> dict[str, list[tuple[tuple[int, int, str], str]]]:
@@ -340,22 +361,24 @@ class ContextResolver:
                     assets[directory] = assets.get(directory, 0) + 1
                 else:
                     by_directory.setdefault(directory, []).append(path)
+            depth = lambda name: (name.rstrip("/").count("/"), name)  # noqa: E731 - shallow entries first, then by name
             more = [
                 {"directory": directory, "count": len(members) - INVENTORY_FILES_PER_DIRECTORY}
-                for directory, members in sorted(by_directory.items()) if len(members) > INVENTORY_FILES_PER_DIRECTORY
+                for directory, members in sorted(by_directory.items(), key=lambda pair: depth(pair[0]))
+                if len(members) > INVENTORY_FILES_PER_DIRECTORY
             ]
-            files = sorted(
-                (path for members in by_directory.values() for path in members[:INVENTORY_FILES_PER_DIRECTORY]),
-                key=lambda item: (item.count("/"), item),
-            )
+            files = [path for members in by_directory.values() for path in members[:INVENTORY_FILES_PER_DIRECTORY]]
             directories = {parent + "/" for path in files for parent in _parents(path)}
-            listing = sorted(directories) + files
+            listing = sorted([*directories, *files], key=depth)
             item = {
                 "repository_id": repository_id, "paths": listing[:limit], "truncated": len(listing) > limit,
-                "more_files": more, "assets": [{"directory": directory, "count": count} for directory, count in sorted(assets.items())],
+                "more_files": more,
+                "assets": [{"directory": directory, "count": count} for directory, count in sorted(assets.items(), key=lambda pair: depth(pair[0]))],
             }
-            while len(canonical_json(item).encode("utf-8")) > share and item["paths"]:
-                item["paths"] = item["paths"][: len(item["paths"]) * 3 // 4]
+            # Every list is cut, longest first, until the inventory fits its share; the shallowest entries survive.
+            while sent_size(item) > share and (item["paths"] or item["more_files"] or item["assets"]):
+                longest = max(("paths", "more_files", "assets"), key=lambda name: len(item[name]))
+                item[longest] = item[longest][: len(item[longest]) * 3 // 4]
                 item["truncated"] = True
             result.append(item)
         self._inventory = result
@@ -376,16 +399,17 @@ class ContextResolver:
 
         limit = self.budgets["max_context_bytes"] // 8
         status = self._status()
+        spans: dict[tuple[str, str], list[tuple[int, int]]] = {}
+        for document in self.documents.values():
+            spans.setdefault((document["repository_id"], document["path"]), []).append((document["line_start"], document["line_end"]))
         used, redactions, truncated = len(INDEX_NOTE), 0, False
         files = []
         for repository_id, path in sorted(self.references):
-            paths = self._paths[repository_id]
             references = []
-            for line, specifier, names in self.references[(repository_id, path)]:
-                specifier, count = redact_text(specifier)
-                target = resolve_reference(path, specifier, names, paths)
-                if target is not None and self.is_denied(target):
-                    target = None
+            for line, specifier, count, target in self.references[(repository_id, path)]:
+                # Only references on lines the model is shown: nothing outside a selected span is disclosed (ADR-026).
+                if not any(start <= line <= end for start, end in spans.get((repository_id, path), ())):
+                    continue
                 references.append({
                     "line": line, "specifier": specifier, "target": target,
                     "status": "unresolved" if target is None else status.get((repository_id, target), "unopened"),
@@ -444,17 +468,33 @@ class ContextResolver:
         return min(INSTRUCTION_RESERVE_BYTES, self.budgets["max_context_bytes"] // 4)
 
     def metadata(self) -> dict[str, Any]:
+        """Inventory, index, coverage and omissions.
+
+        The omission list is the lowest priority: refusals keep being recorded after a document is admitted, so the
+        list is cut, and says ``omitted_truncated``, whenever it would push the total past ``max_context_bytes``.
+        ``omitted_counts`` always holds every reason's full count.
+        """
+
         omitted, counts, cut = self.omitted_view()
         index, _ = self.index()
-        return {
+        result = {
             "inventory": self.inventory(), "index": index, "coverage": self.coverage(),
             "omitted": omitted, "omitted_counts": counts, "omitted_truncated": cut,
         }
+        room = self.budgets["max_context_bytes"] - self.context_bytes - self.reserved_bytes()
+        while result["omitted"] and sent_size(result) > room:
+            result["omitted"] = result["omitted"][: len(result["omitted"]) * 3 // 4]
+            result["omitted_truncated"] = True
+        return result
 
     def total_bytes(self) -> int:
-        """Everything counted against ``max_context_bytes``: excerpts, inventory, index, diagnostics and the instruction reserve."""
+        """Everything counted against ``max_context_bytes``: excerpts, inventory, index, diagnostics and the instruction reserve.
 
-        return self.context_bytes + self.reserved_bytes() + len(canonical_json(self.metadata()).encode("utf-8"))
+        Excerpts and metadata are counted as they appear inside the request, encoded once as the user message and
+        again as a string of the request body, so the total tracks what is actually sent.
+        """
+
+        return self.context_bytes + self.reserved_bytes() + sent_size(self.metadata())
 
     def bundle(self) -> dict[str, Any]:
         metadata = self.metadata()
@@ -471,10 +511,16 @@ class ContextResolver:
             "documents": sorted(self.documents.values(), key=lambda item: (item["repository_id"], item["path"], item["line_start"])),
             "usage": {
                 "rounds": self.rounds, "requests": self.requests, "context_bytes": self.context_bytes,
-                "metadata_bytes": len(canonical_json(metadata).encode("utf-8")), "reserved_bytes": self.reserved_bytes(),
+                "metadata_bytes": sent_size(metadata), "reserved_bytes": self.reserved_bytes(),
             },
             "redaction": {"rules_version": REDACTION_RULES_VERSION, "replacements": self.replacements + index_redactions},
         }
+
+
+def sent_size(value: Any) -> int:
+    """Bytes of ``value`` as it appears in a request: JSON inside the user message, which is itself a JSON string."""
+
+    return len(json.dumps(canonical_json(value), ensure_ascii=False).encode("utf-8"))
 
 
 def _parents(path: str) -> list[str]:

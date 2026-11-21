@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from repodocs.architecture.source_index import (
-    MAX_REFERENCES_PER_FILE, choose_span, extract_references, is_asset, is_noise, is_vendored, layer_of, resolve_reference,
+    MAX_REFERENCES_PER_FILE, choose_span, extract_references, is_asset, is_noise, is_vendored, java_targets, layer_of, resolve_reference,
 )
 
 
@@ -47,6 +47,13 @@ def test_python_and_java_imports_are_found() -> None:
 def test_other_languages_and_dynamic_paths_yield_nothing() -> None:
     assert extract_references("main.rs", ["use crate::other;", "mod other;"]) == []
     assert extract_references("a.js", ["require(name);", "import(`./x/${y}`);", "const s = 'x';"]) == []
+
+
+def test_a_computed_require_or_import_names_no_file() -> None:
+    computed = ["const a = require('./plugins/' + name);", "const b = import('./pages/' + page);", "const c = require('./x'.concat(y));"]
+
+    assert extract_references("a.js", computed) == []
+    assert [spec for _, spec, _ in extract_references("a.js", ["const d = require( './plain' );"])] == ["./plain"]
 
 
 @pytest.mark.parametrize("path,text", [
@@ -98,6 +105,18 @@ PATHS = {
 )
 def test_a_reference_resolves_only_to_a_file_in_the_snapshot(source: str, specifier: str, names: tuple[str, ...], expected: str | None) -> None:
     assert resolve_reference(source, specifier, names, PATHS) == expected
+    assert resolve_reference(source, specifier, names, PATHS, java_targets(PATHS)) == expected
+
+
+def test_a_java_class_resolves_by_table_to_the_first_matching_path_in_sorted_order() -> None:
+    paths = {f"module{index}/src/main/java/shop/orders/Order{index}.java" for index in range(3000)}
+    paths |= {"b/java/shop/orders/Shared.java", "a/java/shop/orders/Shared.java", "a/java/other/shop/orders/Shared.java"}
+    table = java_targets(paths)
+
+    assert resolve_reference("X.java", "shop.orders.Shared", (), paths, table) == "a/java/other/shop/orders/Shared.java"
+    assert resolve_reference("X.java", "shop.orders.Order2999", (), paths, table) == "module2999/src/main/java/shop/orders/Order2999.java"
+    assert resolve_reference("X.java", "shop.orders.Missing", (), paths, table) is None
+    assert table["shop/orders/Shared.java"] == min(path for path in paths if path.endswith("/shop/orders/Shared.java"))
 
 
 # ------------------------------------------------------------------ layers and classes of path
