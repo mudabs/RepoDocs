@@ -68,5 +68,6 @@ This is a development contract for #64 under epic #63, not an implemented web AP
 ## Delivery boundaries
 
 - #65 grounding; #66 bounded source context; #67 model-aware usage; #68 OpenAI provider; #69 application seam; #70 sources; #71 security; #72 jobs; #73 browser journey; #74 scoped diagrams; #75 evidence/downloads; #76 packaging; #77 parity/quality gate.
+- #70 is implemented as the backend workspace core in `src/repodocs/web/workspaces.py` (ADR-034, D50). It returns the `ProjectConfig` that #69 consumes and adds no routes or UI. Local sources are chosen by configured name; public GitHub sources need an exact SHA, a bounded tree preflight and hardened depth-1 Git. Symlinks, submodules, private repositories and other hosts are refused.
 - This spike adds schemas, examples, tests and documentation only. No runtime API, public hosting, account/billing service, new paid calls, video generation or speculative backend is included.
 - Public deployment policy, production default model, funded quotas and changed disclosure ceilings require separate decisions. Version 1.0 of this adapter contract may evolve through reviewed PRs before the first web release; CLI/IR contracts do not change implicitly.
