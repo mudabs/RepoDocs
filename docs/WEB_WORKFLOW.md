@@ -15,7 +15,7 @@ This is a development contract for #64 under epic #63, not an implemented web AP
 
 ## Shared service and HTTP boundary
 
-- #69 defines ordinary Python request/result types and callbacks around existing core operations, not an event bus or plugin framework. Credential/provider objects are passed per run; never swap process-wide environment variables per user.
+- #69 implements (ADR-030, `repodocs.service`) ordinary Python request/result types and callbacks around existing core operations, not an event bus or plugin framework. Credential/provider objects are passed per run; never swap process-wide environment variables per user.
 - #72 exposes `POST /api/v1/jobs`, `GET /api/v1/jobs/{job_id}` and `POST /api/v1/jobs/{job_id}/cancel`. Proposed adapter endpoints, not current CLI commands. POST returns 202 for a new accepted job; replaying an identical admitted request returns its original job. Same workspace/key with a different request returns 409. Authentication and access checks run before revealing even an existing job.
 - Invalid input is 422, missing consent is 403, stale preview/idempotency conflict is 409, a full bounded queue is 429, and an unknown/inaccessible handle is 404. Admission failure creates no model request. Errors contain a stable code and a sanitized message, never provider bodies or keys.
 - Polling returns `sequence`, a monotonic per-job revision. Start at one-second polling, back off to five seconds and stop on terminal state. No elapsed percentage is invented. There is no automatic retry of paid work; any permitted repair counts against the same budget.
