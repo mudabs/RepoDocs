@@ -52,6 +52,7 @@
 | ID | Decision | Rationale |
 |---|---|---|
 | D43 | Owner-approved local/self-hosted web first; public hosting and videos deferred. ADR-027 specifies React/TypeScript with Vite and an optional thin FastAPI/Uvicorn adapter over the shared Python service, polling, bounded single-process jobs, versioned local metadata, ephemeral credentials and explicit restart/cancellation states. The CLI requires no backend. Technical contracts and release thresholds are submitted for review in #64; runtime implementation follows in #65-77. D42 is reserved for the unmerged private-gateway work in #62. | Deliver a useful browser workflow without a duplicate engine, funded service or speculative distributed infrastructure |
+| D49 | Local web access is a pure-Python in-memory boundary: loopback by default, non-loopback only with an explicit HTTPS origin and a long auth token; exact Host/Origin, fetch-site, expiring bounded session and CSRF checks run before any job is revealed or started; provider keys are per-request in-memory `Secret`s owned by one session and never returned or persisted; consent receipts bind kind (external and source excerpts separate), provider, host, model, policy and preview hash, and a gate re-checks them before every model, token-count and retry request (ADR-033, #71) | Prevents unrelated sites from launching paid or source-disclosing jobs and keeps credentials and consent from widening silently |
 
 ## Remaining open decisions: require validation/approval
 | ID | Question | Key tradeoff |
