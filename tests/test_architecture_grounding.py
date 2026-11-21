@@ -89,12 +89,12 @@ def by_label(view: dict) -> dict[str, dict]:
 
 
 # ------------------------------------------------------------------ the false-confidence cases
-def test_a_frontend_assigned_only_backend_files_is_unsupported_and_kept_for_inspection(tmp_path: Path, capsys) -> None:
+def test_backend_only_facts_leave_a_frontend_role_unverified_and_inspectable(tmp_path: Path, capsys) -> None:
     view, *_ = catalog_view(tmp_path, capsys)
 
     ui = by_name(view)["Specimen UI"]
     assert ui["classification"] == "inferred", "its citation is a member file, which is all that classification means"
-    assert (ui["support"], ui["support_reasons"]) == ("unsupported", ["observed-role-conflict"])
+    assert (ui["support"], ui["support_reasons"]) == ("unverified", ["observed-role-conflict"])
     assert by_name(view)["Specimen service"]["support"] == "supported"
     assert by_name(view)["Specimen page"]["support"] == "unverified", "no analyzer observed a frontend fact in the static page"
     assert view["rejected"] == {}, "unsupported output is kept with reasons, not dropped"
@@ -116,7 +116,7 @@ def test_known_supported_facts_stay_supported_and_a_one_sided_call_stays_unverif
     links = by_label(view)
 
     assert (links["GET /api/specimens"]["support"], links["GET /api/specimens"]["support_reasons"]) == (
-        "supported", ["observed-endpoint", "route-called-in-cited-source"],
+        "unverified", ["route-in-cited-source"],
     )
     # The endpoint exists, but the page never posts to it: half of the claim is unchecked.
     assert (links["POST /api/specimens"]["support"], links["POST /api/specimens"]["support_reasons"]) == ("unverified", ["route-on-one-side-only"])
@@ -127,12 +127,12 @@ def test_the_default_diagram_omits_unsupported_claims_and_marks_what_is_unchecke
 
     text = render_view(view)["architecture-view.mmd"]
 
-    assert "/bones" not in text and "Specimen UI" not in text
+    assert "/bones" not in text and "Specimen UI (unverified)" in text
     assert "GET /api/specimens" in text
     assert "Specimen page (unverified)" in text and "POST /api/specimens (unverified)" in text
     assert "Specimen service (" not in text, "a supported component carries no mark"
-    assert "3 claims not shown" in text and "2 shown claims are unverified" in text
-    assert any("-->" in line and "GET /api/specimens" in line for line in text.splitlines()), "only an inferred and supported claim is drawn solid"
+    assert "2 claims not shown" in text and "4 shown claims are unverified" in text
+    assert '-.->|"GET /api/specimens (unverified)"|' in text
     assert '-.->|"POST /api/specimens (unverified)"|' in text
 
 
@@ -142,7 +142,7 @@ def test_every_claim_stays_inspectable_in_the_evidence_map_and_the_page_with_its
     evidence = evidence_map(view, context, ir, {"catalog": None})
     ui = by_name(view)["Specimen UI"]
     fabricated = by_label(view)["GET /bones"]
-    assert evidence["components"][ui["id"]]["support"] == "unsupported"
+    assert evidence["components"][ui["id"]]["support"] == "unverified"
     assert evidence["components"][ui["id"]]["support_reasons"] == ["observed-role-conflict"]
     assert evidence["connections"][fabricated["id"]]["support_reasons"] == ["route-not-in-cited-source"]
     assert len(evidence["connections"]) == 4 and len(evidence["components"]) == 3
@@ -177,7 +177,7 @@ def test_a_model_cannot_supply_its_own_support(tmp_path: Path, capsys) -> None:
 
     view, _ = discover(config, ir, Scripted(request_controller, boastful))
 
-    assert by_name(view)["Specimen UI"]["support"] == "unsupported"
+    assert by_name(view)["Specimen UI"]["support"] == "unverified"
     assert by_label(view)["GET /bones"]["support"] == "unsupported"
 
 
@@ -191,7 +191,7 @@ def test_resolving_citations_alone_never_yield_a_supported_component_on_a_generi
     assert all(item["support_reasons"] == ["no-checkable-fact"] for item in view["components"])
     links = by_label(view)
     assert links["reads orders.json"]["support"] == "unverified" and links["reads orders.json"]["support_reasons"] == ["no-checkable-fact"]
-    assert links["GET /api/orders"]["support"] == "supported", "the literal route is in both cited member excerpts"
+    assert links["GET /api/orders"]["support"] == "unverified", "literal text alone is not an observed request/endpoint pair"
     text = render_view(view)["architecture-view.mmd"]
     assert "Web page (unverified)" in text and "Orders API (unverified)" in text
     assert "no observed or literal fact was checked" in text
@@ -246,6 +246,12 @@ def test_a_role_is_never_judged_from_a_file_name() -> None:
         assert (item["support"], item["support_reasons"]) == ("unverified", ["no-checkable-fact"])
 
 
+def test_an_http_client_fact_alone_does_not_establish_a_frontend_role() -> None:
+    node, evidence = fact("http_request", "service.ts", "request")
+    ir, context = synthetic([node], [evidence], {"service.ts": "fetch('/orders');"})
+    assert single(ir, context, "Interface", "frontend", ["service.ts"])["support"] == "unverified"
+
+
 def test_a_service_with_only_data_layer_facts_is_not_refused() -> None:
     nodes, evidence = zip(fact("table", "dao.py", "orders"))
     ir, context = synthetic(list(nodes), list(evidence), {"dao.py": "x = 1"})
@@ -279,14 +285,14 @@ CLIENT = "fetch(`/bones/${id}`);\nfetch('/bones', {\n  method: 'POST',\n});\n"
 
 
 @pytest.mark.parametrize("kind, label, support, reasons", [
-    ("calls", "GET /bones/:id", "supported", ["route-in-cited-source", "route-called-in-cited-source"]),
-    ("calls", "GET /bones/{id}", "supported", ["route-in-cited-source", "route-called-in-cited-source"]),
-    ("calls", "POST /bones", "supported", ["route-in-cited-source", "route-called-in-cited-source"]),
+    ("calls", "GET /bones/:id", "unverified", ["route-in-cited-source"]),
+    ("calls", "GET /bones/{id}", "unverified", ["route-in-cited-source"]),
+    ("calls", "POST /bones", "unverified", ["route-in-cited-source"]),
     ("calls", "DELETE /bones", "unsupported", ["method-not-in-cited-source"]),
     ("calls", "GET /bones", "unverified", ["route-on-one-side-only"]),  # the server end declares only POST there
     ("calls", "GET /skeletons", "unsupported", ["route-not-in-cited-source"]),
     ("calls", "/bone", "unsupported", ["route-not-in-cited-source"]),
-    ("serves", "GET /bones/:id", "supported", ["route-in-cited-source"]),
+    ("serves", "GET /bones/:id", "unverified", ["route-in-cited-source"]),
     ("calls", "bones are stored", "unverified", ["no-checkable-fact"]),
     ("depends-on", "uses bones", "unverified", ["no-checkable-fact"]),
 ], ids=lambda value: str(value))
@@ -313,13 +319,15 @@ def test_an_observed_endpoint_in_a_member_file_backs_the_route_and_one_elsewhere
     node["attributes"].update(http_method="GET", path="/bones")
     elsewhere, ev_other = fact("endpoint", "other.py", "ghosts")
     elsewhere["attributes"].update(http_method="GET", path="/ghosts")
-    ir, context = synthetic([node, elsewhere], [ev, ev_other], {"client.js": "fetch('/bones'); fetch('/ghosts');", "server.py": "pass", "other.py": "pass"})
+    request, ev_request = fact("http_request", "client.js", "request")
+    request["attributes"].update(http_method="GET", url="/bones")
+    ir, context = synthetic([node, elsewhere, request], [ev, ev_other, ev_request], {"client.js": "fetch('/bones'); fetch('/ghosts');", "server.py": "pass", "other.py": "pass"})
 
     backed = link(ir, context, "calls", "GET /bones", ["client.js", "server.py"])
     foreign = link(ir, context, "calls", "GET /ghosts", ["client.js", "server.py"])
     wrong_method = link(ir, context, "calls", "POST /bones", ["client.js", "server.py"])
 
-    assert (backed["support"], backed["support_reasons"]) == ("supported", ["observed-endpoint", "route-called-in-cited-source"])
+    assert (backed["support"], backed["support_reasons"]) == ("supported", ["observed-request-endpoint"])
     assert (foreign["support"], foreign["support_reasons"]) == ("unverified", ["route-on-one-side-only"])
     assert wrong_method["support"] == "unsupported"
 
@@ -336,7 +344,7 @@ def test_a_bound_confirmed_candidate_is_supported_and_an_unbound_claim_is_not() 
 
 
 # ------------------------------------------------------------------ rendering
-def test_a_view_with_only_unsupported_claims_hides_them_and_says_so() -> None:
+def test_a_server_rendered_frontend_without_frontend_facts_is_not_rejected() -> None:
     nodes, evidence = zip(fact("endpoint", "a.py", "e"))
     ir, context = synthetic(list(nodes), list(evidence), {"a.py": "x"})
     item = single(ir, context, "Interface", "frontend", ["a.py"])
@@ -344,4 +352,15 @@ def test_a_view_with_only_unsupported_claims_hides_them_and_says_so() -> None:
 
     (diagram,) = project(view)
 
-    assert diagram.nodes == [] and any("1 claim not shown" in note for note in diagram.notes)
+    assert len(diagram.nodes) == 1 and "unverified" in diagram.nodes[0].label
+    assert item["support"] == "unverified", "missing frontend facts do not disprove SSR behavior"
+
+
+@pytest.mark.parametrize("client,server", [
+    ("// GET /bones", "# GET /bones"),
+    ('const example = "GET /bones";', 'example = "GET /bones"'),
+    ("app.get('/bones', handler);", "@bp.get('/bones')\ndef handler(): pass"),
+])
+def test_text_examples_and_two_route_declarations_never_prove_a_call(client, server) -> None:
+    ir, context = synthetic([], [], {"client.js": client, "server.py": server})
+    assert link(ir, context, "calls", "GET /bones", ["client.js", "server.py"])["support"] != "supported"

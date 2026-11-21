@@ -20,7 +20,7 @@ OVERVIEW_NAME = "architecture-view.mmd"
 DETAIL_PREFIX = "architecture-view-"
 ALTERNATIVES_NAME = "architecture-view-alternatives.md"
 BANNER = "Model-proposed architecture. Citations are evidence to check, not proof."
-SUPPORT_NOTE = "A solid line means inferred and checked against a literal or observed fact. That is a text or analyzer match, not proof of behavior."
+SUPPORT_NOTE = "A solid line means inferred with matching static facts. Role or request matches do not prove responsibilities or runtime behavior."
 CLASS_DEFINITIONS = (
     "classDef inferred stroke:#1f6f43,stroke-width:2px",
     "classDef proposed stroke:#9a6700,stroke-width:2px,stroke-dasharray:5 5",
@@ -199,7 +199,7 @@ def to_mermaid(diagram: Diagram, view: dict[str, Any]) -> str:
         if keys:
             lines.append(f"    class {','.join(keys)} {classification}")
     lines.append('    subgraph legend["Legend"]')
-    lines.append('        legend_inferred["Inferred and fact-checked: cited from the component files"]')
+    lines.append('        legend_inferred["Inferred: matching static facts, not verified behavior"]')
     lines.append('        legend_proposed["Proposed or unverified: needs checking (dashed)"]')
     for index, note in enumerate(diagram.notes):
         lines.append(f'        legend_note_{index}["{label_text(note)}"]')

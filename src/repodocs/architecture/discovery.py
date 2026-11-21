@@ -46,17 +46,17 @@ SUPPORT_UNSUPPORTED = "unsupported"
 SUPPORT_LEVELS = (SUPPORT_SUPPORTED, SUPPORT_UNVERIFIED, SUPPORT_UNSUPPORTED)
 SUPPORT_REASONS = {
     "observed-endpoint": "The claimed route matches an endpoint the deterministic analyzers observed in a member file.",
-    "route-in-cited-source": "The claimed route and method appear together in a cited excerpt of a member file. This is a text match, not proof of behavior.",
-    "route-called-in-cited-source": "The claimed route and method appear in a cited excerpt of a source member file, where the call is made.",
+    "route-in-cited-source": "The route text appears in cited source. Text can be an example, comment or declaration; it does not establish a call.",
+    "observed-request-endpoint": "Observed relative-request and endpoint facts match the method, path, direction and cited member files. This does not prove runtime routing.",
     "route-on-one-side-only": "The route is found at only one end of this call, so the other end's part of the claim is unchecked.",
     "confirmed-candidate": "A confirmed cross-repository decision is bound to this connection.",
     "observed-role-facts": "A member file carries analyzer-observed facts of this component's role.",
     "no-checkable-fact": "Nothing in this claim could be checked against an observed or literal fact. Its citations show where to look, not that it is true.",
     "route-not-in-cited-source": "The claimed route is not in any cited excerpt of a member file. It may be built from a prefix or a file that was not cited.",
     "method-not-in-cited-source": "The claimed route is in a cited member excerpt, but its method is not near it.",
-    "observed-role-conflict": "Analyzer-observed facts in the member files are only of a different role, for example backend endpoints for a frontend.",
+    "observed-role-conflict": "The observed facts do not establish the claimed role. Shared or server-rendered behavior may exist beyond the supported analysis.",
 }
-_FRONTEND_FACTS = {"component", "route", "http_request"}
+_FRONTEND_FACTS = {"component", "route"}
 _SERVER_FACTS = {"endpoint"}
 _DATA_FACTS = {"table"}
 _METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS")
@@ -254,7 +254,7 @@ class Validation:
         else:
             matches = conflicts = False
         if conflicts:
-            return SUPPORT_UNSUPPORTED, ["observed-role-conflict"]
+            return SUPPORT_UNVERIFIED, ["observed-role-conflict"]
         return (SUPPORT_SUPPORTED, ["observed-role-facts"]) if matches else (SUPPORT_UNVERIFIED, ["no-checkable-fact"])
 
     def _observed_endpoint(self, method: str | None, path: str, members: set[tuple[str, str]]) -> bool:
@@ -277,31 +277,61 @@ class Validation:
         texts = [self.documents[key].get("text", "") for key in evidence if (self.documents[key]["repository_id"], self.documents[key]["path"]) in members]
         return _route_in(texts, method, path)
 
+    def _observed_request(self, method: str, path: str, end: dict[str, Any], evidence: list[str]) -> bool:
+        """Only analyzer-observed relative requests can support a static request/endpoint match."""
+
+        cited = {(self.documents[key]["repository_id"], self.documents[key]["path"]) for key in evidence}
+        members = {(end["repository_id"], file) for file in end["members"]} & cited
+        for node in self.nodes.values():
+            attributes = node.get("attributes", {})
+            if (
+                node.get("type") != "http_request" or attributes.get("http_method") != method
+                or attributes.get("url") != path or not path.startswith("/") or path.startswith("//")
+                or attributes.get("base_url") or attributes.get("base_url_unresolved")
+            ):
+                continue
+            if any((self.evidence[key].get("repository_id"), self.evidence[key].get("path")) in members
+                   for key in node.get("evidence_ids", []) if key in self.evidence):
+                return True
+        return False
+
     def _connection_support(
         self, label: str, kind: str, source: dict[str, Any], target: dict[str, Any], evidence: list[str], bound: bool
     ) -> tuple[str, list[str]]:
         """Whether a deterministic fact backs a connection. A citation that merely resolves never does.
 
-        Only a label that is itself a literal route can be checked. A client request needs the route at both ends, the
-        server side and a call site (calls, reads, writes); other kinds need it at either end. Everything else stays unverified.
+        A matching observed request and endpoint supports a static pair, never runtime routing.
+        Literal text is only a diagnostic: examples and declarations cannot establish a call.
         """
 
-        if bound:
+        if bound and kind == "calls":
             return SUPPORT_SUPPORTED, ["confirmed-candidate"]
+        if bound:
+            return SUPPORT_UNVERIFIED, ["confirmed-candidate", "no-checkable-fact"]
         route = _ROUTE_LABEL.match(label)
         if route is None:
             return SUPPORT_UNVERIFIED, ["no-checkable-fact"]
         method = route.group(1).upper() if route.group(1) else None
         at_target = self._route_at(method, route.group(2), target, evidence)
         at_source = self._route_at(method, route.group(2), source, evidence)
-        declared = "observed-endpoint" if at_target == "observed" else "route-in-cited-source"
+        target_cited = {
+            (self.documents[key]["repository_id"], self.documents[key]["path"]) for key in evidence
+            if self.documents[key]["repository_id"] == target["repository_id"]
+            and self.documents[key]["path"] in target["members"]
+        }
         if kind in ("calls", "reads", "writes"):
+            if (
+                kind == "calls" and method is not None and source["repository_id"] == target["repository_id"]
+                and self._observed_endpoint(method, route.group(2), target_cited)
+                and self._observed_request(method, route.group(2), source, evidence)
+            ):
+                return SUPPORT_SUPPORTED, ["observed-request-endpoint"]
             if at_target in ("observed", "found") and at_source == "found":
-                return SUPPORT_SUPPORTED, [declared, "route-called-in-cited-source"]
+                return SUPPORT_UNVERIFIED, ["route-in-cited-source"]
             if at_target in ("observed", "found") or at_source == "found":
                 return SUPPORT_UNVERIFIED, ["route-on-one-side-only"]
         elif "observed" in (at_target, at_source) or "found" in (at_target, at_source):
-            return SUPPORT_SUPPORTED, ["observed-endpoint" if "observed" in (at_target, at_source) else "route-in-cited-source"]
+            return SUPPORT_UNVERIFIED, ["route-in-cited-source"]
         return SUPPORT_UNSUPPORTED, ["method-not-in-cited-source" if "method" in (at_target, at_source) else "route-not-in-cited-source"]
 
     def _resolve(self, name: Any, repository: Any) -> dict[str, Any] | None:

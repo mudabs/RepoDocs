@@ -114,10 +114,9 @@
       "classification": "inferred",
       "confidence": "high",
       "cross_repository": false,
-      "support": "supported",
+      "support": "unverified",
       "support_reasons": [
-        "route-in-cited-source",
-        "route-called-in-cited-source"
+        "route-in-cited-source"
       ]
     },
     {
