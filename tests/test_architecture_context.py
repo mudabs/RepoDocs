@@ -152,6 +152,27 @@ def test_complete_provider_envelope_cannot_bypass_the_context_byte_limit(tmp_pat
     assert provider.messages == [], "admission is local and sends no counting or inference request"
 
 
+def test_a_later_request_that_cannot_fit_is_neither_sent_nor_counted(tmp_path: Path, capsys) -> None:
+    import json
+
+    from repodocs.architecture.discovery import discover
+    from test_architecture_discovery import Scripted, full_answer, setup
+
+    _, config, ir = setup(tmp_path, capsys)
+    ask = lambda message: full_answer(message, requests=[{"repository_id": "shop", "path": "lib/storage.js", "line_start": 1, "line_end": 20}], complete=False)  # noqa: E731
+
+    class GrowingEnvelope(Scripted):
+        def request_body(self, system, user, schema):
+            later = json.loads(user)["round"] > 1
+            return {"system": system, "user": user, "schema": schema, "frame": "x" * (300_000 if later else 0)}
+
+    provider = GrowingEnvelope(ask, full_answer)
+    view, _ = discover(config, ir, provider)
+
+    assert len(provider.messages) == 1 and view["status"] == "partial" and view["partial_reason"] == "context-budget"
+    assert view["provenance"]["requests"] == 1, "the request that was refused locally is not recorded as sent"
+
+
 # ------------------------------------------------------------------ hostile text and hostile requests
 def test_instructions_in_a_readme_are_data_and_requests_for_other_files_are_refused(tmp_path: Path, capsys) -> None:
     root = project(tmp_path, capsys)

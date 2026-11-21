@@ -326,9 +326,11 @@ def discover(config: ProjectConfig, ir: dict[str, Any], provider: Provider) -> t
     repaired = False
     while True:
         context = resolver.bundle()
-        if not resolver.count_request():
+        if resolver.requests >= resolver.budgets["max_requests"]:
             partial = "request-budget"
             break
+        # The final admission check measures the complete request: the provider's own body when it offers one,
+        # otherwise the portable system/user/schema/model envelope. A request that cannot fit is never sent or counted.
         user_message = _user_message(resolver, context, round_number=resolver.rounds, repair=repair)
         build_request = getattr(provider, "request_body", None)
         payload = build_request(SYSTEM_PROMPT, user_message, RESPONSE_SCHEMA) if build_request else {
@@ -337,6 +339,7 @@ def discover(config: ProjectConfig, ir: dict[str, Any], provider: Provider) -> t
         if len(canonical_json(payload).encode("utf-8")) > resolver.budgets["max_context_bytes"]:
             partial = "context-budget"
             break
+        resolver.count_request()
         try:
             response = provider.generate(SYSTEM_PROMPT, user_message, RESPONSE_SCHEMA)
         except MalformedProviderOutput as exc:

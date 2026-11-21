@@ -1,8 +1,8 @@
 # ADR-029: Source context selection and a compact reference index
 
-- Date: 2026-11-20
-- Status: Implemented for review in #66 (epic #63). Decision D45.
-- Amends: ADR-026 section 3 (selection, inventory and budget accounting). The consent, disclosure ceiling, deny list, redaction and actual-read bounds are unchanged.
+- Date: 2026-11-20; review update: 2026-11-21
+- Status: Implemented in #66 (epic #63). Decision D45.
+- Amends: ADR-026 section 3 (selection, inventory and budget accounting) and the discovery request it sends (reference index, coverage and a final request-size check). The consent, disclosure ceiling, deny list, redaction and actual-read bounds are unchanged.
 
 ## Context
 
@@ -25,14 +25,16 @@ The first-round context chose a README, every manifest and every file with an en
 
 ### Reference index
 
-Review update (2026-11-21): JavaScript/TypeScript indexing reuses the existing comment/string-masked import scanner; Python uses the standard-library AST without execution, and Java masks comments and string/text-block content before reading import declarations. Import-looking comments or examples are not dependencies. Unsupported or malformed syntax can leave references unreported; this is a bounded structural index, not a complete dependency graph. The existing JavaScript scanner's regex-literal limitations still apply.
-
-Discovery now supplies the redacted reference index and coverage diagnostics to the model, rather than merely storing them in the preview. A final local byte check includes the complete provider request body when available, or the portable system/user/schema/model envelope for test/custom providers, before any model request. If it cannot fit, discovery reports context-budget without sending the request. Preview reserve figures remain estimates, not a substitute for final admission.
-
-- Opened files of JavaScript, TypeScript, Python and Java contribute their literal static imports: `import ... from`, bare `import`, re-exports, `require` and `import()` with a string literal, Python `import` and `from ... import`, and Java `import`. Comments, template or computed paths, aliases and other languages contribute nothing.
+- Opened files of JavaScript, TypeScript, Python and Java contribute their literal static imports: `import ... from`, bare `import`, re-exports, `require` and `import()` with a string literal, Python `import` and `from ... import`, and Java `import`. Comments, string contents, template or computed paths, aliases and other languages contribute nothing.
+- The parsers are the existing ones, never a new line pattern: JavaScript and TypeScript reuse the analyzers' comment- and string-masked import scanner (ADR-016), Python uses the standard-library `ast` module, which parses without executing, and Java masks comments, strings and text blocks before reading `import` declarations. Import-looking comments and examples are therefore not references. Unsupported or malformed syntax can leave references unreported, and the JavaScript scanner's regex-literal limits still apply; the index is a bounded structural listing, not a complete dependency graph.
 - References come from the whole file already read within `max_file_bytes` and the hash check, not only from the excerpt, and from no unopened file. Each file entry carries its repository, path and content hash. A reference carries line, specifier, and a target that is a snapshot file or null.
 - A target is `read` (the whole file is in the context), `excerpted` (a span), `unopened` (in the snapshot, not in the context) or `unresolved` (a package, alias, missing or outside path; a denied file is also `unresolved` and never named). The index is a list of what files say, sorted by line. It records no order, call, or data flow and says so in its note.
 - At most 30 references per file and 120 characters per specifier. Specifiers are redacted. The index share of the budget is an eighth.
+
+### What discovery sends
+
+- Each discovery request carries the redacted reference index and the coverage diagnostics with the excerpts, so the model sees what was opened and what was not, instead of the preview alone holding them.
+- Before every request a final local check measures the complete request: the provider's own `request_body` when it offers one (preserved through the service's cancellation wrapper and the usage ledger, ADR-030 and ADR-031), otherwise the portable system, user message, schema and model envelope. A request larger than `max_context_bytes` is not sent and not counted; discovery ends `partial` with `context-budget`, or fails when nothing usable exists. The reserve and metadata figures in the preview are estimates and do not replace this check. No new disclosure ceiling or consent scope is introduced.
 
 ### Diagnostics
 
@@ -47,7 +49,8 @@ Consent (`ai.source_excerpts_consent`, `SOURCE_POLICY_VERSION`), disclosure ceil
 
 - **Read every file to build a complete import graph.** Rejected: it would read and disclose beyond the file and byte budgets.
 - **Rank by import in-degree.** Rejected for the first round: it needs files to be read first. Later rounds can request unopened targets the index names.
-- **Parse with a language server or tree-sitter.** Rejected: a new dependency and a larger attack surface for literal imports. Literal line patterns are bounded and never execute code.
+- **Parse with a language server or tree-sitter.** Rejected: a new dependency and a larger attack surface for literal imports. The existing masked JavaScript scanner, Python's `ast` and the masked Java reader are bounded, already reviewed and never execute code.
+- **Literal line patterns for imports.** Rejected after review: they read commented-out or quoted imports as references.
 - **Sample data files for the storage layer.** Rejected: sampled rows disclose data, not architecture, and pattern redaction is not complete.
 - **Count only excerpts against the budget.** Rejected: it let the real total exceed the documented limit.
 
@@ -56,4 +59,4 @@ Consent (`ai.source_excerpts_consent`, `SOURCE_POLICY_VERSION`), disclosure ceil
 - Behavior, not manifests or data, fills the first round, and a repository outside the first in order is read.
 - Layers and rankings are heuristics from names; a repository with unusual layout may rank poorly. `coverage` shows what was and was not opened instead of hiding it.
 - Real usefulness against the pinned DigitalBoneBox and Flaskr sources is not claimed here. #54 and #77 remain the gate, and fixtures only show selection shape.
-- Out of scope: provider, configuration, CLI, discovery loop and service changes, and token-based budgets (#67).
+- Out of scope: provider, configuration, CLI and service changes, and token-based budgets (#67). The discovery loop changes only in what it sends and in the final size check above.
