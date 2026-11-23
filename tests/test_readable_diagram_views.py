@@ -31,6 +31,7 @@ from repodocs.architecture.discovery import component_id, connection_id
 from repodocs.architecture.render import (
     ALTERNATIVES_NAME,
     DETAIL_PREFIX,
+    detail_name as detail_filename,
     OVERVIEW_LIMIT,
     OVERVIEW_NAME,
     label_text,
@@ -200,7 +201,7 @@ def test_digitalbonebox_produces_overview_and_focused_backend_detail_diagram() -
 
     names = list(rendered)
     assert names[0] == OVERVIEW_NAME
-    backend_detail_name = f"{DETAIL_PREFIX}digitalbonebox-backend-service.mmd"
+    backend_detail_name = detail_filename("digitalbonebox", "backend-service")
     assert backend_detail_name in names
 
     # Overview contains all components
@@ -234,7 +235,7 @@ def test_flaskr_produces_overview_and_focused_backend_detail_diagram() -> None:
 
     names = list(rendered)
     assert names[0] == OVERVIEW_NAME
-    backend_detail_name = f"{DETAIL_PREFIX}flaskr-backend-service.mmd"
+    backend_detail_name = detail_filename("flaskr", "backend-service")
     assert backend_detail_name in names
 
     # Overview text validates
@@ -262,7 +263,7 @@ def test_stable_component_ids_and_evidence_mappings_across_projections() -> None
     rendered = render_view(view)
 
     overview_text = rendered[OVERVIEW_NAME]
-    detail_text = rendered[f"{DETAIL_PREFIX}digitalbonebox-backend-service.mmd"]
+    detail_text = rendered[detail_filename("digitalbonebox", "backend-service")]
 
     # Component node keys must match exactly across views
     api_key = node_key(component_id("digitalbonebox", "Boneset API"))
@@ -530,7 +531,7 @@ def test_diagram_views_and_limitations_section_in_markdown() -> None:
     assert "### Unavailable diagram types" in md_with_tables
     assert "**Sequence diagrams**: Unavailable." in md_with_tables
     assert "**Runtime activity and state diagrams**: Unavailable." in md_with_tables
-    assert "**Deployment views**: Deployment mechanisms and hosting alternatives are kept distinct" in md_with_tables
+    assert "**Deployment representation**:" in md_with_tables
 
     # IR without database table nodes
     ir_without_tables = {
@@ -564,7 +565,7 @@ def test_generated_detail_diagrams_owned_and_safely_retired(tmp_path: Path, caps
     # Generate with DigitalBoneBox view (produces overview and backend-service detail view)
     dbb = digitalbonebox_view()
     artifacts = render_view(dbb)
-    detail_name = f"{DETAIL_PREFIX}digitalbonebox-backend-service.mmd"
+    detail_name = detail_filename("digitalbonebox", "backend-service")
     assert detail_name in artifacts
 
     first_gen = generate_docs(config, ir, artifacts)

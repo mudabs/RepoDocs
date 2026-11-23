@@ -1,0 +1,17 @@
+{
+  "repository": "https://github.com/pallets/flask",
+  "path": "examples/tutorial",
+  "revision": "49943b5a94413a530761350f04e896f76e8d620e",
+  "revision_date": "2026-10-30",
+  "license": "BSD-3-Clause (examples/tutorial/LICENSE.txt)",
+  "stack": "Python and Flask, SQLite, Jinja templates, server-rendered HTML",
+  "path_prefix": "examples/tutorial/",
+  "files": {
+    "flaskr/__init__.py": "cc44165ea4444bc114aedba76cf2f15451f182df97629317589d46902742f118",
+    "flaskr/auth.py": "a5ed5eaa05c6f6ee3e5bdb07b9e657a6e9320a115a68fd74b1cb4ac646680167",
+    "flaskr/blog.py": "c49c5f6e3db32d74bfac13633fd328ec904cb7159d76ca78f6956432076c1fd7",
+    "flaskr/db.py": "700f9d0a455bf79c9bf6de4f2784f13b96256faea19c15ddee71fb7957e14c31",
+    "flaskr/templates/base.html": "a3c74c6ba8ae95bd3b4b63c0bcf5712944c5b954578514c1316a248db0949b07"
+  },
+  "note": "Exact licensed source files from the recorded upstream commit, not a complete Git checkout. Tests scan this subset as local content."
+}

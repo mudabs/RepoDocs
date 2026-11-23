@@ -21,7 +21,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from ..common import canonical_json
+from ..common import canonical_json, markdown_text
 from ..config import ProjectConfig
 from ..errors import ConfigError
 from .discovery import STATUS_CURRENT, SUPPORT_REASONS, load_view, saved_context_path
@@ -149,6 +149,16 @@ def architecture_artifacts(
     evidence = evidence_map(view, context, ir, repository_remotes(config, ir), diagrams=sorted(diagrams))
     artifacts = dict(diagrams)
     artifacts[MAP_NAME] = canonical_json(evidence)
+    # Targets are generated, identity-bound filenames, never model-supplied URLs.
+    index = ["# Architecture diagram views", "", BANNER, "", f"Discovery status: {view['status']}.", "",
+             "Projection groups organize the drawing; they are not newly observed subsystems.", ""]
+    for name in sorted(diagrams, key=lambda name: (name != "architecture-view.mmd", name)):
+        index.append(f"- [{name}]({name})")
+    index += ["", f"Evidence and omitted relationships: [{MAP_NAME}]({MAP_NAME}).", ""]
+    notes = sorted({note for diagram in project(view) for note in diagram.notes})
+    if notes:
+        index += ["## Coverage and diagnostics", "", *[f"- {markdown_text(note)}" for note in notes], ""]
+    artifacts["architecture-view-index.md"] = "\n".join(index)
     citations = {
         item["id"]: f"{item['repository_id']}:{item['path']}:{item['line_start']}-{item['line_end']}"
         for found in evidence["alternatives"] for item in found["evidence"]

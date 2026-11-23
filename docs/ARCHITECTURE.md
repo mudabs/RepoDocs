@@ -105,3 +105,7 @@ Representative golden fixtures define expected facts and relationships. Evaluati
 
 ## Major failure modes
 Inaccurate dynamic code inference; cross-repo false matches; stale multi-repo snapshots; hallucinated AI steps; malformed or overcrowded diagrams; nondeterministic PR churn; overwritten manual docs; leaked secrets; fork-PR token exposure; expensive AI usage; GitHub rate limits and concurrent runs; excessive MVP scope.
+
+### Focused architecture projections
+
+ADR-035 bounds detail views to ten focal components and eight boundary nodes, with deterministic existing-connection traversal, identity-bound filenames and an owned Markdown index. Detailed diagnostics stay in comments and the evidence map. Presentation slices do not establish subsystem or deployment facts; #54/#77 retain semantic and intended-user acceptance.

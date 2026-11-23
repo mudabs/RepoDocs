@@ -148,7 +148,7 @@ def test_a_committed_checkout_links_every_citation_to_its_exact_commit_and_never
 
     artifacts, warnings = architecture_artifacts(config, ir)
 
-    assert warnings == [] and set(artifacts) == {"architecture-view.mmd", ALTERNATIVES_NAME, MAP_NAME}
+    assert warnings == [] and set(artifacts) == {"architecture-view.mmd", ALTERNATIVES_NAME, MAP_NAME, "architecture-view-index.md"}
     evidence = json.loads(artifacts[MAP_NAME])
     helpers = next(item for item in evidence["components"].values() if any("my file" in file["path"] for file in item["files"]))
     assert helpers["files"][0]["link"] == f"https://github.com/acme/shop/blob/{sha}/lib/my%20file%20%231.js"
@@ -334,7 +334,7 @@ def test_the_map_and_page_are_owned_labelled_retired_and_never_overwritten_when_
     root, config, ir = scanned(tmp_path, capsys, {"shop": path}, html=True)
     store(config, ir, full_answer)
     artifacts, _ = architecture_artifacts(config, ir)
-    assert set(artifacts) == {"architecture-view.mmd", ALTERNATIVES_NAME, MAP_NAME, HTML_NAME}
+    assert set(artifacts) == {"architecture-view.mmd", ALTERNATIVES_NAME, MAP_NAME, HTML_NAME, "architecture-view-index.md"}
     del artifacts[ALTERNATIVES_NAME]  # `validate` learns this file in the CLI integration; its ownership is covered above
 
     generate_docs(config, ir, artifacts)

@@ -184,7 +184,7 @@ def render_markdown(ir: dict[str, Any]) -> str:
 
 
 def _render_diagrams_section(ir: dict[str, Any]) -> list[str]:
-    """Overview of supported and unavailable diagram types and their boundaries."""
+    """Overview of supported and unavailable diagram types, navigation, and their boundaries."""
     has_tables = any(node["type"] == "table" for node in ir.get("nodes", []))
     lines = [
         "",
@@ -199,11 +199,18 @@ def _render_diagrams_section(ir: dict[str, Any]) -> list[str]:
         lines.append("- Entity-relationship diagram (ERD): Unavailable. No PostgreSQL table facts were extracted from SQL schema or migrations.")
     lines.extend([
         "",
+        "When an architecture discovery view is present:",
+        "- `architecture-view.mmd`: High-level system overview diagram.",
+        "- `architecture-view-index.md`: Links to the actual generated overview and detail files.",
+        "- Focused detail diagrams (identity-bound filenames with optional `-part-<N>` suffixes): Generated for subsystem groups with multiple components, retaining external connections as dotted boundary context stubs.",
+        "- `architecture-view-evidence.json`: Indexes all generated diagrams and maps each component and connection to source evidence.",
+        "- `architecture-view-alternatives.md`: Captures competing interpretations and model readings, keeping them distinct from the diagram canvas.",
+        "",
         "### Unavailable diagram types",
         "",
         "- **Sequence diagrams**: Unavailable. Static source analysis extracts structure and declared endpoints, but does not observe runtime execution order, dynamic branching, or live message flow. Sequence order is not inferred without trace evidence.",
         "- **Runtime activity and state diagrams**: Unavailable. Dynamic runtime transitions and state execution cannot be established from static source code alone.",
-        "- **Deployment views**: Deployment mechanisms and hosting alternatives are kept distinct from application structure.",
+        "- **Deployment representation**: Application diagrams model static software components and connections extracted from source text. Competing interpretations remain in the alternatives document. The current component model has no deployment role: a deployment-only entry supplied as a component may still appear in a diagram and needs source review. No deployment topology is inferred.",
     ])
     return lines
 

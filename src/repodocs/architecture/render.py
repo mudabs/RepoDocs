@@ -66,6 +66,18 @@ def node_key(component_id: str) -> str:
     return "c_" + component_id.split(":", 1)[1]
 
 
+MAX_DETAIL_COMPONENTS = 10  # groups larger than this decompose into connected slices
+MAX_STUBS = 8  # maximum external boundary context stubs in a detail view to prevent giant graphs
+
+
+def detail_name(repository: str, kind: str, part: int | None = None) -> str:
+    """Readable file name bound to exact identity, independent of other groups and input order."""
+
+    identity = sha256_text(f"{repository}|{kind}")[:12]
+    suffix = f"-part-{part}" if part is not None else ""
+    return f"{DETAIL_PREFIX}{slugify(repository)[:32]}-{slugify(kind)[:24]}-{identity}{suffix}.mmd"
+
+
 def group_key(repository_id: str, kind: str = "") -> str:
     return "g_" + sha256_text(f"{repository_id}|{kind}")[:12]
 
@@ -114,17 +126,65 @@ def _component_diagram(name: str, view: dict[str, Any], components: list[dict[st
     return diagram
 
 
+def _partition_group(members: list[dict[str, Any]], connections: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    """Bounded breadth-first slices of existing connections; slices are presentation groups, not discovered subsystems."""
+
+    ordered = sorted(members, key=lambda item: (item["name"], item["id"]))
+    by_id = {item["id"]: item for item in ordered}
+    neighbours: dict[str, set[str]] = {key: set() for key in by_id}
+    for link in connections:
+        source, target = link["source"], link["target"]
+        if source in by_id and target in by_id:
+            neighbours[source].add(target)
+            neighbours[target].add(source)
+    remaining = set(by_id)
+    slices = []
+    while remaining:
+        selected: list[str] = []
+        frontier: list[str] = []
+        while remaining and len(selected) < MAX_DETAIL_COMPONENTS:
+            if not frontier:
+                # Prefer connected nodes; ties follow names/IDs, never input or set iteration order.
+                seed = min(remaining, key=lambda key: (-len(neighbours[key] & remaining), by_id[key]["name"], key))
+                frontier.append(seed)
+            key = frontier.pop(0)
+            if key not in remaining:
+                continue
+            remaining.remove(key)
+            selected.append(key)
+            frontier.extend(sorted(neighbours[key] & remaining, key=lambda key: (by_id[key]["name"], key)))
+        slices.append([by_id[key] for key in selected])
+    return slices
+
+
+def _select_stubs(components: list[dict[str, Any]], focal: set[str], connections: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
+    """Bound boundary context; omitted links remain in the full evidence map and are reported explicitly."""
+
+    counts: dict[str, int] = {}
+    for link in connections:
+        for end, other in (("source", "target"), ("target", "source")):
+            if link[other] in focal and link[end] not in focal:
+                counts[link[end]] = counts.get(link[end], 0) + 1
+    candidates = sorted((item for item in components if item["id"] in counts),
+                        key=lambda item: (-counts[item["id"]], item["repository_id"], item["kind"], item["name"], item["id"]))
+    chosen = candidates[:MAX_STUBS]
+    omitted = sum(counts[item["id"]] for item in candidates[MAX_STUBS:])
+    return chosen, omitted
+
+
 def project(view: dict[str, Any]) -> list[Diagram]:
     """Overview and focused detail diagrams when the available structure warrants them.
 
-    One overview diagram is always generated. When a subsystem group within a repository has
-    multiple components (or when a crowded graph decomposes), focused detail diagrams are
-    generated for each multi-component group, preserving direct external connections as boundary
-    stubs. Small projects without multi-component groups remain concise with the overview alone.
+    One overview diagram is always generated. Subsystem groups with two or more components
+    (or when a crowded graph decomposes) project focused detail diagrams with focal components
+    and bounded boundary context stubs. Oversized same-kind groups (>10 components) decompose
+    into deterministic connected slices (part-1, part-2). Small projects without multi-component
+    groups remain concise with the overview alone.
     """
 
     view, hidden = supported_view(view)
     components = sorted(view["components"], key=lambda item: (item["repository_id"], item["kind"], item["name"], item["id"]))
+
     notes: list[str] = []
     if hidden:
         notes.append(f"{hidden} claim{'s' if hidden != 1 else ''} not shown: source facts contradict or do not contain them. They are in the evidence map")
@@ -137,21 +197,39 @@ def project(view: dict[str, Any]) -> list[Diagram]:
     groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for item in components:
         groups.setdefault((item["repository_id"], item["kind"]), []).append(item)
-    where = {item["id"]: (item["repository_id"], item["kind"]) for item in components}
 
     is_crowded = len(components) > OVERVIEW_LIMIT
+
+    # Map each component to its overview group node key and slice details
+    component_slice_keys: dict[str, str] = {}
+    slice_partitions: list[tuple[str, str, int | None, list[dict[str, Any]]]] = []
+
+    for (repository, kind), members in sorted(groups.items()):
+        slices = _partition_group(members, view["connections"])
+        has_multiple_slices = len(slices) > 1
+        for slice_idx, slice_members in enumerate(slices, start=1):
+            part_num = slice_idx if has_multiple_slices else None
+            g_key = group_key(repository, f"{kind}_part_{slice_idx}" if part_num else kind)
+            for item in slice_members:
+                component_slice_keys[item["id"]] = g_key
+            slice_partitions.append((repository, kind, part_num, slice_members))
 
     if not is_crowded:
         overview = _component_diagram(OVERVIEW_NAME, view, components, [])
         overview.notes = list(notes)
     else:
         overview = Diagram(OVERVIEW_NAME, notes=notes + [f"Grouped: more than {OVERVIEW_LIMIT} components; see the detail diagrams"])
-        for (repository, kind), members in sorted(groups.items()):
-            classification = "inferred" if all(_status(item) == "inferred" for item in members) else "proposed"
-            overview.nodes.append(DiagramNode(group_key(repository, kind), f"{kind} ({len(members)})", kind, classification, repository, (), tuple(item["name"] for item in members)))
+        for repository, kind, part_num, slice_members in slice_partitions:
+            classification = "inferred" if all(_status(item) == "inferred" for item in slice_members) else "proposed"
+            g_key = group_key(repository, f"{kind}_part_{part_num}" if part_num else kind)
+            part_label = f" part {part_num}" if part_num else ""
+            sample = " / ".join(item["name"][:28] for item in slice_members[:2])
+            overview.nodes.append(DiagramNode(
+                g_key, f"{kind}{part_label} ({len(slice_members)}): {sample}", kind, classification, repository, (), tuple(item["name"] for item in slice_members)
+            ))
         counts: dict[tuple[str, str], list[dict[str, Any]]] = {}
         for link in view["connections"]:
-            pair = (group_key(*where[link["source"]]), group_key(*where[link["target"]]))
+            pair = (component_slice_keys[link["source"]], component_slice_keys[link["target"]])
             if pair[0] != pair[1]:
                 counts.setdefault(pair, []).append(link)
         for (source, target), links in sorted(counts.items()):
@@ -164,14 +242,23 @@ def project(view: dict[str, Any]) -> list[Diagram]:
     for (repository, kind), members in sorted(groups.items()):
         if len(members) < 2:
             continue
-        ids = {item["id"] for item in members}
-        neighbours = sorted(
-            {link[end] for link in view["connections"] for end, other in (("source", "target"), ("target", "source")) if link[other] in ids and link[end] not in ids}
-        )
-        stubs = [item for item in components if item["id"] in neighbours]
-        detail = _component_diagram(f"{DETAIL_PREFIX}{slugify(repository)}-{slugify(kind)}.mmd", view, members, stubs)
-        detail.notes = list(notes)
-        diagrams.append(detail)
+        slices = _partition_group(members, view["connections"])
+        has_multiple_slices = len(slices) > 1
+
+        for slice_idx, slice_members in enumerate(slices, start=1):
+            filename = detail_name(repository, kind, slice_idx if has_multiple_slices else None)
+            focal_ids = {item["id"] for item in slice_members}
+            stubs, omitted_stubs = _select_stubs(components, focal_ids, view["connections"])
+
+            detail = _component_diagram(filename, view, slice_members, stubs)
+            detail_notes = list(notes)
+            if has_multiple_slices:
+                detail_notes.append(f"Decomposed group: part {slice_idx} of {len(slices)}")
+            if omitted_stubs > 0:
+                detail_notes.append(f"{omitted_stubs} boundary context connection{'s' if omitted_stubs != 1 else ''} omitted for readability; inspect the full evidence map")
+            detail.notes = detail_notes
+            diagrams.append(detail)
+
     return diagrams
 
 
@@ -212,19 +299,33 @@ def to_mermaid(diagram: Diagram, view: dict[str, Any]) -> str:
         if keys:
             lines.append(f"    class {','.join(keys)} {classification}")
     has_stubs = any(node.classification == "stub" for node in diagram.nodes)
+    is_grouped = any(bool(node.members) for node in diagram.nodes)
+    has_omissions = any("not shown" in note or "omitted" in note for note in diagram.notes)
     lines.append('    subgraph legend["Legend"]')
     lines.append('        legend_inferred["Inferred (solid)"]')
     lines.append('        legend_proposed["Proposed / unverified (dashed)"]')
     if has_stubs:
         lines.append('        legend_stub["Boundary context (dotted)"]')
-    for index, note in enumerate(diagram.notes):
-        lines.append(f'        legend_note_{index}["{label_text(note)}"]')
+    if view.get("status") == "partial":
+        lines.append('        legend_partial["Partial discovery"]')
+    if is_grouped:
+        lines.append('        legend_grouped["Grouped overview"]')
+    if has_omissions:
+        lines.append('        legend_coverage["Visible coverage limited"]')
     lines.append("    end")
     lines.append("    class legend_inferred inferred")
     lines.append("    class legend_proposed proposed")
     if has_stubs:
         lines.append("    class legend_stub stub")
+    if view.get("status") == "partial":
+        lines.append("    class legend_partial proposed")
+    if is_grouped:
+        lines.append("    class legend_grouped proposed")
+    if has_omissions:
+        lines.append("    class legend_coverage proposed")
     lines.append(f"    %% note: {SUPPORT_NOTE}")
+    for note in diagram.notes:
+        lines.append(f"    %% note: {scrub(note)}")
     for node in diagram.nodes:
         if node.evidence:
             lines.append(f"    %% evidence {node.key}: {', '.join(scrub(key) for key in node.evidence)}")
@@ -234,9 +335,14 @@ def to_mermaid(diagram: Diagram, view: dict[str, Any]) -> str:
 
 
 def render_view(view: dict[str, Any]) -> dict[str, str]:
-    """File name to Mermaid text for every diagram of the view, in a stable order."""
+    """File name to Mermaid text; refuse duplicate names rather than silently losing a view."""
 
-    return {diagram.name: to_mermaid(diagram, view) for diagram in project(view)}
+    result: dict[str, str] = {}
+    for diagram in project(view):
+        if diagram.name in result:
+            raise ValueError(f"Duplicate architecture diagram name: {diagram.name}")
+        result[diagram.name] = to_mermaid(diagram, view)
+    return result
 
 
 def render_alternatives(view: dict[str, Any], citations: Mapping[str, str] | None = None) -> str | None:

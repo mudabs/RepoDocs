@@ -1,0 +1,183 @@
+const API_CONFIG = {
+    BASE_URL: "",
+    ENDPOINTS: {
+        COMBINED_DATA: "/combined-data",
+        MOCK_BONE_DATA: "./js/mock-bone-data.json",
+        BONE_DATA: "/api/bone-data",
+        COLORED_REGIONS: "/api/colored-regions",
+        ANNOTATIONS: "/api/annotations",
+        SEARCH: "/api/search",
+        DESCRIPTION: "/api/description"
+    }
+};
+
+/**
+ * Fetches the combined boneset/bone/subbone data from the backend API.
+ * This is the primary data source used to populate all dropdowns on page load.
+ * @returns {Promise<Object>} Combined data object containing `bonesets`, `bones`, and `subbones` arrays.
+ * @throws {Error} If the network request fails or the server returns a non-OK response.
+ */
+export async function fetchCombinedData() {
+    const API_URL = `${API_CONFIG.BASE_URL}${API_CONFIG.ENDPOINTS.COMBINED_DATA}`;
+
+    try {
+        const response = await fetch(API_URL);
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        return await response.json();
+    } catch (error) {
+        console.error("Error fetching combined data:", error);
+        throw error;
+    }
+}
+
+/**
+ * Possible outcomes of a bone data request (Issue #469).
+ * - OK: the request worked and `data` holds the bone data.
+ * - MISSING: the server confirmed there is no content for this item (404).
+ * - ERROR: the request failed (network error, 5xx, other bad status, or a
+ *   response that couldn't be read), so we don't know whether content exists.
+ */
+export const BONE_DATA_STATUS = Object.freeze({
+    OK: "ok",
+    MISSING: "missing",
+    ERROR: "error",
+});
+
+/**
+ * Fetch full bone data for a single bone and report what happened, so callers
+ * can tell content that isn't there yet apart from a failed request.
+ * @param {string} boneId
+ * @returns {Promise<{status: string, data?: Object, httpStatus?: number, error?: Error}>}
+ */
+export async function fetchBoneDataResult(boneId) {
+    if (!boneId) return { status: BONE_DATA_STATUS.MISSING };
+
+    const url = `${API_CONFIG.BASE_URL}${API_CONFIG.ENDPOINTS.BONE_DATA}/?boneId=${encodeURIComponent(boneId)}`;
+    try {
+        const resp = await fetch(url);
+        if (resp.status === 404) {
+            return { status: BONE_DATA_STATUS.MISSING, httpStatus: 404 };
+        }
+        if (!resp.ok) {
+            const error = new Error(`HTTP error! status: ${resp.status}`);
+            console.error(`Error fetching bone data for ${boneId}:`, error);
+            return { status: BONE_DATA_STATUS.ERROR, httpStatus: resp.status, error };
+        }
+        const data = await resp.json();
+        return { status: BONE_DATA_STATUS.OK, httpStatus: resp.status, data };
+    } catch (error) {
+        console.error(`Error fetching bone data for ${boneId}:`, error);
+        return { status: BONE_DATA_STATUS.ERROR, error };
+    }
+}
+
+/**
+ * Fetch full bone data (description + images) for a single bone from the backend API.
+ * Kept for callers that only need the data; use `fetchBoneDataResult` when the
+ * reason for a missing result matters.
+ * @param {string} boneId
+ * @returns {Object|null} bone data or null on error
+ */
+export async function fetchBoneData(boneId) {
+    const result = await fetchBoneDataResult(boneId);
+    return result.status === BONE_DATA_STATUS.OK ? result.data : null;
+}
+
+/**
+ * Fetch colored region data for a specific bone from the API server
+ * @param {string} boneId - The bone identifier (e.g., "pubis", "ilium")
+ * @returns {Object|null} - The colored region data or null if not available
+ */
+export async function fetchColoredRegionsData(boneId) {
+    if (!boneId) return null;
+
+    const url = `${API_CONFIG.BASE_URL}${API_CONFIG.ENDPOINTS.COLORED_REGIONS}?boneId=${encodeURIComponent(boneId)}`;
+    try {
+        const response = await fetch(url, {
+            cache: "no-store",
+            headers: {
+                "Cache-Control": "no-cache",
+                "Pragma": "no-cache"
+            }
+        });
+
+        if (response.status === 404) {
+            return null;
+        }
+        if (!response.ok) {
+            console.warn(`[ColoredRegions] API returned status ${response.status}: ${response.statusText}`);
+            return null;
+        }
+
+        return await response.json();
+    } catch (error) {
+        console.error(`Error fetching colored regions for ${boneId}:`, error);
+        return null;
+    }
+}
+
+/**
+ * Fetch annotation data for a specific bone from the API server
+ * @param {string} boneId - The bone identifier
+ * @returns {Object|null} - The annotation data (includes annotations and normalized_geometry) or null on error
+ */
+export async function fetchAnnotations(boneId) {
+    if (!boneId) return null;
+
+    const url = `${API_CONFIG.BASE_URL}${API_CONFIG.ENDPOINTS.ANNOTATIONS}/${encodeURIComponent(boneId)}`;
+    try {
+        const response = await fetch(url);
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        return await response.json();
+    } catch (error) {
+        console.error(`Error fetching annotations for ${boneId}:`, error);
+        return null;
+    }
+}
+
+/**
+ * Fetch search results from the API server
+ * @param {string} query - The search query string
+ * @returns {string} - HTML content with search results or error message
+ */
+export async function fetchSearch(query) {
+    const url = `${API_CONFIG.BASE_URL}${API_CONFIG.ENDPOINTS.SEARCH}?q=${encodeURIComponent(query)}`;
+    try {
+        const response = await fetch(url);
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        return await response.text();
+    } catch (error) {
+        console.error("Error performing search:", error);
+        return "<li class='search-error'>Search error occurred</li>";
+    }
+}
+
+/**
+ * Fetch description data for a specific bone from the API server
+ * @param {string} boneId - The bone identifier
+ * @returns {string} - HTML content with description or error message
+ */
+export async function fetchDescription(boneId) {
+    if (!boneId) return " ";
+
+    const url = `${API_CONFIG.BASE_URL}${API_CONFIG.ENDPOINTS.DESCRIPTION}/?boneId=${encodeURIComponent(boneId)}`;
+    try {
+        const response = await fetch(url);
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        return await response.text();
+    } catch (error) {
+        console.error(`Error fetching description for ${boneId}:`, error);
+        return "<li>Error loading description.</li>";
+    }
+}
+
+// Export configuration for other modules to use
+export { API_CONFIG };
