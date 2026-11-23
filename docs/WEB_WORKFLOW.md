@@ -33,7 +33,7 @@ This contract (#64, epic #63) is implemented on the backend by the local HTTP jo
 | State | Meaning | Result treatment |
 |---|---|---|
 | queued | Admitted, no execution yet | No result |
-| preflight | Scanning and checking the reviewed context; no provider request, no artifact write | No result |
+| preflight | Claimed by a worker; scanning and checking the reviewed context; no provider request, no artifact write | No result |
 | running | Stage executing | No final result |
 | succeeded | All requested supported outputs generated and validated | Complete current result; not a semantic-quality claim |
 | partial | Discovery explicitly ended incomplete | Partial preview, warning and reason; no complete-success badge |

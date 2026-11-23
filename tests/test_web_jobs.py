@@ -457,6 +457,55 @@ def test_cancelling_during_preflight_builds_no_provider(tmp_path: Path, monkeypa
     assert factory.contexts == []
 
 
+def test_a_cancel_between_dequeue_and_preflight_stops_the_job_before_any_work(tmp_path: Path, monkeypatch) -> None:
+    """Regression: a worker took the job off the queue while it still read ``queued``, so a cancel tried to remove it from
+    the queue again, failed with a server error and left the job to run. Claiming is now one step under the lock."""
+
+    from repodocs import service as shared
+
+    claimed, release = threading.Event(), threading.Event()
+    run, scan, scans = JobService._run, shared.scan, []
+
+    def paused(self: JobService, job: Any, workspace: Any) -> None:
+        claimed.set()  # dequeued by the worker, nothing of the job has run yet
+        assert release.wait(30), "the test never released the worker"
+        run(self, job, workspace)
+
+    with running(tmp_path, Factory()) as (api, app, factory):
+        workspace = api.workspace()
+        provider = api.provider()
+        preview = api.preview(workspace, provider)
+        monkeypatch.setattr(JobService, "_run", paused)
+        monkeypatch.setattr(shared, "scan", lambda request, hooks=shared.NO_HOOKS: scans.append(request) or scan(request, hooks))
+        first = api.submit(request(workspace, provider=provider, context=preview["context_hash"])).json()
+        assert claimed.wait(30)
+        jobs = app.state.jobs
+        with jobs._cond:
+            assert first["job_id"] not in jobs._queue, "the worker holds the job"
+
+        cancelling = api.post(f"/api/v1/jobs/{first['job_id']}/cancel")
+        assert cancelling.status_code == 202, cancelling.text
+        assert cancelling.json()["state"] == "preflight" and cancelling.json()["stage"] == "scan"
+
+        # The claimed job no longer occupies the workspace's queue slot: one more may queue, and the next is refused.
+        second = api.submit(request(workspace, key="k2", mode="deterministic"))
+        assert second.status_code == 202 and second.json()["state"] == "queued"
+        third = api.submit(request(workspace, key="k3", mode="deterministic"))
+        assert third.status_code == 429 and third.json()["error"]["code"] == "queue-full"
+        settled = api.post(f"/api/v1/jobs/{second.json()['job_id']}/cancel")
+        assert settled.status_code == 200 and settled.json()["state"] == "cancelled", "a queued job still settles at once"
+        release.set()
+        job = api.wait(first["job_id"])
+
+    assert all(response.status_code < 500 for response in api.seen)
+    assert job["state"] == "cancelled" and job["error"]["code"] == "cancelled" and job["result"] is None
+    assert job["usage"] == {"input_tokens": 0, "output_tokens": 0, "cost_microunits": 0, "currency": None, "accounting": "known"}
+    assert factory.contexts == [] and scans == [], "no provider was built and the job never scanned"
+    root = workspace_root(tmp_path, workspace)
+    assert not (root / "destination" / "docs" / "generated").exists(), "no artifact was generated"
+    assert json.loads((root / "jobs" / f"{first['job_id']}.json").read_text(encoding="utf-8"))["job"]["state"] == "cancelled"
+
+
 def test_cancelling_a_finished_job_changes_nothing(tmp_path: Path) -> None:
     with running(tmp_path) as (api, _, _factory):
         job = api.wait(api.submit(request(api.workspace(), mode="deterministic")).json()["job_id"])

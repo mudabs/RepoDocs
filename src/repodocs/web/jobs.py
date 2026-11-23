@@ -662,7 +662,11 @@ class JobService:
         return job
 
     def cancel(self, access: Access, job_id: str) -> dict[str, Any]:
-        """Cancel a queued job at once, or ask a running one to stop at its next checkpoint. A finished job is unchanged."""
+        """Cancel a queued job at once, or ask a claimed or running one to stop at its next checkpoint.
+
+        A finished job is unchanged. This runs under the same lock as ``_claim``, so a ``queued`` job is always still in the
+        queue, and a job a worker has taken is already ``preflight``: its cancellation is checked before any work starts.
+        """
 
         with self._cond:
             job = self._owned_job(access, job_id)
@@ -727,25 +731,37 @@ class JobService:
             self._workers.append(worker)
             worker.start()
 
-    def _next(self) -> _Job | None:
+    def _claim(self) -> tuple[_Job, _Workspace] | None:
+        """Take the first queued job whose workspace is free. Called with the condition lock held.
+
+        Leaving the queue, marking the workspace busy and moving the job to ``preflight`` are one step, so no other thread
+        can see a job that is ``queued`` but no longer in the queue. Nothing is claimed once the service is closing.
+        """
+
+        if self._closed:
+            return None
         for job_id in self._queue:
             job = self._jobs[job_id]
-            if not self._workspaces[job.workspace_id].busy:
+            workspace = self._workspaces[job.workspace_id]
+            if not workspace.busy:
                 self._queue.remove(job_id)
-                return job
+                workspace.busy = True
+                job.state, job.stage = "preflight", "scan"
+                job.sequence += 1
+                self._persist(job)
+                return job, workspace
         return None
 
     def _work(self) -> None:
         while True:
             with self._cond:
-                job = self._next()
-                while job is None and not self._closed:
+                claimed = self._claim()
+                while claimed is None and not self._closed:
                     self._cond.wait()
-                    job = self._next()
-                if job is None:
+                    claimed = self._claim()
+                if claimed is None:
                     return
-                workspace = self._workspaces[job.workspace_id]
-                workspace.busy = True
+            job, workspace = claimed
             try:
                 self._run(job, workspace)
             finally:
@@ -798,9 +814,9 @@ class JobService:
         summary: Mapping[str, Any] | None = None
         try:
             with workspace.lock:
+                # The claim already made this job preflight/scan; a cancel that arrived since then stops it before any work.
                 if job.cancel.cancelled:
                     raise service.Cancelled("The job was cancelled before it started")
-                self._transition(job, "preflight", "scan")
                 service.scan(service.ScanRequest(workspace.root), hooks)
                 self._revalidate(workspace, keep=job.job_id)
                 discovered: service.WorkflowResult | None = None
