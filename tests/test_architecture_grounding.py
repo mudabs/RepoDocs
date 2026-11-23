@@ -49,7 +49,11 @@ def catalog(tmp_path: Path, capsys) -> tuple[Path, ProjectConfig, dict]:
     return root, ProjectConfig.load(root), read_ir(root)
 
 
-def request_controller(_message: dict[str, Any]) -> dict[str, Any]:
+def request_controller(message: dict[str, Any]) -> dict[str, Any]:
+    """Ask for the controller, or answer at once when the first round already opened it (ADR-029 selection)."""
+
+    if CONTROLLER in excerpt_ids(message):
+        return misleading(message)
     return {"components": [], "connections": [], "alternatives": [], "complete": False,
             "requests": [{"repository_id": "catalog", "path": CONTROLLER, "line_start": 1, "line_end": 40}]}
 

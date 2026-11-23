@@ -162,6 +162,7 @@ Schemas are `1.0` while unreleased (ADR-014). A project without the new settings
 - **ADR-021 / D36.** "AI cannot change diagrams" now applies to the deterministic documents and the IR. A separate, validated, inferred architecture view may drive separate diagram files. It still cannot add to or alter any observed fact, candidate, or confirmation.
 - **ADR-023 / D38.** Publication from a clone with no stored architecture view keeps existing, owned, unedited `architecture-view*` files and says they are unverified, instead of removing them. A known-stale view and `repodocs generate --retire-architecture` still remove them. The owner authorized this policy for the hardening pass on 2026-11-17; the ADR text itself has not been reviewed yet.
 - **ADR-028 / D44.** Classification keeps the meaning above (member citation). Each claim also has a computed `support` and reason codes; a valid citation never yields `supported`, and unsupported claims are left out of default diagrams.
+- **ADR-029 / D45.** Section 3 selection, inventory and total-budget accounting are refined for #66: the first round is ranked and layered across repositories, assets and crowded directories are counted instead of listed, the context gains a reference index and coverage diagnostics, and `max_context_bytes` covers more than excerpts. Consent, the deny list, redaction and read bounds are unchanged.
 - **ADR-004 / D19.** Unchanged: explicit consent, redaction, and local-only mode. This ADR extends consent to a second, named scope.
 
 ## Consequences

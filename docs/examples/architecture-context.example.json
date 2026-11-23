@@ -1,7 +1,7 @@
 {
   "context_version": "1.0",
   "policy": {
-    "selection_version": "1.0",
+    "selection_version": "1.1",
     "redaction_version": "1.1",
     "budgets": {
       "max_rounds": 3,
@@ -35,7 +35,37 @@
         "public/index.html",
         "server.js"
       ],
-      "truncated": false
+      "truncated": false,
+      "more_files": [],
+      "assets": [{"directory": "public", "count": 2}]
+    }
+  ],
+  "index": {
+    "note": "Static import statements found in the opened files of JavaScript, TypeScript, Python and Java. They show what a file names, not runtime order, calls, or data flow, and nothing about unopened files.",
+    "files": [
+      {
+        "repository_id": "shop",
+        "path": "server.js",
+        "content_hash": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+        "references": [
+          {"line": 1, "specifier": "express", "target": null, "status": "unresolved"},
+          {"line": 2, "specifier": "fs", "target": null, "status": "unresolved"}
+        ]
+      }
+    ],
+    "truncated": false
+  },
+  "coverage": [
+    {
+      "repository_id": "shop",
+      "candidate_files": 2,
+      "opened_files": 4,
+      "layers": [
+        {"layer": "backend", "files": 1, "opened": 1},
+        {"layer": "frontend", "files": 1, "opened": 1}
+      ],
+      "missing_layers": [],
+      "unopened_priority": []
     }
   ],
   "documents": [
@@ -95,10 +125,14 @@
       "reason": "denied-name"
     }
   ],
+  "omitted_counts": {"denied-name": 1},
+  "omitted_truncated": false,
   "usage": {
     "rounds": 1,
     "requests": 1,
-    "context_bytes": 418
+    "context_bytes": 418,
+    "metadata_bytes": 1500,
+    "reserved_bytes": 6144
   },
   "redaction": {
     "rules_version": "1.1",

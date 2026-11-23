@@ -456,6 +456,8 @@ def _user_message(resolver: ContextResolver, context: dict[str, Any], *, round_n
         "rounds_left": resolver.budgets["max_rounds"] - resolver.rounds,
         "files_per_request_round": resolver.budgets["max_files_per_round"],
         "inventory": context["inventory"],
+        "reference_index": context.get("index", {}),
+        "coverage": context.get("coverage", []),
         "excerpts": [
             {key: item[key] for key in ("id", "repository_id", "path", "kind", "line_start", "line_end", "text")}
             for item in context["documents"]
@@ -478,7 +480,8 @@ def discover(config: ProjectConfig, ir: dict[str, Any], provider: Provider) -> t
 
     resolver = ContextResolver(config, ir)
     resolver.select_initial()
-    best: tuple[Validation, str] | None = None
+    # The best proposal, its served model, and the exact context of the request that produced it.
+    best: tuple[Validation, str, dict[str, Any]] | None = None
     stopped: RunStopped | None = None
     partial: str | None = None
     failure = ""
@@ -486,11 +489,22 @@ def discover(config: ProjectConfig, ir: dict[str, Any], provider: Provider) -> t
     repaired = False
     while True:
         context = resolver.bundle()
-        if not resolver.count_request():
+        if resolver.requests >= resolver.budgets["max_requests"]:
             partial = "request-budget"
             break
+        # The final admission check measures the complete request: the provider's own body when it offers one,
+        # otherwise the portable system/user/schema/model envelope. A request that cannot fit is never sent or counted.
+        user_message = _user_message(resolver, context, round_number=resolver.rounds, repair=repair)
+        build_request = getattr(provider, "request_body", None)
+        payload = build_request(SYSTEM_PROMPT, user_message, RESPONSE_SCHEMA) if build_request else {
+            "model": provider.model, "system": SYSTEM_PROMPT, "user": user_message, "schema": RESPONSE_SCHEMA,
+        }
+        if len(canonical_json(payload).encode("utf-8")) > resolver.budgets["max_context_bytes"]:
+            partial = "context-budget"
+            break
+        resolver.count_request()
         try:
-            response = provider.generate(SYSTEM_PROMPT, _user_message(resolver, context, round_number=resolver.rounds, repair=repair), RESPONSE_SCHEMA)
+            response = provider.generate(SYSTEM_PROMPT, user_message, RESPONSE_SCHEMA)
         except RunStopped as exc:
             # A usage limit ended the run: nothing more is sent, and the reply that passed a cap is not used.
             partial, failure, stopped = "usage-budget", str(exc), exc
@@ -517,7 +531,7 @@ def discover(config: ProjectConfig, ir: dict[str, Any], provider: Provider) -> t
             break
         validation = validate_proposal(data, context, ir, config.architecture.deny_names)
         if validation.components:
-            best = (validation, response.model)
+            best = (validation, response.model, context)
         requests = data.get("requests") if isinstance(data.get("requests"), list) else []
         if data.get("complete") is True:
             # Only an explicit, valid completion ends discovery as complete. A final answer with no
@@ -550,8 +564,9 @@ def discover(config: ProjectConfig, ir: dict[str, Any], provider: Provider) -> t
             "The model returned no architecture component that passed validation"
             + (f" ({partial}" + (": " + failure if failure else "") + ")" if partial else "")
         )
-    validation, served_model = best
-    final_context = resolver.bundle()
+    # The saved context is the one the chosen proposal was built from and validated against. Files fetched after the
+    # last request was sent, which the model never saw, are not in it.
+    validation, served_model, final_context = best
     view = {
         "view_version": VIEW_VERSION,
         "status": "partial" if partial else "complete",
