@@ -1,4 +1,4 @@
-# ADR-035: Bounded local HTTP jobs over the shared service
+# ADR-036: Bounded local HTTP jobs over the shared service
 
 - Date: 2026-11-22
 - Status: Implemented for #72 under epic #63; submitted for review.

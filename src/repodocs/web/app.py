@@ -1,4 +1,4 @@
-"""The local HTTP adapter (ADR-027, ADR-033, ADR-035): thin FastAPI routes over ``JobService``.
+"""The local HTTP adapter (ADR-027, ADR-033, ADR-036): thin FastAPI routes over ``JobService``.
 
 Install it with ``pip install "repodocs[web]"``. The CLI and the shared service never import this module.
 

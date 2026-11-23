@@ -1,4 +1,4 @@
-"""Bounded local jobs over the shared application service (ADR-035, #72).
+"""Bounded local jobs over the shared application service (ADR-036, #72).
 
 This module has no HTTP code; ``repodocs.web.app`` maps its methods to routes. Every analysis step is a call to
 ``repodocs.service``: a job scans, checks the reviewed context, discovers (only in architecture mode), generates and

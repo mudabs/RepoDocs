@@ -1,6 +1,6 @@
 # Local web-first workflow contract 1.0
 
-This contract (#64, epic #63) is implemented on the backend by the local HTTP jobs adapter (#72, ADR-035, the optional `repodocs[web]` extra); the browser UI (#73) is not built yet. The existing CLI remains usable independently. See ADR-027 and `schemas/web-workflow-1.0.json`.
+This contract (#64, epic #63) is implemented on the backend by the local HTTP jobs adapter (#72, ADR-036, the optional `repodocs[web]` extra); the browser UI (#73) is not built yet. The existing CLI remains usable independently. See ADR-027 and `schemas/web-workflow-1.0.json`.
 
 ## Browser journey
 
@@ -16,7 +16,7 @@ This contract (#64, epic #63) is implemented on the backend by the local HTTP jo
 ## Shared service and HTTP boundary
 
 - #69 implements (ADR-030, `repodocs.service`) ordinary Python request/result types and callbacks around existing core operations, not an event bus or plugin framework. Credential/provider objects are passed per run; never swap process-wide environment variables per user.
-- #72 implements `POST /api/v1/jobs`, `GET /api/v1/jobs/{job_id}` and `POST /api/v1/jobs/{job_id}/cancel`, plus the session, workspace, preview, provider-session, consent and artifact routes the journey needs (ADR-035). They are adapter routes, not CLI commands. POST returns 202 for a new accepted job; replaying an identical admitted request returns its original job. Same workspace/key with a different request returns 409. Authentication and access checks run before revealing even an existing job.
+- #72 implements `POST /api/v1/jobs`, `GET /api/v1/jobs/{job_id}` and `POST /api/v1/jobs/{job_id}/cancel`, plus the session, workspace, preview, provider-session, consent and artifact routes the journey needs (ADR-036). They are adapter routes, not CLI commands. POST returns 202 for a new accepted job; replaying an identical admitted request returns its original job. Same workspace/key with a different request returns 409. Authentication and access checks run before revealing even an existing job.
 - Invalid input is 422, missing consent is 403, stale preview/idempotency conflict is 409, a full bounded queue is 429, and an unknown/inaccessible handle is 404. Admission failure creates no model request. Errors contain a stable code and a sanitized message, never provider bodies or keys; non-2xx bodies use the contract's `api_error` envelope.
 - Polling returns `sequence`, a monotonic per-job revision. Start at one-second polling, back off to five seconds and stop on terminal state. No elapsed percentage is invented. There is no automatic retry of paid work; any permitted repair counts against the same budget.
 - A workspace retains one active job and at most one queued job by default. Idempotency covers the normalized request and source/context hashes, not credentials. Queue admission reserves the configured worst-case allowance. #67 defines measured/estimated/unknown accounting and prevents retries from bypassing aggregate caps.
@@ -70,5 +70,5 @@ This contract (#64, epic #63) is implemented on the backend by the local HTTP jo
 
 - #65 grounding; #66 bounded source context; #67 model-aware usage; #68 OpenAI provider; #69 application seam; #70 sources; #71 security; #72 jobs; #73 browser journey; #74 scoped diagrams; #75 evidence/downloads; #76 packaging; #77 parity/quality gate.
 - #70 is implemented as the backend workspace core in `src/repodocs/web/workspaces.py` (ADR-034, D50). It returns the `ProjectConfig` that #69 consumes and adds no routes or UI. Local sources are chosen by configured name; public GitHub sources need an exact SHA, a bounded tree preflight and hardened depth-1 Git. Symlinks, submodules, private repositories and other hosts are refused.
-- The #64 spike added schemas, examples, tests and documentation only. #72 adds the local runtime adapter (ADR-035). No public hosting, account/billing service, new paid calls, video generation or speculative backend is included.
+- The #64 spike added schemas, examples, tests and documentation only. #72 adds the local runtime adapter (ADR-036). No public hosting, account/billing service, new paid calls, video generation or speculative backend is included.
 - Public deployment policy, production default model, funded quotas and changed disclosure ceilings require separate decisions. Version 1.0 of this adapter contract may evolve through reviewed PRs before the first web release; CLI/IR contracts do not change implicitly.

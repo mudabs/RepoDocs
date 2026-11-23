@@ -1,4 +1,4 @@
-"""The HTTP jobs adapter (#72, ADR-035): replayed providers only, no live model, no credential, no network.
+"""The HTTP jobs adapter (#72, ADR-036): replayed providers only, no live model, no credential, no network.
 
 Every job body and every error body a test sees is validated against ``schemas/web-workflow-1.0.json``.
 """
