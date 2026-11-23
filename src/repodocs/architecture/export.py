@@ -146,7 +146,7 @@ def architecture_artifacts(
         return {}, ([] if status == "missing" else [f"The architecture view is {status}: {reason}; no architecture diagrams were generated"])
     context = json.loads(saved_context_path(config, view["provenance"]["context_hash"]).read_text(encoding="utf-8"))
     diagrams = render_view(view)
-    evidence = evidence_map(view, context, ir, repository_remotes(config, ir))
+    evidence = evidence_map(view, context, ir, repository_remotes(config, ir), diagrams=sorted(diagrams))
     artifacts = dict(diagrams)
     artifacts[MAP_NAME] = canonical_json(evidence)
     citations = {

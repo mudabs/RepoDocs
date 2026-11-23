@@ -177,10 +177,35 @@ def render_markdown(ir: dict[str, Any]) -> str:
             "Only the analyzers listed under Analysis coverage ran, and only for the repositories named there."
             " Facts are extracted from source text; dynamic behavior, reflection, generated code, and runtime"
             " configuration are reported above rather than inferred. Runtime execution order is never inferred.",
-            "",
         ]
     )
+    lines.extend(_render_diagrams_section(ir))
     return "\n".join(lines)
+
+
+def _render_diagrams_section(ir: dict[str, Any]) -> list[str]:
+    """Overview of supported and unavailable diagram types and their boundaries."""
+    has_tables = any(node["type"] == "table" for node in ir.get("nodes", []))
+    lines = [
+        "",
+        "## Diagram views and limitations",
+        "",
+        "Deterministic diagram generation produces:",
+        "- `architecture.mmd`: System architecture and component inventory diagram.",
+    ]
+    if has_tables:
+        lines.append("- `erd.mmd`: Entity-relationship diagram generated from static PostgreSQL schema and migrations.")
+    else:
+        lines.append("- Entity-relationship diagram (ERD): Unavailable. No PostgreSQL table facts were extracted from SQL schema or migrations.")
+    lines.extend([
+        "",
+        "### Unavailable diagram types",
+        "",
+        "- **Sequence diagrams**: Unavailable. Static source analysis extracts structure and declared endpoints, but does not observe runtime execution order, dynamic branching, or live message flow. Sequence order is not inferred without trace evidence.",
+        "- **Runtime activity and state diagrams**: Unavailable. Dynamic runtime transitions and state execution cannot be established from static source code alone.",
+        "- **Deployment views**: Deployment mechanisms and hosting alternatives are kept distinct from application structure.",
+    ])
+    return lines
 
 
 _cell = markdown_text

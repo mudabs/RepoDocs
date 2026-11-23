@@ -61,7 +61,13 @@ def repository_remotes(config: ProjectConfig, ir: dict[str, Any]) -> dict[str, t
     return remotes
 
 
-def evidence_map(view: dict[str, Any], context: dict[str, Any], ir: dict[str, Any], remotes: dict[str, tuple[str, str] | None]) -> dict[str, Any]:
+def evidence_map(
+    view: dict[str, Any],
+    context: dict[str, Any],
+    ir: dict[str, Any],
+    remotes: dict[str, tuple[str, str] | None],
+    diagrams: list[str] | None = None,
+) -> dict[str, Any]:
     """Where every component, connection and alternative of a view can be checked, with exact provenance.
 
     Every component and connection, including those the diagrams omit as unsupported, carries its support level and
@@ -115,4 +121,5 @@ def evidence_map(view: dict[str, Any], context: dict[str, Any], ir: dict[str, An
             for entry in view["connections"]
         },
         "alternatives": [{"about": list(entry["about"]), "evidence": [item(key) for key in entry["evidence"]]} for entry in view["alternatives"]],
+        **({"diagrams": list(diagrams)} if diagrams is not None else {}),
     }

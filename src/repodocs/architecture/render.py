@@ -115,11 +115,17 @@ def _component_diagram(name: str, view: dict[str, Any], components: list[dict[st
 
 
 def project(view: dict[str, Any]) -> list[Diagram]:
-    """One diagram when the view is small, otherwise a grouped overview and a detail diagram per crowded group."""
+    """Overview and focused detail diagrams when the available structure warrants them.
+
+    One overview diagram is always generated. When a subsystem group within a repository has
+    multiple components (or when a crowded graph decomposes), focused detail diagrams are
+    generated for each multi-component group, preserving direct external connections as boundary
+    stubs. Small projects without multi-component groups remain concise with the overview alone.
+    """
 
     view, hidden = supported_view(view)
     components = sorted(view["components"], key=lambda item: (item["repository_id"], item["kind"], item["name"], item["id"]))
-    notes = [SUPPORT_NOTE]
+    notes: list[str] = []
     if hidden:
         notes.append(f"{hidden} claim{'s' if hidden != 1 else ''} not shown: source facts contradict or do not contain them. They are in the evidence map")
     unverified = sum(item["support"] == "unverified" for item in components + view["connections"])
@@ -127,28 +133,33 @@ def project(view: dict[str, Any]) -> list[Diagram]:
         notes.append(f"{unverified} shown claim{'s are' if unverified != 1 else ' is'} unverified: no observed or literal fact was checked")
     if view["status"] == "partial":
         notes.append(f"Partial discovery: {view.get('partial_reason', 'stopped early')}")
-    if len(components) <= OVERVIEW_LIMIT:
-        diagram = _component_diagram(OVERVIEW_NAME, view, components, [])
-        diagram.notes = notes
-        return [diagram]
+
     groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for item in components:
         groups.setdefault((item["repository_id"], item["kind"]), []).append(item)
     where = {item["id"]: (item["repository_id"], item["kind"]) for item in components}
-    overview = Diagram(OVERVIEW_NAME, notes=notes + [f"Grouped: more than {OVERVIEW_LIMIT} components; see the detail diagrams"])
-    for (repository, kind), members in sorted(groups.items()):
-        classification = "inferred" if all(_status(item) == "inferred" for item in members) else "proposed"
-        overview.nodes.append(DiagramNode(group_key(repository, kind), f"{kind} ({len(members)})", kind, classification, repository, (), tuple(item["name"] for item in members)))
-    counts: dict[tuple[str, str], list[dict[str, Any]]] = {}
-    for link in view["connections"]:
-        pair = (group_key(*where[link["source"]]), group_key(*where[link["target"]]))
-        if pair[0] != pair[1]:
-            counts.setdefault(pair, []).append(link)
-    for (source, target), links in sorted(counts.items()):
-        inferred = all(_status(item) == "inferred" for item in links)
-        unconfirmed = any(item["cross_repository"] and item["classification"] != "inferred" for item in links)
-        text = f"{len(links)} connection{'s' if len(links) != 1 else ''}" + ("" if inferred else " (proposed)") + (" (unconfirmed)" if unconfirmed else "")
-        overview.edges.append(DiagramEdge(source, target, text, "inferred" if inferred else "proposed", tuple(sorted({key for item in links for key in item["evidence"]}))))
+
+    is_crowded = len(components) > OVERVIEW_LIMIT
+
+    if not is_crowded:
+        overview = _component_diagram(OVERVIEW_NAME, view, components, [])
+        overview.notes = list(notes)
+    else:
+        overview = Diagram(OVERVIEW_NAME, notes=notes + [f"Grouped: more than {OVERVIEW_LIMIT} components; see the detail diagrams"])
+        for (repository, kind), members in sorted(groups.items()):
+            classification = "inferred" if all(_status(item) == "inferred" for item in members) else "proposed"
+            overview.nodes.append(DiagramNode(group_key(repository, kind), f"{kind} ({len(members)})", kind, classification, repository, (), tuple(item["name"] for item in members)))
+        counts: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        for link in view["connections"]:
+            pair = (group_key(*where[link["source"]]), group_key(*where[link["target"]]))
+            if pair[0] != pair[1]:
+                counts.setdefault(pair, []).append(link)
+        for (source, target), links in sorted(counts.items()):
+            inferred = all(_status(item) == "inferred" for item in links)
+            unconfirmed = any(item["cross_repository"] and item["classification"] != "inferred" for item in links)
+            text = f"{len(links)} connection{'s' if len(links) != 1 else ''}" + ("" if inferred else " (proposed)") + (" (unconfirmed)" if unconfirmed else "")
+            overview.edges.append(DiagramEdge(source, target, text, "inferred" if inferred else "proposed", tuple(sorted({key for item in links for key in item["evidence"]}))))
+
     diagrams = [overview]
     for (repository, kind), members in sorted(groups.items()):
         if len(members) < 2:
@@ -158,7 +169,9 @@ def project(view: dict[str, Any]) -> list[Diagram]:
             {link[end] for link in view["connections"] for end, other in (("source", "target"), ("target", "source")) if link[other] in ids and link[end] not in ids}
         )
         stubs = [item for item in components if item["id"] in neighbours]
-        diagrams.append(_component_diagram(f"{DETAIL_PREFIX}{slugify(repository)}-{slugify(kind)}.mmd", view, members, stubs))
+        detail = _component_diagram(f"{DETAIL_PREFIX}{slugify(repository)}-{slugify(kind)}.mmd", view, members, stubs)
+        detail.notes = list(notes)
+        diagrams.append(detail)
     return diagrams
 
 
@@ -198,14 +211,20 @@ def to_mermaid(diagram: Diagram, view: dict[str, Any]) -> str:
         keys = [node.key for node in diagram.nodes if node.classification == classification]
         if keys:
             lines.append(f"    class {','.join(keys)} {classification}")
+    has_stubs = any(node.classification == "stub" for node in diagram.nodes)
     lines.append('    subgraph legend["Legend"]')
-    lines.append('        legend_inferred["Inferred: matching static facts, not verified behavior"]')
-    lines.append('        legend_proposed["Proposed or unverified: needs checking (dashed)"]')
+    lines.append('        legend_inferred["Inferred (solid)"]')
+    lines.append('        legend_proposed["Proposed / unverified (dashed)"]')
+    if has_stubs:
+        lines.append('        legend_stub["Boundary context (dotted)"]')
     for index, note in enumerate(diagram.notes):
         lines.append(f'        legend_note_{index}["{label_text(note)}"]')
     lines.append("    end")
     lines.append("    class legend_inferred inferred")
     lines.append("    class legend_proposed proposed")
+    if has_stubs:
+        lines.append("    class legend_stub stub")
+    lines.append(f"    %% note: {SUPPORT_NOTE}")
     for node in diagram.nodes:
         if node.evidence:
             lines.append(f"    %% evidence {node.key}: {', '.join(scrub(key) for key in node.evidence)}")
