@@ -9,13 +9,15 @@ relationship is true.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .. import __version__
 from ..ai.bundle import REDACTION_RULES_VERSION, redact_text
 from ..ai.providers import Provider
 from ..common import canonical_json, scrub, sha256_text, write_json_atomic
-from ..config import AI_PROVIDER_ANTHROPIC, AI_PROVIDER_OLLAMA, ProjectConfig
+from ..config import AI_PROVIDER_ANTHROPIC, AI_PROVIDER_OLLAMA, AI_PROVIDER_OPENAI, ProjectConfig
+from ..ai.budgets import RunStopped
 from ..errors import MalformedProviderOutput, ProviderError
 from ..ir import ir_hash
 from .context import CONTEXT_VERSION, SELECTION_VERSION, ContextResolver, context_hash, is_denied, well_formed_path
@@ -36,6 +38,59 @@ CONFIDENCES = ("high", "medium", "low")
 
 CLASSIFICATION_INFERRED = "inferred"
 CLASSIFICATION_PROPOSED = "proposed"
+
+# Classification says how a claim is tied to its own member files. Support says whether a deterministic
+# fact backs the claim. A resolving citation gives the first and never the second (ADR-028).
+SUPPORT_SUPPORTED = "supported"
+SUPPORT_UNVERIFIED = "unverified"
+SUPPORT_UNSUPPORTED = "unsupported"
+SUPPORT_LEVELS = (SUPPORT_SUPPORTED, SUPPORT_UNVERIFIED, SUPPORT_UNSUPPORTED)
+SUPPORT_REASONS = {
+    "observed-endpoint": "The claimed route matches an endpoint the deterministic analyzers observed in a member file.",
+    "route-in-cited-source": "The route text appears in cited source. Text can be an example, comment or declaration; it does not establish a call.",
+    "observed-request-endpoint": "Observed relative-request and endpoint facts match the method, path, direction and cited member files. This does not prove runtime routing.",
+    "route-on-one-side-only": "The route is found at only one end of this call, so the other end's part of the claim is unchecked.",
+    "confirmed-candidate": "A confirmed cross-repository decision is bound to this connection.",
+    "observed-role-facts": "A member file carries analyzer-observed facts of this component's role.",
+    "no-checkable-fact": "Nothing in this claim could be checked against an observed or literal fact. Its citations show where to look, not that it is true.",
+    "route-not-in-cited-source": "The claimed route is not in any cited excerpt of a member file. It may be built from a prefix or a file that was not cited.",
+    "method-not-in-cited-source": "The claimed route is in a cited member excerpt, but its method is not near it.",
+    "observed-role-conflict": "The observed facts do not establish the claimed role. Shared or server-rendered behavior may exist beyond the supported analysis.",
+}
+_FRONTEND_FACTS = {"component", "route"}
+_SERVER_FACTS = {"endpoint"}
+_DATA_FACTS = {"table"}
+_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS")
+_ROUTE_LABEL = re.compile(r"^(?:(" + "|".join(_METHODS) + r")\s+)?(/\S*)$", re.IGNORECASE)
+_WRITE_METHODS = re.compile(r"\b(?:post|put|patch|delete)\b", re.IGNORECASE)
+_ROUTE_WINDOW = (1, 3)  # lines before and after a route literal in which its method is looked for
+
+
+def _route_pattern(path: str) -> re.Pattern[str]:
+    """A literal route as it may be written in source: a parameter segment matches any one segment."""
+
+    parts = [
+        r"""[^/\s'"`]+""" if segment.startswith((":", "{", "<", "$")) and len(segment) > 1 else re.escape(segment)
+        for segment in path.split("/")
+    ]
+    return re.compile(r"(?<![\w.~%-])" + "/".join(parts) + r"""(?:/(?=['"`\s?#,)\]]|$)|(?![\w/-]))""")
+
+
+def _route_in(texts: list[str], method: str | None, path: str) -> str:
+    """``found``, or why the cited excerpts do not hold the route: ``route`` or ``method``."""
+
+    pattern = _route_pattern(path.split("?", 1)[0].split("#", 1)[0])
+    seen_route = False
+    for text in texts:
+        lines = text.splitlines()
+        for match in pattern.finditer(text):
+            seen_route = True
+            number = text.count("\n", 0, match.start())
+            window = "\n".join(lines[max(0, number - _ROUTE_WINDOW[0]): number + _ROUTE_WINDOW[1] + 1])
+            # A bare GET (a fetch or a link) names no method, so it fails only when a write method sits on the route's own line.
+            if method is None or re.search(rf"\b{method}\b", window, re.IGNORECASE) or (method == "GET" and not _WRITE_METHODS.search(lines[number])):
+                return "found"
+    return "method" if seen_route else "route"
 
 _STRINGS = {"type": "array", "items": {"type": "string"}}
 RESPONSE_SCHEMA: dict[str, Any] = {
@@ -115,6 +170,11 @@ class Validation:
         self.nodes = {node["id"]: node for node in ir["nodes"]}
         self.candidates = {item["id"]: item for item in ir.get("candidates", [])}
         self.evidence = {item["id"]: item for item in ir.get("evidence", [])}
+        self.facts: dict[tuple[str | None, str], set[str]] = {}
+        for node in ir["nodes"]:
+            for key in node.get("evidence_ids", []):
+                if key in self.evidence and self.evidence[key].get("path"):
+                    self.facts.setdefault((self.evidence[key].get("repository_id"), self.evidence[key]["path"]), set()).add(node["type"])
         self.rejected: dict[str, int] = {}
         self.components: dict[str, dict[str, Any]] = {}
         self.connections: dict[str, dict[str, Any]] = {}
@@ -169,11 +229,111 @@ class Validation:
         if identity in self.components:
             return self.reject("duplicate-component")
         tied = any(self.documents[key]["path"] in members for key in evidence)
+        support, reasons = self._component_support(item["kind"], repository, members)
         self.components[identity] = {
             "id": identity, "name": name, "kind": item["kind"], "responsibility": responsibility, "repository_id": repository,
             "members": members, "evidence": evidence,
             "classification": CLASSIFICATION_INFERRED if tied else CLASSIFICATION_PROPOSED, "confidence": item["confidence"],
+            "support": support, "support_reasons": reasons,
         }
+
+    def _component_support(self, kind: str, repository: str, members: list[str]) -> tuple[str, list[str]]:
+        """What the analyzers observed in the member files says about the claimed role. File names say nothing.
+
+        A file that carries both frontend and server facts (shared or server-rendered code) is never refused.
+        A role with no observed facts is unverified, not wrong: most stacks have no adapter.
+        """
+
+        found = set().union(*(self.facts.get((repository, path), set()) for path in members))
+        frontend, server, data = bool(found & _FRONTEND_FACTS), bool(found & _SERVER_FACTS), bool(found & _DATA_FACTS)
+        if kind == "frontend":
+            matches, conflicts = frontend, (server or data) and not frontend
+        elif kind in ("backend-service", "api"):
+            matches, conflicts = server, frontend and not (server or data)
+        elif kind == "database":
+            matches, conflicts = data, frontend and not data
+        else:
+            matches = conflicts = False
+        if conflicts:
+            return SUPPORT_UNVERIFIED, ["observed-role-conflict"]
+        return (SUPPORT_SUPPORTED, ["observed-role-facts"]) if matches else (SUPPORT_UNVERIFIED, ["no-checkable-fact"])
+
+    def _observed_endpoint(self, method: str | None, path: str, members: set[tuple[str, str]]) -> bool:
+        """Whether an analyzer observed this endpoint in one of these files."""
+
+        for node in self.nodes.values():
+            attributes = node.get("attributes", {})
+            if node.get("type") != "endpoint" or attributes.get("path") != path or (method and attributes.get("http_method") not in (method, "ANY")):
+                continue
+            if any((self.evidence[key].get("repository_id"), self.evidence[key].get("path")) in members for key in node.get("evidence_ids", []) if key in self.evidence):
+                return True
+        return False
+
+    def _route_at(self, method: str | None, path: str, end: dict[str, Any], evidence: list[str]) -> str:
+        """``observed``, ``found``, ``method`` or ``route``: what an analyzer or the cited excerpts of one end's files show."""
+
+        members = {(end["repository_id"], file) for file in end["members"]}
+        if self._observed_endpoint(method, path, members):
+            return "observed"
+        texts = [self.documents[key].get("text", "") for key in evidence if (self.documents[key]["repository_id"], self.documents[key]["path"]) in members]
+        return _route_in(texts, method, path)
+
+    def _observed_request(self, method: str, path: str, end: dict[str, Any], evidence: list[str]) -> bool:
+        """Only analyzer-observed relative requests can support a static request/endpoint match."""
+
+        cited = {(self.documents[key]["repository_id"], self.documents[key]["path"]) for key in evidence}
+        members = {(end["repository_id"], file) for file in end["members"]} & cited
+        for node in self.nodes.values():
+            attributes = node.get("attributes", {})
+            if (
+                node.get("type") != "http_request" or attributes.get("http_method") != method
+                or attributes.get("url") != path or not path.startswith("/") or path.startswith("//")
+                or attributes.get("base_url") or attributes.get("base_url_unresolved")
+            ):
+                continue
+            if any((self.evidence[key].get("repository_id"), self.evidence[key].get("path")) in members
+                   for key in node.get("evidence_ids", []) if key in self.evidence):
+                return True
+        return False
+
+    def _connection_support(
+        self, label: str, kind: str, source: dict[str, Any], target: dict[str, Any], evidence: list[str], bound: bool
+    ) -> tuple[str, list[str]]:
+        """Whether a deterministic fact backs a connection. A citation that merely resolves never does.
+
+        A matching observed request and endpoint supports a static pair, never runtime routing.
+        Literal text is only a diagnostic: examples and declarations cannot establish a call.
+        """
+
+        if bound and kind == "calls":
+            return SUPPORT_SUPPORTED, ["confirmed-candidate"]
+        if bound:
+            return SUPPORT_UNVERIFIED, ["confirmed-candidate", "no-checkable-fact"]
+        route = _ROUTE_LABEL.match(label)
+        if route is None:
+            return SUPPORT_UNVERIFIED, ["no-checkable-fact"]
+        method = route.group(1).upper() if route.group(1) else None
+        at_target = self._route_at(method, route.group(2), target, evidence)
+        at_source = self._route_at(method, route.group(2), source, evidence)
+        target_cited = {
+            (self.documents[key]["repository_id"], self.documents[key]["path"]) for key in evidence
+            if self.documents[key]["repository_id"] == target["repository_id"]
+            and self.documents[key]["path"] in target["members"]
+        }
+        if kind in ("calls", "reads", "writes"):
+            if (
+                kind == "calls" and method is not None and source["repository_id"] == target["repository_id"]
+                and self._observed_endpoint(method, route.group(2), target_cited)
+                and self._observed_request(method, route.group(2), source, evidence)
+            ):
+                return SUPPORT_SUPPORTED, ["observed-request-endpoint"]
+            if at_target in ("observed", "found") and at_source == "found":
+                return SUPPORT_UNVERIFIED, ["route-in-cited-source"]
+            if at_target in ("observed", "found") or at_source == "found":
+                return SUPPORT_UNVERIFIED, ["route-on-one-side-only"]
+        elif "observed" in (at_target, at_source) or "found" in (at_target, at_source):
+            return SUPPORT_UNVERIFIED, ["route-in-cited-source"]
+        return SUPPORT_UNSUPPORTED, ["method-not-in-cited-source" if "method" in (at_target, at_source) else "route-not-in-cited-source"]
 
     def _resolve(self, name: Any, repository: Any) -> dict[str, Any] | None:
         label = _text(name, MAX_NAME)
@@ -251,10 +411,11 @@ class Validation:
         identity = connection_id(source["id"], target["id"], item["kind"])
         if identity in self.connections:
             return self.reject("duplicate-connection")
+        support, reasons = self._connection_support(label, item["kind"], source, target, evidence, cross and bool(candidate_id) and problem is None)
         data = {
             "id": identity, "source": source["id"], "target": target["id"], "kind": item["kind"], "label": label,
             "evidence": evidence, "classification": CLASSIFICATION_INFERRED if inferred else CLASSIFICATION_PROPOSED,
-            "confidence": item["confidence"], "cross_repository": cross,
+            "confidence": item["confidence"], "cross_repository": cross, "support": support, "support_reasons": reasons,
         }
         if cross and inferred:
             data["candidate_id"] = candidate_id
@@ -295,6 +456,8 @@ def _user_message(resolver: ContextResolver, context: dict[str, Any], *, round_n
         "rounds_left": resolver.budgets["max_rounds"] - resolver.rounds,
         "files_per_request_round": resolver.budgets["max_files_per_round"],
         "inventory": context["inventory"],
+        "reference_index": context.get("index", {}),
+        "coverage": context.get("coverage", []),
         "excerpts": [
             {key: item[key] for key in ("id", "repository_id", "path", "kind", "line_start", "line_end", "text")}
             for item in context["documents"]
@@ -317,18 +480,35 @@ def discover(config: ProjectConfig, ir: dict[str, Any], provider: Provider) -> t
 
     resolver = ContextResolver(config, ir)
     resolver.select_initial()
-    best: tuple[Validation, str] | None = None
+    # The best proposal, its served model, and the exact context of the request that produced it.
+    best: tuple[Validation, str, dict[str, Any]] | None = None
+    stopped: RunStopped | None = None
     partial: str | None = None
     failure = ""
     repair = False
     repaired = False
     while True:
         context = resolver.bundle()
-        if not resolver.count_request():
+        if resolver.requests >= resolver.budgets["max_requests"]:
             partial = "request-budget"
             break
+        # The final admission check measures the complete request: the provider's own body when it offers one,
+        # otherwise the portable system/user/schema/model envelope. A request that cannot fit is never sent or counted.
+        user_message = _user_message(resolver, context, round_number=resolver.rounds, repair=repair)
+        build_request = getattr(provider, "request_body", None)
+        payload = build_request(SYSTEM_PROMPT, user_message, RESPONSE_SCHEMA) if build_request else {
+            "model": provider.model, "system": SYSTEM_PROMPT, "user": user_message, "schema": RESPONSE_SCHEMA,
+        }
+        if len(canonical_json(payload).encode("utf-8")) > resolver.budgets["max_context_bytes"]:
+            partial = "context-budget"
+            break
+        resolver.count_request()
         try:
-            response = provider.generate(SYSTEM_PROMPT, _user_message(resolver, context, round_number=resolver.rounds, repair=repair), RESPONSE_SCHEMA)
+            response = provider.generate(SYSTEM_PROMPT, user_message, RESPONSE_SCHEMA)
+        except RunStopped as exc:
+            # A usage limit ended the run: nothing more is sent, and the reply that passed a cap is not used.
+            partial, failure, stopped = "usage-budget", str(exc), exc
+            break
         except MalformedProviderOutput as exc:
             if not repaired:
                 repaired = repair = True
@@ -351,7 +531,7 @@ def discover(config: ProjectConfig, ir: dict[str, Any], provider: Provider) -> t
             break
         validation = validate_proposal(data, context, ir, config.architecture.deny_names)
         if validation.components:
-            best = (validation, response.model)
+            best = (validation, response.model, context)
         requests = data.get("requests") if isinstance(data.get("requests"), list) else []
         if data.get("complete") is True:
             # Only an explicit, valid completion ends discovery as complete. A final answer with no
@@ -377,13 +557,16 @@ def discover(config: ProjectConfig, ir: dict[str, Any], provider: Provider) -> t
         if not progressed:
             partial = "no-progress"
             break
+    if best is None and stopped is not None:
+        raise stopped  # a budget stop, not a model failure: the run may never have contacted the model
     if best is None:
         raise ProviderError(
             "The model returned no architecture component that passed validation"
             + (f" ({partial}" + (": " + failure if failure else "") + ")" if partial else "")
         )
-    validation, served_model = best
-    final_context = resolver.bundle()
+    # The saved context is the one the chosen proposal was built from and validated against. Files fetched after the
+    # last request was sent, which the model never saw, are not in it.
+    validation, served_model, final_context = best
     view = {
         "view_version": VIEW_VERSION,
         "status": "partial" if partial else "complete",
@@ -465,7 +648,7 @@ def _raw_from_view(view: dict[str, Any]) -> dict[str, Any]:
 
 PARTIAL_REASONS = (
     "round-budget", "request-budget", "context-budget", "response-budget", "timeout",
-    "provider-error", "incomplete-response", "empty-response", "no-progress",
+    "provider-error", "incomplete-response", "empty-response", "no-progress", "usage-budget",
 )
 _VIEW_KEYS = {"view_version", "status", "partial_reason", "provenance", "components", "connections", "alternatives", "rejected"}
 _PROVENANCE_KEYS = {
@@ -508,7 +691,7 @@ def check_envelope(view: Any) -> str:
         return "the stored view's provenance is malformed"
     snapshots = provenance["snapshots"]
     if (
-        provenance["provider"] not in (AI_PROVIDER_ANTHROPIC, AI_PROVIDER_OLLAMA)
+        provenance["provider"] not in (AI_PROVIDER_ANTHROPIC, AI_PROVIDER_OLLAMA, AI_PROVIDER_OPENAI)
         or not all(_filled(provenance[key]) for key in ("requested_model", "served_model", "engine_version", "prompt_version"))
         or not isinstance(provenance["external"], bool)
         or not (_count(provenance["rounds"]) and _count(provenance["requests"]))

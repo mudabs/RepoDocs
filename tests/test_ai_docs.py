@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import invoke, read_ir, read_manifest
+from conftest import allow_large_context, invoke, read_ir, read_manifest
 from repodocs.ai import providers
 from repodocs.ai.bundle import build_bundle
 from repodocs.ai.claims import interpret
@@ -36,6 +36,7 @@ def interpreted(root, capsys, monkeypatch, claims=None) -> dict:
     fake = FakeProvider({"claims": claims if claims is not None else [example(read_ir(root))]})
     monkeypatch.setattr(providers, "resolve_provider", lambda settings: fake)
     assert invoke(root, capsys, "ai-configure", "--provider", "ollama", "--model", "fake-model")[0] == 0
+    allow_large_context(root)
     code, response = invoke(root, capsys, "ai-interpret")
     assert code == 0, response
     assert response["data"]["contribution"]["unsupported_accepted"] == 0

@@ -24,7 +24,7 @@ from typing import Any
 from ..common import canonical_json
 from ..config import ProjectConfig
 from ..errors import ConfigError
-from .discovery import STATUS_CURRENT, load_view, saved_context_path
+from .discovery import STATUS_CURRENT, SUPPORT_REASONS, load_view, saved_context_path
 from .navigation import MAP_NAME, evidence_map, repository_remotes
 from .render import ALTERNATIVES_NAME, BANNER, node_key, project, render_alternatives, render_view
 from .render_check import TOOL_DIRECTORY
@@ -81,14 +81,17 @@ def build_html(view: dict[str, Any], diagrams: dict[str, str], evidence: dict[st
         "banner": BANNER + (f" Partial discovery: {view.get('partial_reason', 'stopped early')}." if view["status"] == "partial" else ""),
         "note": NOTE,
         "diagrams": [{"name": name, "text": text} for name, text in sorted(diagrams.items(), key=lambda item: (item[0] != "architecture-view.mmd", item[0]))],
+        "reasons": SUPPORT_REASONS,
         "components": [
             {"key": node_key(item["id"]), "id": item["id"], "name": item["name"], "kind": item["kind"], "responsibility": item["responsibility"],
-             "classification": item["classification"], "confidence": item["confidence"], "repository": item["repository_id"]}
+             "classification": item["classification"], "confidence": item["confidence"], "repository": item["repository_id"],
+             "support": item["support"], "support_reasons": item["support_reasons"]}
             for item in sorted(view["components"], key=lambda entry: (entry["repository_id"], entry["name"], entry["id"]))
         ],
         "connections": [
             {"id": item["id"], "source": by_id[item["source"]]["name"], "target": by_id[item["target"]]["name"], "kind": item["kind"], "label": item["label"],
-             "classification": item["classification"], "confidence": item["confidence"], "cross_repository": item["cross_repository"]}
+             "classification": item["classification"], "confidence": item["confidence"], "cross_repository": item["cross_repository"],
+             "support": item["support"], "support_reasons": item["support_reasons"]}
             for item in sorted(view["connections"], key=lambda entry: entry["id"])
         ],
         "alternatives": [

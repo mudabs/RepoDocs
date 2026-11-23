@@ -327,7 +327,7 @@ def test_a_large_data_directory_cannot_crowd_the_source_out_of_the_inventory(tmp
 
     assert listing["truncated"] is False and len(listing["paths"]) < 60
     assert "src/server.js" in listing["paths"] and "src/routes/orders.js" in listing["paths"]
-    assert "data/(+688 more files, not listed)" in listing["paths"]
+    assert {"directory": "data", "count": 688} in listing["more_files"]
     assert sum(path.startswith("data/item-") for path in listing["paths"]) == 12
 
 

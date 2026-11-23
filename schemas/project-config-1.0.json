@@ -59,13 +59,14 @@
       "description": "Optional AI interpretation. Absent means disabled. Credentials are never stored here.",
       "required": ["provider", "external_consent"],
       "properties": {
-        "provider": {"enum": ["none", "anthropic", "ollama"]},
+        "provider": {"enum": ["none", "anthropic", "ollama", "openai"]},
         "model": {"type": "string", "minLength": 1},
         "external_consent": {
           "type": "boolean",
           "description": "Explicit consent to send the redacted evidence bundle off this machine. False keeps the project local-only."
         },
         "ollama_host": {"type": "string", "minLength": 1},
+        "openai_base_url": {"type": "string", "minLength": 1},
         "source_excerpts_consent": {
           "type": "boolean",
           "description": "Explicit consent to send bounded, redacted source excerpts to an external provider for architecture discovery (ADR-026). Separate from external_consent, which never covers it."
@@ -74,6 +75,40 @@
           "type": "string",
           "minLength": 1,
           "description": "The source-excerpt policy version the consent was given for. Consent for another version does not apply."
+        },
+        "effort": {
+          "enum": ["low", "medium", "high"],
+          "description": "Reasoning effort sent explicitly to a provider that supports one (anthropic and openai). Absent means the provider default; it is never raised silently."
+        },
+        "limits": {
+          "type": "object",
+          "description": "Run limits (ADR-031). Absent values use the provider defaults. The request and aggregate fields may only lower the hard ceilings. max_cost_usd needs prices with all four rates for the configured provider and model.",
+          "additionalProperties": false,
+          "properties": {
+            "context_window_tokens": {"type": "integer", "minimum": 1, "description": "The runtime context window. A request must fit it including its reserved output."},
+            "request_output_tokens": {"type": "integer", "minimum": 1, "maximum": 16000},
+            "max_requests": {"type": "integer", "minimum": 1, "maximum": 6, "description": "Generation requests in a run, repairs included (the ADR-026 ceiling)."},
+            "max_count_requests": {"type": "integer", "minimum": 1, "maximum": 6, "description": "Token-count requests in a run, sent to the same approved provider. Defaults to max_requests."},
+            "max_input_tokens": {"type": "integer", "minimum": 1, "maximum": 800000},
+            "max_output_tokens": {"type": "integer", "minimum": 1, "maximum": 64000},
+            "max_cost_usd": {"type": "number", "exclusiveMinimum": 0}
+          }
+        },
+        "prices": {
+          "type": "object",
+          "description": "Project-supplied, versioned rates in US dollars per million tokens for one provider and model. RepoDocs ships and fetches none. A profile for another provider or model is not applied.",
+          "required": ["version", "provider", "model", "input_usd_per_mtok", "output_usd_per_mtok"],
+          "additionalProperties": false,
+          "properties": {
+            "version": {"type": "string", "minLength": 1},
+            "provider": {"type": "string", "minLength": 1},
+            "model": {"type": "string", "minLength": 1},
+            "served_models": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "Other model identities the provider may report for this model, such as a dated snapshot of an alias."},
+            "input_usd_per_mtok": {"type": "number", "minimum": 0},
+            "output_usd_per_mtok": {"type": "number", "minimum": 0},
+            "cache_read_usd_per_mtok": {"type": "number", "minimum": 0},
+            "cache_write_usd_per_mtok": {"type": "number", "minimum": 0}
+          }
         }
       },
       "additionalProperties": false

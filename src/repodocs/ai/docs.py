@@ -67,7 +67,7 @@ def claims_status(ir: dict[str, Any], document: dict[str, Any] | None) -> str:
             "engine_version", "provider", "model", "requested_model", "bundle_hash", "source_ir_hash"
         ))
         or provenance.get("engine") != "repodocs"
-        or provenance.get("provider") not in ("anthropic", "ollama")
+        or provenance.get("provider") not in ("anthropic", "ollama", "openai")
         or type(provenance.get("external")) is not bool
         or provenance.get("bundle_version") != BUNDLE_SCHEMA_VERSION
     ):

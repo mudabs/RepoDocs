@@ -180,12 +180,17 @@ def test_hostile_instructions_and_forbidden_requests_are_refused_and_leave_no_co
     assert invoke(root, capsys, "scan")[0] == 0
     config, ir = ProjectConfig.load(root), read_ir(root)
     obeying = lambda message: full_answer(message, complete=False, requests=[  # noqa: E731
-        {"repository_id": "shop", "path": path, "line_start": 1, "line_end": 50} for path in ("../../etc/passwd", ".env", "/etc/passwd", "keys/server.pem")])
+        {"repository_id": "shop", "path": path, "line_start": 1, "line_end": 50}
+        for path in ("../../etc/passwd", ".env", "/etc/passwd", "keys/server.pem", "lib/storage.js")])
+    provider = Scripted(obeying, full_answer)
 
-    view, context = discover(config, ir, Scripted(obeying, full_answer))
+    view, context = discover(config, ir, provider)
 
+    # The refusals are recorded in the context the next request carried, and the model was told what is not available.
     reasons = {(item["path"], item["reason"]) for item in context["omitted"]}
     assert {(".env", "denied-name"), ("../../etc/passwd", "outside-repository"), ("/etc/passwd", "outside-repository"), ("keys/server.pem", "denied-name")} <= reasons
+    told = {(item["path"], item["reason"]) for item in provider.messages[1]["not_available"]}
+    assert {("../../etc/passwd", "outside-repository"), ("/etc/passwd", "outside-repository")} <= told
     assert "ENV_CANARY" not in json.dumps(context) + json.dumps(view)
     assert {item["path"] for item in context["documents"]}.isdisjoint({".env", "../../etc/passwd"})
 
@@ -241,7 +246,7 @@ def test_classification_is_computed_and_a_model_cannot_promote_or_claim_observed
 
     item = view["components"][0]
     assert item["classification"] == "proposed", "the cited README is not one of the component's files"
-    assert set(item) == {"id", "name", "kind", "responsibility", "repository_id", "members", "evidence", "classification", "confidence"}
+    assert set(item) == {"id", "name", "kind", "responsibility", "repository_id", "members", "evidence", "classification", "confidence", "support", "support_reasons"}
     assert item["confidence"] == "high", "confidence is the model's own statement and is kept as that"
 
 
@@ -771,7 +776,7 @@ def test_the_ollama_adapter_replays_the_same_view(tmp_path: Path, capsys) -> Non
 
     def respond(handler) -> None:
         body = json.loads(handler.server.requests[-1][2])
-        reply = json.dumps({"model": "qwen-replay", "message": {"content": json.dumps(reply_from(body["messages"][1]["content"]))}}).encode()
+        reply = json.dumps({"model": "qwen-replay", "message": {"content": json.dumps(reply_from(body["messages"][1]["content"]))}, "done": True, "done_reason": "stop"}).encode()
         handler.send_response(200)
         handler.send_header("Content-Length", str(len(reply)))
         handler.end_headers()
@@ -827,3 +832,19 @@ def test_discovery_is_deterministic_for_identical_responses(tmp_path: Path, caps
 
     assert first == second and first_context == second_context
     assert json.dumps(first, sort_keys=True) == json.dumps(second, sort_keys=True)
+
+
+def test_the_saved_context_holds_only_what_the_chosen_proposal_was_built_from(tmp_path: Path, capsys) -> None:
+    # The model asks for one more file, then the request budget ends the run: that file was fetched but never sent.
+    root, config, ir = setup(tmp_path, capsys, architecture={"budgets": {"max_requests": 1}})
+    asking = lambda message: full_answer(message, complete=False, requests=[  # noqa: E731
+        {"repository_id": "shop", "path": "lib/storage.js", "line_start": 1, "line_end": 50}])
+    provider = Scripted(asking)
+
+    view, context = discover(config, ir, provider)
+
+    assert view["status"] == "partial" and view["partial_reason"] == "request-budget" and len(provider.messages) == 1
+    sent = {item["path"] for item in provider.messages[0]["excerpts"]}
+    assert {item["path"] for item in context["documents"]} == sent and "lib/storage.js" not in sent
+    assert view["provenance"]["context_hash"] == discovery.context_hash(context)
+

@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .ai.budgets import EFFORTS, PriceProfile, RunLimits
 from .common import slugify, write_json
 from .errors import ConfigError
 
@@ -24,7 +25,8 @@ REPOSITORY_ROLES = (ROLE_SOURCE, ROLE_DESTINATION)
 AI_PROVIDER_NONE = "none"
 AI_PROVIDER_ANTHROPIC = "anthropic"
 AI_PROVIDER_OLLAMA = "ollama"
-AI_PROVIDERS = (AI_PROVIDER_NONE, AI_PROVIDER_ANTHROPIC, AI_PROVIDER_OLLAMA)
+AI_PROVIDER_OPENAI = "openai"
+AI_PROVIDERS = (AI_PROVIDER_NONE, AI_PROVIDER_ANTHROPIC, AI_PROVIDER_OLLAMA, AI_PROVIDER_OPENAI)
 
 FULL_REVISION_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 
@@ -130,6 +132,12 @@ class AiSettings:
     # separate decision from external_consent and names the policy version it was given for.
     source_excerpts_consent: bool = False
     source_consent_policy: str | None = None
+    # Usage settings (ADR-031): run limits within hard ceilings, an explicit reasoning effort for providers
+    # that support one, and a project-supplied price profile. Absent values mean the documented defaults.
+    limits: RunLimits = RunLimits()
+    effort: str | None = None
+    prices: PriceProfile | None = None
+    openai_base_url: str | None = None
 
     @property
     def source_consent_current(self) -> bool:
@@ -144,6 +152,14 @@ class AiSettings:
             data["model"] = self.model
         if self.ollama_host:
             data["ollama_host"] = self.ollama_host
+        if self.limits.to_dict():
+            data["limits"] = self.limits.to_dict()
+        if self.effort:
+            data["effort"] = self.effort
+        if self.prices:
+            data["prices"] = self.prices.to_dict()
+        if self.openai_base_url:
+            data["openai_base_url"] = self.openai_base_url
         return data
 
     @classmethod
@@ -156,7 +172,7 @@ class AiSettings:
         consent = data.get("external_consent", False)
         if not isinstance(consent, bool):
             raise ConfigError("ai.external_consent must be true or false")
-        for key in ("model", "ollama_host"):
+        for key in ("model", "ollama_host", "openai_base_url"):
             if data.get(key) is not None and (not isinstance(data[key], str) or not data[key]):
                 raise ConfigError(f"ai.{key} must be a non-empty string")
         source = data.get("source_excerpts_consent", False)
@@ -165,9 +181,20 @@ class AiSettings:
         policy = data.get("source_consent_policy")
         if policy is not None and (not isinstance(policy, str) or not policy):
             raise ConfigError("ai.source_consent_policy must be a non-empty string")
+        effort = data.get("effort")
+        if effort is not None and effort not in EFFORTS:
+            raise ConfigError("ai.effort must be one of: " + ", ".join(EFFORTS))
+        limits = RunLimits.from_dict(data["limits"]) if "limits" in data else RunLimits()
+        prices = PriceProfile.from_dict(data["prices"]) if "prices" in data else None
+        if limits.max_cost_usd is not None and (prices is None or not prices.complete):
+            raise ConfigError(
+                "ai.limits.max_cost_usd needs ai.prices with input, output, cache-read and cache-write rates "
+                "(0 for a category the provider does not bill); RepoDocs has no built-in rates"
+            )
         return cls(
             provider=provider, model=data.get("model"), external_consent=consent, ollama_host=data.get("ollama_host"),
             source_excerpts_consent=source, source_consent_policy=policy if source else None,
+            limits=limits, effort=effort, prices=prices, openai_base_url=data.get("openai_base_url"),
         )
 
 

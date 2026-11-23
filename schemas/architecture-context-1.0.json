@@ -4,8 +4,19 @@
   "title": "RepoDocs architecture-discovery context bundle",
   "description": "The redacted, bounded source context a provider receives for architecture discovery (ADR-026). Written to .repodocs/architecture-context.json before any provider is contacted, so it can be reviewed. Holds redacted excerpts, never the unredacted originals.",
   "type": "object",
-  "required": ["context_version", "policy", "source_ir_hash", "snapshots", "inventory", "documents", "omitted", "usage", "redaction"],
+  "required": ["context_version", "policy", "source_ir_hash", "snapshots", "inventory", "index", "coverage", "documents", "omitted", "omitted_counts", "omitted_truncated", "usage", "redaction"],
   "additionalProperties": false,
+  "$defs": {
+    "directoryCounts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["directory", "count"],
+        "additionalProperties": false,
+        "properties": {"directory": {"type": "string"}, "count": {"type": "integer", "minimum": 1}}
+      }
+    }
+  },
   "properties": {
     "context_version": {"const": "1.0"},
     "source_ir_hash": {"type": "string", "minLength": 1},
@@ -49,15 +60,83 @@
     },
     "inventory": {
       "type": "array",
-      "description": "Directory and file names only, bounded by max_inventory_paths.",
+      "description": "Directory and file names only, bounded by max_inventory_paths and a share of max_context_bytes. Assets and crowded directories are counted, not listed.",
       "items": {
         "type": "object",
-        "required": ["repository_id", "paths", "truncated"],
+        "required": ["repository_id", "paths", "truncated", "more_files", "assets"],
         "additionalProperties": false,
         "properties": {
           "repository_id": {"type": "string", "minLength": 1},
           "paths": {"type": "array", "items": {"type": "string", "minLength": 1}},
-          "truncated": {"type": "boolean"}
+          "truncated": {"type": "boolean"},
+          "more_files": {"description": "Files a directory holds beyond those listed.", "$ref": "#/$defs/directoryCounts"},
+          "assets": {"description": "Image, font, media and archive files per directory, never listed individually.", "$ref": "#/$defs/directoryCounts"}
+        }
+      }
+    },
+    "index": {
+      "type": "object",
+      "description": "Static import statements found in opened files. Not runtime order, calls, or data flow, and nothing about unopened files.",
+      "required": ["note", "files", "truncated"],
+      "additionalProperties": false,
+      "properties": {
+        "note": {"type": "string"},
+        "truncated": {"type": "boolean"},
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["repository_id", "path", "content_hash", "references"],
+            "additionalProperties": false,
+            "properties": {
+              "repository_id": {"type": "string", "minLength": 1},
+              "path": {"type": "string", "minLength": 1},
+              "content_hash": {"type": "string", "minLength": 1},
+              "references": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["line", "specifier", "target", "status"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "line": {"type": "integer", "minimum": 1},
+                    "specifier": {"type": "string"},
+                    "target": {"type": ["string", "null"]},
+                    "status": {"enum": ["read", "excerpted", "unopened", "unresolved"], "description": "read: the whole file is in the context; excerpted: a span of it; unopened: in the snapshot but not in the context; unresolved: names no snapshot file."}
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "coverage": {
+      "type": "array",
+      "description": "What each repository's context covers and what it lacks.",
+      "items": {
+        "type": "object",
+        "required": ["repository_id", "candidate_files", "opened_files", "layers", "missing_layers", "unopened_priority"],
+        "additionalProperties": false,
+        "properties": {
+          "repository_id": {"type": "string", "minLength": 1},
+          "candidate_files": {"type": "integer", "minimum": 0},
+          "opened_files": {"type": "integer", "minimum": 0},
+          "layers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["layer", "files", "opened"],
+              "additionalProperties": false,
+              "properties": {
+                "layer": {"enum": ["backend", "frontend", "storage", "other"]},
+                "files": {"type": "integer", "minimum": 1},
+                "opened": {"type": "integer", "minimum": 0}
+              }
+            }
+          },
+          "missing_layers": {"type": "array", "description": "Layers with candidate files by name and location, none of them in the context.", "items": {"enum": ["backend", "frontend", "storage"]}},
+          "unopened_priority": {"type": "array", "description": "The best-ranked candidate files that are not in the context.", "items": {"type": "string"}}
         }
       }
     },
@@ -84,7 +163,7 @@
     },
     "omitted": {
       "type": "array",
-      "description": "What was left out and why, without the content.",
+      "description": "What was left out and why, without the content. Material reasons come first and the list is bounded.",
       "items": {
         "type": "object",
         "required": ["reason"],
@@ -96,14 +175,18 @@
         }
       }
     },
+    "omitted_counts": {"type": "object", "description": "Omissions per reason, including those cut from the omitted list.", "additionalProperties": {"type": "integer", "minimum": 1}},
+    "omitted_truncated": {"type": "boolean", "description": "The omitted list was cut, to its entry limit or to keep the total within max_context_bytes. It is the lowest-priority part of the context."},
     "usage": {
       "type": "object",
-      "required": ["rounds", "requests", "context_bytes"],
+      "required": ["rounds", "requests", "context_bytes", "metadata_bytes", "reserved_bytes"],
       "additionalProperties": false,
       "properties": {
         "rounds": {"type": "integer", "minimum": 0},
         "requests": {"type": "integer", "minimum": 0},
-        "context_bytes": {"type": "integer", "minimum": 0}
+        "context_bytes": {"type": "integer", "minimum": 0, "description": "Documents as they appear in a request: JSON inside the user message, itself encoded as a JSON string."},
+        "metadata_bytes": {"type": "integer", "minimum": 0, "description": "Inventory, index, coverage and omissions, measured the same way."},
+        "reserved_bytes": {"type": "integer", "minimum": 0, "description": "Room kept for the instructions. A document is admitted only while context_bytes + metadata_bytes + reserved_bytes fits max_context_bytes, and the omitted list is cut to keep it there. Discovery still measures each complete request before sending it."}
       }
     },
     "redaction": {
