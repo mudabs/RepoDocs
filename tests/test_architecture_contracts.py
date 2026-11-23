@@ -90,7 +90,7 @@ VIEW_BREAKS = [
     lambda d: d.update(status="stale"),
     lambda d: d.update(model_output="<script>"),
     lambda d: d["provenance"].pop("served_model"),
-    lambda d: d["provenance"].update(provider="openai"),
+    lambda d: d["provenance"].update(provider="openai-compatible-gateway"),  # only the native providers (ADR-032)
     lambda d: d["rejected"].update(reason=-1),
 ]
 

@@ -31,7 +31,7 @@ Discovery bounded rounds, requests and bytes, but not tokens or money. A byte li
 | `max_output_tokens` | Reserved or actual output tokens in the whole run | 64,000; may only lower |
 | `max_cost_usd` | Aggregate cost cap | none; requires a complete `ai.prices` profile for the provider and model |
 
-`ai.effort` (`low`, `medium`, `high`) is sent only when set and only to Anthropic; Ollama refuses it. Higher effort levels need a new decision. Nothing raises a limit, changes the model or switches provider automatically.
+`ai.effort` (`low`, `medium`, `high`) is sent only when set and only to Anthropic or OpenAI (ADR-032); Ollama refuses it. Higher effort levels need a new decision. Nothing raises a limit, changes the model or switches provider automatically.
 
 A run may carry its own limits (`DiscoverRequest.limits`, for example a web job's allowance). They are combined field by field with the project's limits and can only lower them.
 

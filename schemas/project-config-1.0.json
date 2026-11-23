@@ -59,13 +59,14 @@
       "description": "Optional AI interpretation. Absent means disabled. Credentials are never stored here.",
       "required": ["provider", "external_consent"],
       "properties": {
-        "provider": {"enum": ["none", "anthropic", "ollama"]},
+        "provider": {"enum": ["none", "anthropic", "ollama", "openai"]},
         "model": {"type": "string", "minLength": 1},
         "external_consent": {
           "type": "boolean",
           "description": "Explicit consent to send the redacted evidence bundle off this machine. False keeps the project local-only."
         },
         "ollama_host": {"type": "string", "minLength": 1},
+        "openai_base_url": {"type": "string", "minLength": 1},
         "source_excerpts_consent": {
           "type": "boolean",
           "description": "Explicit consent to send bounded, redacted source excerpts to an external provider for architecture discovery (ADR-026). Separate from external_consent, which never covers it."
@@ -77,7 +78,7 @@
         },
         "effort": {
           "enum": ["low", "medium", "high"],
-          "description": "Reasoning effort sent explicitly to a provider that supports one (anthropic only). Absent means the provider default; it is never raised silently."
+          "description": "Reasoning effort sent explicitly to a provider that supports one (anthropic and openai). Absent means the provider default; it is never raised silently."
         },
         "limits": {
           "type": "object",

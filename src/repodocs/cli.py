@@ -297,6 +297,22 @@ def _cmd_ai_configure(args: argparse.Namespace) -> int:
     current = config.ai
     consent = True if args.consent_external else False if args.revoke_consent else current.external_consent
     source = True if args.consent_source_excerpts else False if args.revoke_source_consent else current.source_excerpts_consent
+    selected = args.provider or current.provider
+    changed = (
+        selected != current.provider
+        or (args.model is not None and args.model != current.model)
+        or (selected == "ollama" and args.ollama_host is not None and args.ollama_host != current.ollama_host)
+        or (selected == "openai" and args.openai_base_url is not None and args.openai_base_url != current.openai_base_url)
+    )
+    if args.openai_base_url is not None:
+        from .ai.openai import check_base_url
+
+        # Refused before anything is saved: a credential or key in the URL must never reach repodocs.json.
+        check_base_url(args.openai_base_url)
+    if changed:
+        # An existing grant is not permission to disclose the same source to a different destination/model.
+        consent = bool(args.consent_external)
+        source = bool(args.consent_source_excerpts)
     # replace() keeps the usage settings (limits, effort, prices) that this command does not edit.
     config.ai = replace(
         current,
@@ -306,6 +322,7 @@ def _cmd_ai_configure(args: argparse.Namespace) -> int:
         model=args.model or (current.model if not args.provider or args.provider == current.provider else None),
         external_consent=consent,
         ollama_host=args.ollama_host or current.ollama_host,
+        openai_base_url=args.openai_base_url or current.openai_base_url,
     )
     config.save()
     _emit("ai-configure", ok=True, data=config.ai.to_dict())
@@ -536,6 +553,7 @@ def _build_parser() -> argparse.ArgumentParser:
     ai_configure.add_argument("--provider", choices=AI_PROVIDERS)
     ai_configure.add_argument("--model")
     ai_configure.add_argument("--ollama-host", help="Ollama server URL (default http://localhost:11434)")
+    ai_configure.add_argument("--openai-base-url", help="Responses API base URL (HTTPS; default https://api.openai.com/v1)")
     consent = ai_configure.add_mutually_exclusive_group()
     consent.add_argument(
         "--consent-external",

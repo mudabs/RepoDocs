@@ -15,7 +15,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Protocol
 from urllib.parse import urlsplit
 
-from ..config import AI_PROVIDER_ANTHROPIC, AI_PROVIDER_NONE, AI_PROVIDER_OLLAMA, AiSettings
+from ..config import AI_PROVIDER_ANTHROPIC, AI_PROVIDER_NONE, AI_PROVIDER_OLLAMA, AI_PROVIDER_OPENAI, AiSettings
 from ..errors import ConfigError, ConsentError, MalformedProviderOutput, ProviderError
 from .budgets import DEFAULT_CONTEXT_WINDOWS, Usage, usage_from_counts
 
@@ -299,11 +299,17 @@ def resolve_provider(settings: AiSettings) -> Provider | None:
         return None
     provider: Provider
     limits = settings.limits.resolved(settings.provider)
-    if settings.provider == AI_PROVIDER_ANTHROPIC:
+    if settings.provider == AI_PROVIDER_OPENAI:
+        from .openai import OpenAIProvider
+
+        provider = OpenAIProvider(
+            settings.model, settings.openai_base_url, max_output_tokens=limits.request_output_tokens, reasoning_effort=settings.effort,
+        )
+    elif settings.provider == AI_PROVIDER_ANTHROPIC:
         provider = AnthropicProvider(settings.model, max_output_tokens=limits.request_output_tokens, effort=settings.effort)
     else:
         if settings.effort:
-            raise ConfigError("ai.effort is supported only by the anthropic provider; remove it for ollama")
+            raise ConfigError("ai.effort is supported only by the anthropic and openai providers; remove it for ollama")
         provider = OllamaProvider(
             settings.model, settings.ollama_host,
             context_window=limits.context_window_tokens, max_output_tokens=limits.request_output_tokens,

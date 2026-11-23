@@ -65,6 +65,8 @@ ADR-021 adds optional `architecture-ai.md` generation from current, revalidated 
 
 ADR-031 adds run-level usage budgets in `repodocs.ai.budgets`: a thread-safe ledger per run reserves each request's worst-case tokens and cost before it is sent (a provider count after consent, or a one-token-per-byte bound), reconciles complete provider usage, keeps unknown usage reserved, enforces the context window including reserved output and aggregate token, request and cost caps, admits token-count requests under their own allowance, stops the run when reported usage passes a cap, and writes local receipts. `repodocs.service.discover` wraps any injected provider in that ledger after the consent checks, so CLI and web runs share it; rates apply only to the provider and model a configured profile names.
 
+ADR-032 adds a native `openai` provider over the Responses API with the same protocol, consent, usage ledger and stored-view validation as Anthropic and Ollama; it is distinct from the private OpenAI-compatible gateway in #62.
+
 ### Documentation planning
 Choose artifact type, scope, required evidence, coverage, destination, and generator. Do not generate unsupported views as if complete. Maintain dependencies from IR facts to artifacts. Generated files live in dedicated paths and are tracked by a manifest; unexpected edits fail validation rather than being overwritten.
 
