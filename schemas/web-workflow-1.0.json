@@ -1,13 +1,16 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://repodocs.dev/schemas/web-workflow-1.0.json",
-  "title": "Local web workflow contract (not a running API)",
+  "title": "Local web workflow contract: requests, jobs and API errors",
   "oneOf": [
     {
       "$ref": "#/$defs/request"
     },
     {
       "$ref": "#/$defs/job"
+    },
+    {
+      "$ref": "#/$defs/api_error"
     }
   ],
   "$defs": {
@@ -101,6 +104,9 @@
             "max_cost_microunits",
             "currency"
           ]
+        },
+        "refresh": {
+          "type": "boolean"
         }
       },
       "required": [
@@ -174,6 +180,9 @@
                     "const": 0
                   }
                 }
+              },
+              "refresh": {
+                "const": false
               }
             }
           }
@@ -229,6 +238,7 @@
         "state": {
           "enum": [
             "queued",
+            "preflight",
             "running",
             "succeeded",
             "partial",
@@ -315,6 +325,16 @@
             "cost_microunits",
             "currency",
             "accounting"
+          ]
+        },
+        "budget": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/budget"
+            }
           ]
         }
       },
@@ -460,6 +480,7 @@
               "state": {
                 "enum": [
                   "queued",
+                  "preflight",
                   "running"
                 ]
               }
@@ -556,6 +577,25 @@
               }
             }
           }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "preflight"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "stage": {
+                "enum": [
+                  "scan",
+                  "context"
+                ]
+              }
+            }
+          }
         }
       ]
     },
@@ -571,7 +611,8 @@
             "stale-source",
             "interrupted",
             "invalid-request",
-            "consent-required"
+            "consent-required",
+            "operation-failure"
           ]
         },
         "message": {
@@ -630,6 +671,126 @@
         "source_ir_hash",
         "artifact_ids",
         "warnings"
+      ]
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Budget diagnostics of an architecture job. Unknown values are null, never zero.",
+      "properties": {
+        "requests": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "count_requests": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "remaining_requests": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "remaining_total_tokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "remaining_cost_microunits": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "max_estimated_cost_microunits": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "usage_complete": {
+          "type": "boolean"
+        },
+        "stop_reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "stop_message": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "requests",
+        "count_requests",
+        "remaining_requests",
+        "remaining_total_tokens",
+        "remaining_cost_microunits",
+        "max_estimated_cost_microunits",
+        "usage_complete",
+        "stop_reason",
+        "stop_message"
+      ]
+    },
+    "api_error": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The body of every non-2xx response of the HTTP adapter.",
+      "properties": {
+        "contract_version": {
+          "const": "1.0"
+        },
+        "kind": {
+          "const": "error"
+        },
+        "error": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "code": {
+              "enum": [
+                "invalid-request",
+                "session-required",
+                "access-denied",
+                "consent-required",
+                "not-found",
+                "conflict",
+                "stale-preview",
+                "stale-artifact",
+                "busy",
+                "queue-full",
+                "too-large",
+                "workspace-failure",
+                "operation-failure",
+                "unavailable"
+              ]
+            },
+            "message": {
+              "type": "string",
+              "minLength": 1
+            },
+            "retryable": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "retryable"
+          ]
+        }
+      },
+      "required": [
+        "contract_version",
+        "kind",
+        "error"
       ]
     }
   }

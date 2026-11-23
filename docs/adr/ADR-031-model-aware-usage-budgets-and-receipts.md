@@ -29,6 +29,7 @@ Discovery bounded rounds, requests and bytes, but not tokens or money. A byte li
 | `max_count_requests` | Token-count requests in the whole run | `max_requests` (one per request); ceiling 6 |
 | `max_input_tokens` | Prompt-side tokens in the whole run | 800,000; may only lower |
 | `max_output_tokens` | Reserved or actual output tokens in the whole run | 64,000; may only lower |
+| `max_total_tokens` | Prompt and output tokens together in the whole run (ADR-035, a web job's `max_total_tokens`) | none; may only lower; stop reason `total-token-limit` |
 | `max_cost_usd` | Aggregate cost cap | none; requires a complete `ai.prices` profile for the provider and model |
 
 `ai.effort` (`low`, `medium`, `high`) is sent only when set and only to Anthropic or OpenAI (ADR-032); Ollama refuses it. Higher effort levels need a new decision. Nothing raises a limit, changes the model or switches provider automatically.

@@ -44,6 +44,7 @@
 - After contracts: #65 grounding (separates member citation from computed claim support, ADR-028; automation cannot prove behavior and #54 review remains), #66 useful context, #67 aggregate token/cost limits (implemented, ADR-031), #69 shared application service; #68 provider integration follows usage contracts (native OpenAI Responses provider, ADR-032).
 - #71's access, credential and consent boundary (`repodocs.web.security`, ADR-033) is implemented as a pure-Python module; #69 and #72 integrate it.
 - #70 safe sources and #71 local access/credential protection precede #72 bounded HTTP jobs and #73 browser workflow. #74 scoped views runs alongside this once its dependencies land.
+- #72's bounded HTTP jobs (`repodocs.web.jobs`, `repodocs.web.app`, ADR-035) are implemented over the shared service, workspaces and security boundary, with polling, a bounded queue, idempotent submission, explicit refresh, cancellation and restart recovery. The browser workflow (#73) and packaging (#76) follow.
 - #75 interactive evidence/downloads, #76 packaging and #77 CLI/web parity complete the local baseline; #54 remains the existing real-source quality gate and owner go/no-go.
 - Each issue ships in a focused PR with relevant tests and `Closes #<issue>` once acceptance criteria are met; verify issue closure and board status after merge to main.
 
