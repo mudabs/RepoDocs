@@ -13,7 +13,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import pytest
 
 from repodocs.ai import providers
-from repodocs.ai.providers import MAX_RESPONSE_BYTES, OllamaProvider, ProviderResponse, resolve_provider
+from repodocs.ai.providers import MAX_RESPONSE_BYTES, OllamaCredential, OllamaProvider, ProviderResponse, resolve_provider
 from repodocs.config import AiSettings
 from repodocs.errors import ConfigError, ConsentError, ProviderError
 
@@ -61,8 +61,13 @@ def stop(server):
     server.server_close()
 
 
+ENV = OllamaCredential.ENVIRONMENT
+
+
 def provider(server, path="/v1"):
-    return OllamaProvider("qwen2.5-coder:3b", f"http://127.0.0.1:{server.server_port}{path}")
+    """The provider as the CLI builds it: the key, if any, comes from the environment (an explicit choice)."""
+
+    return OllamaProvider("qwen2.5-coder:3b", f"http://127.0.0.1:{server.server_port}{path}", credential=ENV)
 
 
 def run(reply=None, **options):
@@ -89,7 +94,7 @@ def test_authentication_schema_token_bound_and_result(monkeypatch):
     schema = {"type": "object", "properties": {"claims": {"type": "array"}}}
     server, received = serve(GOOD)
     try:
-        ollama = OllamaProvider("qwen2.5-coder:3b", f"http://127.0.0.1:{server.server_port}/v1", max_output_tokens=321)
+        ollama = OllamaProvider("qwen2.5-coder:3b", f"http://127.0.0.1:{server.server_port}/v1", max_output_tokens=321, credential=ENV)
         result = ollama.generate("instructions", "redacted bundle", schema)
     finally:
         stop(server)
@@ -372,6 +377,51 @@ def test_a_key_in_the_environment_is_never_sent_to_native_endpoints(monkeypatch)
     assert received[0][1] is None and received[0][0] == "/api/chat"
 
 
+# ------------------------------------------------------------------ credential source
+def test_a_provider_with_no_credential_never_sends_the_environment_key(monkeypatch):
+    """The operator's key is in the environment; a run built without the CLI's explicit choice must not use it."""
+
+    monkeypatch.setenv("REPODOCS_OLLAMA_API_KEY", SECRET)
+    server, received = serve(GOOD)
+    try:
+        result = OllamaProvider("m", f"http://127.0.0.1:{server.server_port}/v1").generate("s", "u", {})
+    finally:
+        stop(server)
+    assert result.data == {"claims": []}
+    assert received[0][0] == "/v1/chat/completions" and received[0][1] is None
+
+
+def test_a_remote_gateway_with_no_credential_is_refused_before_any_request(monkeypatch):
+    monkeypatch.setenv("REPODOCS_OLLAMA_API_KEY", SECRET)
+    with pytest.raises(ConfigError, match="needs a credential, and this run has none") as caught:
+        OllamaProvider("m", "https://gateway.example.net/v1", credential=OllamaCredential.NONE)
+    assert SECRET not in str(caught.value) and "REPODOCS_OLLAMA_API_KEY" not in str(caught.value)
+
+
+@pytest.mark.parametrize("credential", [None, "", SECRET, "environment"])
+def test_the_credential_source_is_an_explicit_choice_not_a_string_or_none(credential):
+    with pytest.raises(TypeError) as caught:
+        OllamaProvider("m", "http://127.0.0.1:11434/v1", credential=credential)
+    assert SECRET not in str(caught.value)
+
+
+def test_a_rejected_request_without_a_credential_does_not_point_at_the_environment(monkeypatch):
+    monkeypatch.setenv("REPODOCS_OLLAMA_API_KEY", SECRET)
+    server, received = serve({}, status=401)
+    try:
+        with pytest.raises(ProviderError, match="this run sent no credential") as caught:
+            OllamaProvider("m", f"http://127.0.0.1:{server.server_port}/v1").generate("s", "u", {})
+    finally:
+        stop(server)
+    assert received[0][1] is None and "REPODOCS_OLLAMA_API_KEY" not in str(caught.value)
+
+
+@pytest.mark.parametrize("host", ["http://127.0.0.1:11434", "http://127.0.0.1:11434/v1", "https://gateway.example.net/v1"])
+def test_the_cli_resolver_is_what_chooses_the_environment(host):
+    settings = AiSettings(provider="ollama", model="m", ollama_host=host, external_consent=True)
+    assert resolve_provider(settings).credential is OllamaCredential.ENVIRONMENT
+
+
 def test_the_credential_never_reaches_a_persisted_artifact_or_the_cli_output(tmp_path, capsys, monkeypatch):
     """A failing and a succeeding gateway run through the real CLI, with the key only in the environment."""
 
@@ -432,7 +482,7 @@ def test_shared_discovery_transport(tmp_path, capsys, monkeypatch, transport, sc
     try:
         ollama = OllamaProvider(
             "m", f"http://127.0.0.1:{server.server_port}{transport}",
-            context_window=65536, max_output_tokens=321,
+            context_window=65536, max_output_tokens=321, credential=ENV,
         )
         limits = RunLimits(max_requests=1) if scenario == "budget" else None
         if scenario == "admission":

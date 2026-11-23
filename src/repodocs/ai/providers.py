@@ -7,6 +7,7 @@ returns the parsed JSON object plus the model that served it.
 
 from __future__ import annotations
 
+import enum
 import http.client
 import ipaddress
 import json
@@ -243,6 +244,19 @@ def _openai_completion_text(payload: dict[str, Any]) -> str:
     return content
 
 
+class OllamaCredential(enum.Enum):
+    """Where an Ollama /v1 gateway key comes from. There is deliberately no default that reads the environment.
+
+    ``ENVIRONMENT`` is the CLI's choice (``resolve_provider``): the key is ``REPODOCS_OLLAMA_API_KEY``, read when a request
+    is made. ``NONE`` means this run has no credential: the environment is never read, a loopback ``/v1`` host gets no
+    ``Authorization`` header and a remote ``/v1`` gateway is refused before any request. A caller that holds keys for
+    other people's sessions (the web service) uses ``NONE``, so it can never send the operator's key.
+    """
+
+    ENVIRONMENT = "environment"
+    NONE = "none"
+
+
 class OllamaProvider:
     """Ollama through its native /api/chat or an authenticated Ollama-compatible /v1 gateway.
 
@@ -256,8 +270,11 @@ class OllamaProvider:
     name = AI_PROVIDER_OLLAMA
 
     def __init__(
-        self, model: str | None, host: str | None, *, context_window: int | None = None, max_output_tokens: int | None = None
+        self, model: str | None, host: str | None, *, context_window: int | None = None, max_output_tokens: int | None = None,
+        credential: OllamaCredential = OllamaCredential.NONE,
     ) -> None:
+        if not isinstance(credential, OllamaCredential):
+            raise TypeError("credential must be an OllamaCredential")
         if not model:
             raise ConfigError("The ollama provider needs a model; set one with repodocs ai-configure --provider ollama --model NAME")
         self.model = model
@@ -275,6 +292,9 @@ class OllamaProvider:
         self.external = not is_loopback(self.host)
         if self.openai_compatible and self.external and parts.scheme != "https":
             raise ConfigError("A remote Ollama /v1 gateway must use HTTPS")
+        if self.openai_compatible and self.external and credential is OllamaCredential.NONE:
+            raise ConfigError("A remote Ollama /v1 gateway needs a credential, and this run has none")
+        self.credential = credential
         self.context_window = context_window or DEFAULT_CONTEXT_WINDOWS[AI_PROVIDER_OLLAMA]
         self.max_output_tokens = max_output_tokens or min(MAX_OUTPUT_TOKENS, self.context_window // 2)
 
@@ -304,7 +324,8 @@ class OllamaProvider:
         url = f"{self.host}/api/chat"
         if self.openai_compatible:
             url = f"{self.host}/chat/completions"
-            key = os.environ.get("REPODOCS_OLLAMA_API_KEY", "").strip()
+            # Only the CLI's explicit choice reads the environment; a run with no credential never does.
+            key = os.environ.get("REPODOCS_OLLAMA_API_KEY", "").strip() if self.credential is OllamaCredential.ENVIRONMENT else ""
             if self.external and not key:
                 raise ConfigError("The remote Ollama /v1 gateway needs REPODOCS_OLLAMA_API_KEY in the environment")
             if key and not (key.isascii() and key.isprintable()):
@@ -326,7 +347,8 @@ class OllamaProvider:
                     "is not sent anywhere else; configure the final host address"
                 ) from None
             if self.openai_compatible and exc.code in (401, 403):
-                raise ProviderError(f"Ollama gateway authentication failed (HTTP {exc.code}); check REPODOCS_OLLAMA_API_KEY") from None
+                hint = "check REPODOCS_OLLAMA_API_KEY" if self.credential is OllamaCredential.ENVIRONMENT else "this run sent no credential"
+                raise ProviderError(f"Ollama gateway authentication failed (HTTP {exc.code}); {hint}") from None
             if self.openai_compatible and exc.code == 429:
                 raise ProviderError("Ollama gateway is rate-limiting requests (HTTP 429)") from None
             raise ProviderError(f"Ollama error (HTTP {exc.code}); is the model pulled and gateway configured?") from None
@@ -431,6 +453,7 @@ def resolve_provider(settings: AiSettings) -> Provider | None:
         provider = OllamaProvider(
             settings.model, settings.ollama_host,
             context_window=limits.context_window_tokens, max_output_tokens=limits.request_output_tokens,
+            credential=OllamaCredential.ENVIRONMENT,
         )
     if provider.external and not settings.external_consent:
         raise ConsentError(
