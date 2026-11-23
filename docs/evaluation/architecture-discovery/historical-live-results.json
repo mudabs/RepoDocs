@@ -1,0 +1,128 @@
+{
+  "kind": "historical-live-observations",
+  "epic": 47,
+  "issue": 54,
+  "summary": "Two saved smoke-test observations from live inference with a small local-family model on a remote Ollama endpoint. They are not new runs, were not repeated, and are not verification of the current head. The two runs used different engine revisions, so they are not a controlled comparison. Neither run's architecture quality is accepted. The owner decision is pending.",
+  "sanitized": "Local paths, hostnames, credentials, and source excerpts were removed. Values below were copied from the saved reports, not recomputed.",
+  "current_model_quality": "not accepted",
+  "owner_decision": "pending",
+  "observations": [
+    {
+      "subject": "flaskr",
+      "date": "2026-11-19",
+      "source_revision": "49943b5a94413a530761350f04e896f76e8d620e",
+      "source_revision_kind": "commit",
+      "engine": {
+        "base_revision": "4c02026b9fe159341055ef10c51f2f7ad49afdcd",
+        "gateway_revision": "0e36b560f86bca71e64de1f540d12726564a1e29",
+        "note": "scratch merge, D41/D42 retained",
+        "engine_version": "0.1.0"
+      },
+      "engine_differs_from_other_observation": true,
+      "provider": "ollama",
+      "external": true,
+      "requested_model": "qwen2.5-coder:1.5b",
+      "served_model": "qwen2.5-coder:1.5b",
+      "source_consent": "Owner authorized public excerpts of both subjects to an owner-controlled remote endpoint in chat on 2026-11-19; recorded with the existing CLI controls.",
+      "discovery": {
+        "status": "partial",
+        "partial_reason": "incomplete-response",
+        "rounds": 1,
+        "requests": 1,
+        "seconds": 98.2,
+        "context_bytes": 2936,
+        "prompt_tokens": 1962,
+        "completion_tokens": 1286,
+        "finish_reason": "stop",
+        "components": 3,
+        "connections": 0,
+        "inferred": 3,
+        "proposed": 0,
+        "rejected_by_validation": {
+          "unknown-component": 10,
+          "unsupported-component": 6
+        }
+      },
+      "structural": {
+        "scan": "passed",
+        "generate": "passed",
+        "validate": "passed",
+        "citations": 3,
+        "citations_resolving": 3,
+        "member_paths_in_snapshot": "3 of 3",
+        "evidence_items_with_commit_link": "3 of 3"
+      },
+      "semantic": {
+        "component_precision": 0.3333,
+        "component_recall": 0.2,
+        "components_matched": 1,
+        "required_expected_components": 5,
+        "unmatched_claims": 2,
+        "missing_expected_components": ["Application factory", "Authentication", "Blog", "Database"],
+        "connections_expected": 8,
+        "connections_covered": 0,
+        "connection_precision": null,
+        "connection_recall": 0.0,
+        "human_review_verdicts": "none recorded"
+      },
+      "server_observation": {
+        "context_tokens": 4096,
+        "model_size": "1.2 GB",
+        "processor": "17% CPU / 83% GPU"
+      }
+    },
+    {
+      "subject": "digitalbonebox",
+      "date": "not recorded in the saved file",
+      "status": "partial-smoke-test-only",
+      "source_revision": "602e9c53c656f55b5e69b1a4dd4c6f79e53b368c",
+      "engine": {
+        "preview_revision": "59d80c72845e5330517ea4a72845878eae55ae98"
+      },
+      "engine_differs_from_other_observation": true,
+      "provider": "ollama",
+      "requested_model": "qwen2.5-coder:1.5b",
+      "owner_direction": "Remote endpoint for limited smoke tests; the university endpoint was not yet available.",
+      "server_configuration_changed": false,
+      "discovery": {
+        "status": "partial",
+        "partial_reason": "round-budget",
+        "components": 2,
+        "connections": 2,
+        "prompt_tokens": 1647,
+        "generated_tokens": 1053,
+        "http_duration_as_logged": "1m10s"
+      },
+      "structural": {
+        "scan": "passed",
+        "context_preview": "passed",
+        "provider_configuration": "passed",
+        "generate": "passed",
+        "validate": "passed",
+        "real_mermaid_renderer": "rendered"
+      },
+      "semantic": {
+        "architecture_quality": "not accepted",
+        "findings": [
+          "The User Interface component is assigned backend member files.",
+          "The GET /bones and POST /bones endpoint labels are not supported by the cited files."
+        ],
+        "precision_recall": "not scored; no score was saved for this run"
+      },
+      "server_observation": {
+        "context_tokens": 4096,
+        "processor": "17% CPU / 83% GPU"
+      },
+      "earlier_3b_attempts": {
+        "note": "A 3B model, exact tag not saved. The saved file records the limits below and lists them as attempts before the 1.5B smoke test; the outcome was truncation and request timeouts.",
+        "full_prompt_tokens": 14946,
+        "full_prompt_truncated_to_tokens": 2050,
+        "full_request_timeout_seconds": 300,
+        "compact_prompt_tokens": 1647,
+        "compact_request_timeout_seconds": 300
+      },
+      "launcher_fix": "A null data field in error JSON is now displayed safely; a regression test passed. This is a launcher fix, not an engine change."
+    }
+  ],
+  "credentials": "A credential, where the endpoint needed one, was kept in memory only and was not logged or saved."
+}

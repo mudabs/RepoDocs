@@ -1,0 +1,63 @@
+{
+  "name": "digitalbonebox",
+  "source": {
+    "repository": "https://github.com/oss-slu/DigitalBoneBox",
+    "revision": "602e9c53c656f55b5e69b1a4dd4c6f79e53b368c",
+    "revision_date": "2026-11-09",
+    "license": "MIT (LICENSE in the repository root)",
+    "stack": "Node.js and Express API, vanilla JavaScript and HTML client, JSON data files, Python extraction scripts"
+  },
+  "written": "Before any output was scored, by reading the files named in each entry. Competitor diagrams were not used.",
+  "components": [
+    {
+      "name": "Study web client",
+      "kind": "frontend",
+      "members": ["templates/**"],
+      "inspected": "templates/boneset.html, templates/js/main.js, templates/js/api.js, templates/js/scenes.js"
+    },
+    {
+      "name": "Boneset API",
+      "kind": "backend-service",
+      "members": ["boneset-api/server.js", "boneset-api/images.js"],
+      "inspected": "boneset-api/server.js routes /combined-data, /api/colored-regions, /api/description, /api/bone-data, /api/annotations/:boneId, /api/search; boneset-api/images.js image catalog"
+    },
+    {
+      "name": "Scenes service",
+      "kind": "backend-service",
+      "members": ["boneset-api/scenes.js", "boneset-api/legacyImport.js", "boneset-api/legacyAnnotations.js"],
+      "inspected": "boneset-api/scenes.js router.get/post/put/delete on /api/scenes; a file store and an optional Upstash Redis store"
+    },
+    {
+      "name": "Anatomy dataset",
+      "kind": "storage",
+      "members": ["boneset-api/data/**"],
+      "inspected": "boneset-api/server.js reads the data directories under boneset-api/data"
+    },
+    {
+      "name": "Data extraction scripts",
+      "kind": "background-job",
+      "required": false,
+      "members": ["data_extraction/**"],
+      "inspected": "data_extraction/*.py read PowerPoint files and write JSON and images into an output directory given on the command line"
+    },
+    {
+      "name": "Serverless entry",
+      "kind": "other",
+      "deployment": true,
+      "members": ["api/index.js", "vercel.json"],
+      "inspected": "api/index.js re-exports the Express app; vercel.json rewrites every path to it. This is deployment, not an application dependency."
+    }
+  ],
+  "relationships": [
+    {"source": "Study web client", "target": "Boneset API", "kinds": ["calls"], "inspected": "templates/js/api.js:21,57,96,129,148 fetch the API; boneset-api/server.js routes"},
+    {"source": "Study web client", "target": "Scenes service", "kinds": ["calls"], "inspected": "templates/js/scenes.js:21 SCENES_URL = /api/scenes; boneset-api/scenes.js"},
+    {"source": "Boneset API", "target": "Anatomy dataset", "kinds": ["reads"], "inspected": "boneset-api/server.js:24-31 directory constants and the handlers that read them"},
+    {"source": "Boneset API", "target": "Scenes service", "kinds": ["depends-on", "serves", "calls"], "inspected": "boneset-api/server.js:35 app.use('/api/scenes', createScenesRouter())"},
+    {"source": "Serverless entry", "target": "Boneset API", "kinds": ["depends-on", "serves", "calls"], "deployment": true, "inspected": "api/index.js requires boneset-api/server.js"}
+  ],
+  "not_established": [
+    {"source": "Data extraction scripts", "target": "Anatomy dataset", "why": "The output directory is a command-line argument; no file names the dataset directory as the target."},
+    {"source": "Study web client", "target": "Anatomy dataset", "why": "The client reads the dataset only through the API, never directly."},
+    {"source": "Anatomy dataset", "target": "Boneset API", "why": "Data does not call the API; the direction is reversed."}
+  ]
+}

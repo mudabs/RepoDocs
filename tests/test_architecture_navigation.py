@@ -199,7 +199,9 @@ def test_several_repositories_link_to_their_own_commits_and_remotes(tmp_path: Pa
     assert "(unconfirmed)" in artifacts["architecture-view.mmd"]
 
 
-def test_uncommitted_content_is_labelled_and_never_linked_to_a_commit(tmp_path: Path, capsys) -> None:
+def test_uncommitted_content_is_labelled_and_never_linked_to_a_commit(tmp_path: Path, capsys, monkeypatch) -> None:
+    # This checks exported provenance, not rendering; keep it independent of optional Node tooling.
+    monkeypatch.setattr("repodocs.architecture.export.mermaid_bundle", lambda _directory: "/* test bundle */")
     root_git, path = make_repository(tmp_path, "shop", "https://github.com/acme/shop")
     (path / "server.js").write_text((path / "server.js").read_text(encoding="utf-8") + "// local change\n", encoding="utf-8")
     root, config, ir = scanned(tmp_path, capsys, {"shop": path}, html=True)
@@ -213,6 +215,7 @@ def test_uncommitted_content_is_labelled_and_never_linked_to_a_commit(tmp_path: 
     assert items and all(item["link"] is None for item in items)
     assert {item["state"] for entry in evidence["components"].values() for item in entry["evidence"]} == {"working-tree"}
     assert "no source link is offered" in evidence["repositories"][0]["note"]
+    assert HTML_NAME in artifacts
     assert "github.com/acme/shop/blob" not in "".join(artifacts.values()), "a commit link was offered for uncommitted content"
 
 
@@ -582,3 +585,14 @@ def test_the_real_page_stays_inert_with_hostile_text_and_unlinked_for_uncommitte
     assert report["drawn"] and report["dialogs"] == [] and report["violations"] == [] and report["requests"] == []
     assert report["links"] == [], "uncommitted content must not link to a commit"
     assert report["scripts"] == 3
+
+
+def test_dark_mode_keeps_the_drawing_light_and_the_links_readable() -> None:
+    """Found by looking at the page in dark mode (#54): dark links on a dark panel, and edge labels on a dark ground."""
+
+    view, evidence = small_view()
+    html = build_html(view, render_view(view), evidence, "window.mermaid = {};")
+    dark = html.split("prefers-color-scheme: dark", 1)[1].split("</style>", 1)[0]
+
+    assert "#stage" not in dark and "aside a" in dark and "#58a6ff" in dark
+    assert "#stage { flex: 1; overflow: hidden; position: relative; cursor: grab; background: #f6f8fa; }" in html

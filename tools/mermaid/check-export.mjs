@@ -1,5 +1,5 @@
 // Loads a RepoDocs architecture export in a real browser and reports what happened, as JSON.
-// Optional tooling: used by the test suite only. Usage: node check-export.mjs <file> <browser> [--no-sandbox]
+// Optional tooling: used by the test suite only. Usage: node check-export.mjs <file> <browser> [--no-sandbox|--] [screenshot.png]
 //
 // Every launch gets its own new profile directory, which this script removes afterwards. A launch that fails is
 // tried once more with another new profile (LAUNCH_ATTEMPTS in all) and every failure is reported, so a retry never
@@ -13,7 +13,7 @@ import { pathToFileURL } from 'node:url';
 
 const LAUNCH_ATTEMPTS = 2;
 
-const [file, browser, flag] = process.argv.slice(2);
+const [file, browser, flag, screenshot] = process.argv.slice(2);
 const report = { dialogs: [], console: [], violations: [], requests: [], clicked: null, alternative: null, zoomed: false, drawn: false, links: [] };
 async function launch() {
   const failures = [];
@@ -66,6 +66,7 @@ try {
   }
   report.violations = await page.evaluate(() => window.__violations || []);
   report.scripts = await page.$$eval('script', (nodes) => nodes.length);
+  if (screenshot) { await page.screenshot({ path: screenshot }); }
 } finally {
   await instance.close();
   await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
