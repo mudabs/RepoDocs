@@ -26,6 +26,7 @@ This contract (#64, epic #63) is implemented on the backend by the local HTTP jo
 
 - `repodocs.web.security` is implemented and tested without HTTP. #72 must call `SessionGuard.authorize` first on every request (and `open_session` for the first same-origin contact, which needs no OAuth), apply `response_headers`, and never add CORS headers. Non-loopback exposure needs `AccessConfig` with an HTTPS origin and an auth token.
 - Provider credentials arrive per request into `ProviderSessions`, stay in memory and are never returned (`public_view` is the browser form). Consent receipts come from `ConsentLedger.grant` after the preview. #69 must run every model, token-count and retry request through `RunGate.call`, so revoked, expired, missing or mismatched consent starts nothing.
+- An Ollama session takes no credential, and a remote authenticated Ollama `/v1` gateway is refused before any request; such gateways are CLI-only in this release (ADR-036). A web run never reads `REPODOCS_OLLAMA_API_KEY` or any other operator environment credential.
 - Not provided: persistent or secure credential storage, login rate limiting, an HTTP server and UI rendering. Loopback trusts local processes of the same machine.
 
 ## State and recovery rules

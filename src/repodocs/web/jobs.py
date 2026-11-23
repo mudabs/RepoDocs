@@ -32,6 +32,7 @@ from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable, Mapping
+from urllib.parse import urlsplit
 
 from .. import service
 from ..ai.budgets import PriceProfile, RunLimits, RunStopped, ledger_for
@@ -223,6 +224,10 @@ def build_provider(context: ProviderContext, limits: RunLimits) -> Provider:
         return OpenAIProvider(context.model, context.host, api_key=secret or "", max_output_tokens=limits.request_output_tokens or 0)
     if secret is not None:
         raise ConfigError("An Ollama provider session takes no credential in this release")
+    # Authenticated /v1 gateways are CLI-only (ADR-020, ADR-036): a web run has no gateway credential and must never borrow
+    # the operator's REPODOCS_OLLAMA_API_KEY, so a remote gateway is refused here, before any request.
+    if urlsplit(context.host).path.rstrip("/") == "/v1" and not is_loopback(context.host):
+        raise ConfigError("Authenticated Ollama /v1 gateways are not available to web sessions in this release; use the CLI")
     return OllamaProvider(context.model, context.host, context_window=limits.context_window_tokens, max_output_tokens=limits.request_output_tokens)
 
 
@@ -771,7 +776,11 @@ class JobService:
                     self._cond.notify_all()
 
     def _transition(self, job: _Job, state: str, stage: str) -> None:
+        """Move an active job to its next stage. A job that already ended keeps its terminal state."""
+
         with self._cond:
+            if job.state not in ACTIVE_STATES:
+                raise service.Cancelled("The job already ended")
             job.state, job.stage = state, stage
             job.sequence += 1
             self._persist(job)
@@ -799,6 +808,8 @@ class JobService:
                 return
             summary = _summary_of(event.usage)
             with self._cond:
+                if job.state not in ACTIVE_STATES:
+                    return
                 job.usage, job.budget = _usage(summary), _budget(summary)
                 job.sequence += 1
                 self._persist(job)

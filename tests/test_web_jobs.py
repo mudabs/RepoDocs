@@ -496,13 +496,22 @@ def test_a_cancel_between_dequeue_and_preflight_stops_the_job_before_any_work(tm
         assert settled.status_code == 200 and settled.json()["state"] == "cancelled", "a queued job still settles at once"
         release.set()
         job = api.wait(first["job_id"])
+        root = workspace_root(tmp_path, workspace)
+        assert scans == [] and not (root / "destination" / "docs" / "generated").exists(), "the job never scanned or generated"
+        monkeypatch.setattr(JobService, "_run", run)
+        # The cancelled job released its workspace and the queue: the next job claims it and runs to the end.
+        after = api.wait(api.submit(request(workspace, key="k4", mode="deterministic")).json()["job_id"])
+        assert after["state"] == "succeeded", after
+        # A late transition can never move the cancelled job out of its terminal state.
+        record = jobs._jobs[first["job_id"]]
+        with pytest.raises(shared.Cancelled):
+            jobs._transition(record, "running", "generate")
+        assert api.job(first["job_id"]) == job
 
     assert all(response.status_code < 500 for response in api.seen)
     assert job["state"] == "cancelled" and job["error"]["code"] == "cancelled" and job["result"] is None
     assert job["usage"] == {"input_tokens": 0, "output_tokens": 0, "cost_microunits": 0, "currency": None, "accounting": "known"}
-    assert factory.contexts == [] and scans == [], "no provider was built and the job never scanned"
-    root = workspace_root(tmp_path, workspace)
-    assert not (root / "destination" / "docs" / "generated").exists(), "no artifact was generated"
+    assert factory.contexts == [] and len(scans) == 1, "no provider was built and only the later job scanned"
     assert json.loads((root / "jobs" / f"{first['job_id']}.json").read_text(encoding="utf-8"))["job"]["state"] == "cancelled"
 
 
@@ -857,6 +866,121 @@ def test_secret_canaries_never_leave_the_backend(tmp_path: Path, caplog) -> None
         if path.is_file():
             assert CANARY.encode() not in path.read_bytes(), path
     assert CANARY not in caplog.text
+
+
+# ------------------------------------------------------------------ the real factory and transport
+OPERATOR_KEY = "operator-env-canary-0123456789"
+
+
+def ollama_stand_in(received: list[tuple[int, str, str | None]], barrier: threading.Barrier | None = None) -> Any:
+    """A loopback Ollama that answers both transports with a complete discovery answer and records what it was sent."""
+
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            received.append((self.server.server_port, self.path, self.headers.get("Authorization")))
+            if barrier is not None:
+                barrier.wait()  # both sessions have a request in flight at the same time
+            content = json.dumps(full_answer(json.loads(body["messages"][1]["content"])))
+            if self.path.endswith("/chat/completions"):
+                reply = {"model": body["model"], "choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": content}}],
+                         "usage": {"prompt_tokens": 11, "completion_tokens": 7}}
+            else:
+                reply = {"model": body["model"], "done": True, "done_reason": "stop", "message": {"content": content},
+                         "prompt_eval_count": 11, "eval_count": 7}
+            payload = json.dumps(reply).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *args: Any) -> None:
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+def assert_no_operator_key(tmp_path: Path, apis: list[Api], caplog: Any) -> None:
+    for api in apis:
+        for response in api.seen:
+            assert OPERATOR_KEY.encode() not in response.content and OPERATOR_KEY not in str(response.headers)
+    for path in (tmp_path / "store").rglob("*"):
+        if path.is_file():
+            assert OPERATOR_KEY.encode() not in path.read_bytes(), path
+    assert OPERATOR_KEY not in caplog.text
+
+
+def test_concurrent_web_ollama_sessions_never_send_the_operator_environment_key(tmp_path: Path, monkeypatch, caplog) -> None:
+    """The real factory and transport: the operator's REPODOCS_OLLAMA_API_KEY is set, two sessions run at once, one against a
+    native host and one against a loopback /v1 host. Neither request carries any credential, and each goes only to its own host."""
+
+    from repodocs.web.jobs import build_provider
+
+    monkeypatch.setenv("REPODOCS_OLLAMA_API_KEY", OPERATOR_KEY)
+    caplog.set_level("DEBUG")
+    received: list[tuple[int, str, str | None]] = []
+    barrier = threading.Barrier(2, timeout=30)
+    native, gateway = ollama_stand_in(received, barrier), ollama_stand_in(received, barrier)
+    try:
+        with running(tmp_path, build_provider, max_active_jobs=2) as (first, app, _factory):  # type: ignore[arg-type]
+            second = Api(TestClient(app, base_url=ORIGIN))
+            jobs = []
+            for api, host in ((first, f"http://127.0.0.1:{native.server_port}"), (second, f"http://127.0.0.1:{gateway.server_port}/v1")):
+                workspace = api.workspace()
+                provider = api.provider("ollama", host)
+                preview = api.preview(workspace, provider)
+                response = api.submit(request(workspace, provider=provider, context=preview["context_hash"]))
+                assert response.status_code == 202, response.text
+                jobs.append((api, response.json()["job_id"]))
+            done = [api.wait(job_id) for api, job_id in jobs]
+            # Sessions are isolated: one cannot see the other's job.
+            assert second.get(f"/api/v1/jobs/{jobs[0][1]}").status_code == 404
+    finally:
+        for server in (native, gateway):
+            server.shutdown()
+            server.server_close()
+
+    assert [job["state"] for job in done] == ["succeeded", "succeeded"], done
+    assert all(job["usage"]["input_tokens"] == 11 and job["usage"]["output_tokens"] == 7 for job in done)
+    by_host = {port: [(path, auth) for p, path, auth in received if p == port] for port in (native.server_port, gateway.server_port)}
+    assert by_host[native.server_port] == [("/api/chat", None)], "native Ollama never receives an Authorization header"
+    assert len(by_host[gateway.server_port]) == 1 and by_host[gateway.server_port][0][0].startswith("/v1/")
+    assert by_host[gateway.server_port][0][1] is None, "a session without a key never sends the operator's key"
+    assert_no_operator_key(tmp_path, [first, second], caplog)
+
+
+@pytest.mark.parametrize("case", ["remote-gateway", "session-key"])
+def test_unsupported_ollama_web_credentials_are_refused_before_any_request(tmp_path: Path, monkeypatch, caplog, case: str) -> None:
+    """Authenticated Ollama gateways stay CLI-only: a web run is refused before anything is sent, and never borrows the
+    operator's key. An Ollama session that brings its own key is refused the same way."""
+
+    from repodocs.web.jobs import build_provider
+
+    monkeypatch.setenv("REPODOCS_OLLAMA_API_KEY", OPERATOR_KEY)
+    caplog.set_level("DEBUG")
+    opened: list[Any] = []
+    monkeypatch.setattr(provider_module, "_opener", lambda external: opened.append(external) or pytest.fail("a request was attempted"))
+    with running(tmp_path, build_provider) as (api, _, _factory):  # type: ignore[arg-type]
+        workspace = api.workspace()
+        if case == "remote-gateway":
+            provider = api.provider("ollama", "https://gateway.example.net/v1")
+            preview = api.preview(workspace, provider)
+            receipt = api.consent(workspace, provider, preview["context_hash"]).json()["consent_receipt_id"]
+            message = "not available to web sessions"
+        else:
+            provider = api.provider("ollama", "http://127.0.0.1:9/v1", api_key=CANARY)
+            preview = api.preview(workspace, provider)
+            receipt, message = None, "takes no credential"
+        job = api.wait(api.submit(request(workspace, provider=provider, context=preview["context_hash"], receipt=receipt)).json()["job_id"])
+
+    assert job["state"] == "failed" and job["error"]["code"] == "operation-failure" and message in job["error"]["message"], job
+    assert job["result"] is None and opened == []
+    assert CANARY not in json.dumps(job)
+    assert_no_operator_key(tmp_path, [api], caplog)
 
 
 def test_oversized_bodies_are_refused_before_they_are_read(tmp_path: Path) -> None:
