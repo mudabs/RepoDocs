@@ -10,16 +10,16 @@ validation code; they do not reimplement it.
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Protocol, TypeVar
 
-from .ai.budgets import RunLimits, RunStopped, budgeted, ledger_for, write_receipt
+from .ai.budgets import BudgetedProvider, RunLimits, RunStopped, budgeted, ledger_for, write_receipt
 from .ai.providers import Provider, ProviderResponse, require_source_consent
 from .common import write_json
 from .confirmations import apply_decisions, load_decisions, status_counts, unresolved_candidates
-from .config import ProjectConfig
+from .config import SOURCE_POLICY_VERSION, AiSettings, ProjectConfig
 from .errors import (
     EXIT_AI_PROVIDER,
     EXIT_CONFIRMATION,
@@ -75,8 +75,11 @@ class CancellationToken:
 
 @dataclass(frozen=True)
 class ProgressEvent:
+    """A stage reached. ``usage`` is set on ``provider-response`` events: the run ledger's snapshot after a request."""
+
     operation: str
     stage: str
+    usage: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -99,6 +102,22 @@ def _checkpoint(hooks: RunHooks, operation: str, stage: str) -> None:
     _stop_if_cancelled(hooks, operation, stage)
     if hooks.progress is not None:
         hooks.progress(ProgressEvent(operation, stage))
+
+
+T = TypeVar("T")
+
+
+class ConsentGate(Protocol):
+    """A per-run consent and credential check held by an adapter (``repodocs.web.security.RunGate``, ADR-033).
+
+    ``call`` re-checks the session, the credential and the consent immediately before ``operation`` runs and raises
+    when any is missing, revoked, expired or for another provider, host, model, policy or preview.
+    """
+
+    @property
+    def kinds(self) -> frozenset[str]: ...
+
+    def call(self, operation: Callable[[Any], T]) -> T: ...
 
 
 # ------------------------------------------------------------------ requests
@@ -129,11 +148,15 @@ class DiscoverRequest(ProjectRequest):
 
     ``limits`` are this run's own usage limits. They can only lower the project's ``ai.limits`` (ADR-031). The service
     wraps the provider in a run ledger after the consent checks, unless the caller passes one already budgeted.
+
+    ``gate`` replaces the project's recorded consent for this run only: every model and token-count request goes through
+    it, inside the ledger, so a refusal sends and reserves nothing. Consent from a gate is never written to the project.
     """
 
     provider: Provider | None = None
     refresh: bool = False
     limits: RunLimits | None = None
+    gate: ConsentGate | None = None
 
 
 @dataclass(frozen=True)
@@ -231,9 +254,12 @@ def _view_status(config: ProjectConfig, ir: dict[str, Any]) -> str:
 
 class _CancellableProvider:
     """Checks for cancellation before each request. The raised ``Cancelled`` is not a ``ProviderError``,
-    so discovery does not turn it into a partial view; it leaves the run unstored."""
+    so discovery does not turn it into a partial view; it leaves the run unstored.
 
-    def __init__(self, inner: Provider, hooks: RunHooks) -> None:
+    After each request, answered or not, it reports the run ledger's snapshot as a ``provider-response`` event.
+    """
+
+    def __init__(self, inner: BudgetedProvider, hooks: RunHooks) -> None:
         self._inner = inner
         self._hooks = hooks
         self.name, self.model, self.external = inner.name, inner.model, inner.external
@@ -244,7 +270,44 @@ class _CancellableProvider:
 
     def generate(self, system: str, user: str, schema: dict[str, Any]) -> ProviderResponse:
         _checkpoint(self._hooks, "discover", "provider-request")
-        return self._inner.generate(system, user, schema)
+        try:
+            return self._inner.generate(system, user, schema)
+        finally:
+            if self._hooks.progress is not None:
+                self._hooks.progress(ProgressEvent("discover", "provider-response", usage=self._inner.ledger.snapshot()))
+
+
+class _GatedProvider:
+    """Sends every model and token-count request through the caller's gate (ADR-033). It sits inside the run ledger,
+    so a request the gate refuses is never sent and a count it refuses is never made."""
+
+    def __init__(self, inner: Provider, gate: ConsentGate) -> None:
+        self._inner = inner
+        self._gate = gate
+        self.name, self.model, self.external = inner.name, inner.model, inner.external
+        # Pure attributes the ledger reads: the exact request body and the output cap the provider sends.
+        for attribute in ("request_body", "max_output_tokens"):
+            if hasattr(inner, attribute):
+                setattr(self, attribute, getattr(inner, attribute))
+        counter = getattr(inner, "count_input_tokens", None)
+        if counter is not None:
+            self.count_input_tokens = lambda system, user, schema: gate.call(lambda _context: counter(system, user, schema))
+
+    def generate(self, system: str, user: str, schema: dict[str, Any]) -> ProviderResponse:
+        return self._gate.call(lambda _context: self._inner.generate(system, user, schema))
+
+
+def _gate_settings(provider: Provider, gate: ConsentGate, settings: AiSettings) -> AiSettings:
+    """This run's consent from the caller's gate: checked now, held in memory, and never written to the project."""
+
+    if provider.external and not {"external", "source-excerpts"} <= gate.kinds:
+        raise ConsentError(
+            f"The {provider.name} provider is external: architecture discovery needs both external and source-excerpt consent"
+        )
+    gate.call(lambda _context: None)  # admission: the session, the credential and the consent are live now
+    if not provider.external:
+        return settings
+    return replace(settings, external_consent=True, source_excerpts_consent=True, source_consent_policy=SOURCE_POLICY_VERSION)
 
 
 # ------------------------------------------------------------------ operations
@@ -367,17 +430,27 @@ def discover(request: DiscoverRequest, hooks: RunHooks = NO_HOOKS) -> WorkflowRe
             "Architecture discovery needs an AI provider; choose one with `repodocs ai-configure --provider ollama --model <name>`. "
             "Scan, generate, and validate work without one"
         )
+    settings, gate = config.ai, request.gate
+    if gate is not None:
+        settings = _gate_settings(provider, gate, settings)
+        provider = _GatedProvider(provider, gate)
     # Both consent scopes are re-checked here, in the CLI resolver's order, because an adapter injects providers
     # directly and so never passes through that resolver.
-    if provider.external and not config.ai.external_consent:
+    if provider.external and not settings.external_consent:
         raise ConsentError(
             f"The {provider.name} provider would send the evidence bundle off this machine and no consent is "
             "recorded; this project is local-only. Review the bundle with `repodocs ai-bundle`, then run "
             "`repodocs ai-configure --consent-external` to allow it"
         )
-    require_source_consent(provider, config.ai)
+    require_source_consent(provider, settings)
+
+    def before_send() -> None:
+        _stop_if_cancelled(hooks, "discover", "provider-request")
+        if gate is not None:
+            gate.call(lambda _context: None)  # refused here, before the ledger reserves anything
+
     # Every request, count, retry and repair of this run is reserved in one ledger, created only after consent.
-    budget = budgeted(provider, config.ai, request.limits, before_send=lambda: _stop_if_cancelled(hooks, "discover", "provider-request"))
+    budget = budgeted(provider, settings, request.limits, before_send=before_send)
     preview, _ = build_context(config, ir)
     write_json(config.internal_path / CONTEXT_FILENAME, preview)
     try:

@@ -146,9 +146,13 @@ def test_progress_events_report_each_stage_without_a_server(tmp_path: Path, caps
     service.generate(GenerateRequest(root), hooks)
     assert [(item.operation, item.stage) for item in events] == [
         ("scan", "scanning"), ("scan", "writing-ir"),
-        ("discover", "loading"), ("discover", "provider-request"), ("discover", "storing-view"),
+        ("discover", "loading"), ("discover", "provider-request"), ("discover", "provider-response"), ("discover", "storing-view"),
         ("generate", "loading"), ("generate", "writing-artifacts"),
     ]
+    # Only a provider response carries usage: the run ledger's snapshot after that request.
+    response = next(item for item in events if item.stage == "provider-response")
+    assert response.usage is not None and response.usage["totals"]["requests"] == 1
+    assert all(item.usage is None for item in events if item.stage != "provider-response")
 
 
 def test_cancelling_before_a_scan_writes_nothing(tmp_path: Path, capsys) -> None:
@@ -394,3 +398,60 @@ def test_concurrent_runs_keep_their_own_provider_and_never_touch_the_environment
         assert providers_[index].seen_environment == [None]
     assert "REPODOCS_TEST_CREDENTIAL" not in os.environ
     assert "sk-secret" not in json.dumps([item.to_dict() for item in results.values()])
+
+
+# ------------------------------------------------------------------ a per-run consent gate (ADR-033, #72)
+class Gate:
+    """A stand-in for ``RunGate``: it counts calls and can refuse from a given call on."""
+
+    def __init__(self, kinds: frozenset[str] = frozenset({"external", "source-excerpts"}), refuse_from: int | None = None) -> None:
+        self.kinds, self.refuse_from, self.calls = kinds, refuse_from, 0
+
+    def call(self, operation: Any) -> Any:
+        from repodocs.web.security import ConsentRequired
+
+        self.calls += 1
+        if self.refuse_from is not None and self.calls >= self.refuse_from:
+            raise ConsentRequired("revoked")
+        return operation(None)
+
+
+def test_a_gate_supplies_consent_for_one_run_and_it_is_never_written(tmp_path: Path, capsys) -> None:
+    root = project(tmp_path, capsys)
+    before = (root / "repodocs.json").read_bytes()
+    provider, gate = external_provider(), Gate()
+
+    result = service.discover(DiscoverRequest(root, provider=provider, gate=gate))
+
+    assert result.status == "complete" and len(provider.messages) == 1 and result.data["provenance"]["external"] is True
+    # Admission, the checks before the count and before the request, and the request itself, which runs inside the gate.
+    assert gate.calls == 4
+    assert (root / "repodocs.json").read_bytes() == before, "consent from a gate is never persisted"
+    with pytest.raises(ConsentError):
+        service.discover(DiscoverRequest(root, provider=external_provider(), refresh=True))
+
+
+def test_a_refused_gate_call_sends_and_reserves_nothing_more(tmp_path: Path, capsys) -> None:
+    root = project(tmp_path, capsys)
+    asks = lambda message: full_answer(message, complete=False, requests=[{"repository_id": "shop", "path": "lib/storage.js", "line_start": 1, "line_end": 3}])  # noqa: E731
+    provider = Scripted(asks, full_answer)
+    provider.external = True
+    counted: list[str] = []
+    provider.count_input_tokens = lambda system, user, schema: counted.append(user) or 10  # type: ignore[attr-defined]
+    # 1 admission, 2 before the count, 3 the count, 4 before the request, 5 the request; 6 is the next request's check.
+    gate = Gate(refuse_from=6)
+
+    result = service.execute("discover", DiscoverRequest(root, provider=provider, gate=gate))
+
+    assert result.status == "failed" and len(provider.messages) == 1 and len(counted) == 1
+    assert result.data["usage"]["requests"] == 1, "the refused request was never reserved"
+    assert not (root / ".repodocs" / "architecture-view.json").exists()
+
+
+def test_an_external_provider_needs_a_gate_that_holds_both_consent_kinds(tmp_path: Path, capsys) -> None:
+    root = project(tmp_path, capsys)
+    provider, gate = external_provider(), Gate(kinds=frozenset({"external"}))
+
+    with pytest.raises(ConsentError):
+        service.discover(DiscoverRequest(root, provider=provider, gate=gate))
+    assert provider.messages == [] and gate.calls == 0

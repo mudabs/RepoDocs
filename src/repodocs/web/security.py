@@ -587,5 +587,10 @@ class RunGate:
             )
         return context
 
+    @property
+    def kinds(self) -> frozenset[str]:
+        """The consent kinds this gate requires before every call."""
+        return self._kinds
+
     def call(self, operation: Callable[[ProviderContext], T]) -> T:
         return operation(self._context())
