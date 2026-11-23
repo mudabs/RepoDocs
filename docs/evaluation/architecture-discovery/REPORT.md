@@ -1,6 +1,6 @@
 # Architecture discovery evaluation: DigitalBoneBox and Flaskr
 
-Epic #47, issue #54. Date: 2026-11-17.
+Epic #47, issue #54. Date: 2026-11-17. The context and replay measurements were re-checked on 2026-11-22 after `main` (source context selection 1.1, ADR-029) was merged into this branch; see [`reference-replay-merged-head.json`](reference-replay-merged-head.json).
 
 ## Status in one paragraph
 
@@ -62,22 +62,24 @@ Deterministic mode, `repodocs scan` and `generate` on each repository:
 
 This is the honest depth of deterministic mode for an unsupported stack: an inventory, with no statement of what the application is or how it connects. It needs no key or network and is unchanged.
 
-Workflow and safety behavior, run with the scripted reference replay in place of a model (replay history, not a live run) (a separate documentation repository is the destination; raw numbers are in [`reference-replay-run.json`](reference-replay-run.json)):
+Workflow and safety behavior, run with the scripted reference replay in place of a model (replay history, not a live run). A separate documentation repository is the destination. Rows marked (re-checked) were measured again on the merged head, engine `bd714d8` merged with `main` at `45e6e80` (raw numbers in [`reference-replay-merged-head.json`](reference-replay-merged-head.json)). The other rows are from the earlier head and were not re-run (raw numbers in [`reference-replay-run.json`](reference-replay-run.json)).
 
 | Check | DigitalBoneBox | Flaskr |
 |---|---|---|
-| Context preview (nothing sent) | 8 excerpts, 18,723 bytes, 0 redactions, 3 files denied by name | 3 excerpts, 2,936 bytes, 0 redactions, 1 file denied by name |
-| Stored view validates and renders | complete, 6 components, 5 connections | complete, 5 components, 8 connections |
-| `validate` | exit 0 | exit 0 |
-| Second `generate` | no change (no-op) | no change (no-op) |
+| Context preview, nothing sent (re-checked) | 8 excerpts, 45,697 bytes as sent, 0 redactions, 3 files denied by name | 8 excerpts, 16,858 bytes as sent, 3 redactions (see below), 1 file denied by name |
+| Stored view validates and renders (re-checked) | complete, 6 components, 5 connections | complete, 5 components, 8 connections |
+| `validate` (re-checked) | exit 0 | exit 0 |
+| Second `generate` (re-checked) | no change (no-op) | no change (no-op) |
 | `discover --refresh` with the same replay | byte-identical stored view | byte-identical stored view |
 | Real Mermaid renderer on the diagram | rendered | rendered |
 | HTML page in Chrome | drew, zoomed, 3 scripts, no CSP violation, no request, no dialog, no console error | same |
 | Page size | 3.6 MB (it embeds the Mermaid bundle) | 3.6 MB |
 | Time (scan, discover, generate) | 0.8 s, 0.2 s, 0.3 s | 0.3 s, 0.03 s, 0.3 s |
-| Links | 17 of 17 evidence items link to the exact commit; two sampled links resolved through the GitHub contents API | 22 of 22 link to the exact commit |
+| Links (re-checked) | 17 of 17 evidence items link to the exact commit; two sampled links resolved through the GitHub contents API (earlier head) | 23 of 23 link to the exact commit (22 of 22 on the earlier head) |
 
 The times are for the replay and the local pipeline. They say nothing about model latency.
+
+On the merged head the replay scores are unchanged except that Flaskr cites 7 excerpts instead of 6 (all resolve), because the first round now opens more of its source. Context bytes are now counted as they are sent inside the request (ADR-029), so they are not comparable with the earlier 18,723 and 2,936. The 3 Flaskr redactions are false positives: the first round now opens `flaskr/auth.py`, and the pattern-based `assigned-secret` rule replaced three `password = ...` lines that read a form field and hold no secret. They hide a little source from a model and show that the rule over-matches; no secret was present.
 
 Source change, dirty tree, and ownership on Flaskr:
 - **Dirty working tree.** After an uncommitted edit to `flaskr/blog.py` and a rescan, the snapshot is `content`, the earlier view is stale, its architecture files are retired, and `generate` warns. Discovery on the dirty tree stores a view whose six evidence items have no commit link, and the map says "Working-tree content, not a commit: no source link is offered".
@@ -85,17 +87,17 @@ Source change, dirty tree, and ownership on Flaskr:
 - **Ownership.** Appending a line to the generated `architecture-view.mmd` stopped `generate` with exit code 4 and left the edit in place.
 - **Revert.** Reverting the edit and rescanning left the view stale again, because the clean snapshot is a different snapshot from the dirty one; a new discovery is needed. That is the intended contract.
 
-## Findings from this evaluation, fixed in this PR
+## Findings from this evaluation
 
-1. **The context inventory was crowded out by data files.** DigitalBoneBox has hundreds of data files under `boneset-api/data`. The 500-path inventory filled with them and cut off the source directories (`templates/js`, `boneset-api`), so a model could not even see them. The inventory now lists at most 12 files per directory and says how many it left out, and it covers the whole repository (177 entries, not truncated).
-2. **The first round of excerpts was spent on container files.** Of eight slots, three held Dockerfiles and a compose file. The first round now gives each repository a fair share, takes README, then at most two language manifests, then entry points, and puts container files last.
-3. **The page was unreadable in dark mode.** Found by looking at the screenshot: dark blue links on a dark panel, and edge labels on a dark ground. The drawing area now stays light and the links are readable (screenshots in [`screenshots/`](screenshots)).
+1. **The context inventory was crowded out by data files.** DigitalBoneBox has hundreds of data files under `boneset-api/data`. The 500-path inventory filled with them and cut off the source directories (`templates/js`, `boneset-api`), so a model could not even see them. This PR first fixed it on its own; that fix was replaced, when `main` was merged, by the source context selection of ADR-029, which lists at most 12 files per directory and reports the rest as counts in `more_files`. On the merged head the DigitalBoneBox inventory has 169 entries, is not truncated, and summarizes 8 directories.
+2. **The first round of excerpts was spent on container files.** Of eight slots, three held Dockerfiles and a compose file. This is also handled by the ADR-029 selection on `main`: each repository is served in turn, layers alternate, and container files come last. On the merged head the DigitalBoneBox first round opens `boneset-api/server.js`, `boneset-api/images.js` and `templates/js/api.js`, and no container file.
+3. **The page was unreadable in dark mode.** Found by looking at the screenshot: dark blue links on a dark panel, and edge labels on a dark ground. Fixed in this PR: the drawing area now stays light and the links are readable (screenshots in [`screenshots/`](screenshots), taken on the earlier head).
 
-Each has a regression test.
+Each has a regression test in this PR, and the first two now run against the ADR-029 selection.
 
 ## Known failures and limits that remain
 
-- **Large files cannot be read.** `templates/js/scenes.js` is 123 KB, above the 64 KiB per-file budget, so it is refused as `too-large`. It holds the client's call to the scenes API (line 21), which a model therefore cannot cite. `boneset-api/scenes.js` (44 KB) fits. Reading only the head of a large file is possible and would be a budget decision for the owner (O13).
+- **Large files cannot be read.** `templates/js/scenes.js` is 119,926 bytes, above the 64 KiB per-file budget, so it is refused as `too-large` when requested (re-checked on the merged head). It holds the client's call to the scenes API (line 21), which a model therefore cannot cite. `boneset-api/scenes.js` (42,768 bytes) fits. Reading only the head of a large file is possible and would be a budget decision for the owner (O13).
 - **The diagram can be crowded.** At six components the edges already cross and edge labels overlap (see the screenshots). This is a readability problem that a live view of a larger system would make worse; crowded views group by kind, but that has been tried only on synthetic input.
 - **Edges are clickable only through the side panel**, not on the drawing.
 - **A clean CI clone has no stored view.** Earlier published architecture files are then kept as they are and reported as not verified against the new revisions, with their manifest entries unchanged; `repodocs generate --retire-architecture` removes them on purpose. This was verified only with the replay and the CLI tests, not in a real CI publication run.
@@ -115,7 +117,7 @@ It answers from the expected set, so its scores (component recall 1.0, connectio
 - **Measured quality of model output** beyond the two observations: useful coverage, unsupported connections, and evidence correctness on the current head.
 - **Human review verdicts.** The harness writes the review list; nobody has opened each cited location for a model's relationships.
 - **Readability and usefulness judgments** by the intended users.
-- **Redaction review of a live run.** The context for both repositories contained no secret-shaped strings (0 redactions), and `.env`-style names were denied, but that covers the first-round excerpts only, not what a model would request.
+- **Redaction review of a live run.** On the merged head the DigitalBoneBox first round has 0 redactions; the Flaskr first round has 3, all false positives on `password = ...` form reads in `flaskr/auth.py`. `.env`-style names were denied. That covers the first-round excerpts only, not what a model would request.
 
 ## Recommendation (not a decision)
 

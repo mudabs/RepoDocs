@@ -1,0 +1,224 @@
+{
+  "digitalbonebox": {
+    "context_preview": {
+      "context_bytes": 45697,
+      "documents": 8,
+      "first_round": [
+        [
+          "README.md",
+          1,
+          40
+        ],
+        [
+          "boneset-api/images.js",
+          1,
+          194
+        ],
+        [
+          "boneset-api/legacyAnnotations.js",
+          17,
+          210
+        ],
+        [
+          "boneset-api/scripts/migration-report.js",
+          1,
+          136
+        ],
+        [
+          "boneset-api/server.js",
+          1,
+          200
+        ],
+        [
+          "eslint.config.js",
+          1,
+          27
+        ],
+        [
+          "package.json",
+          1,
+          42
+        ],
+        [
+          "templates/js/api.js",
+          1,
+          183
+        ]
+      ],
+      "inventory": {
+        "directories_summarized": 8,
+        "entries": 169,
+        "truncated": false
+      },
+      "omitted": {
+        "denied-name": 3
+      },
+      "redacted_files": [],
+      "redactions": 0
+    },
+    "discover": {
+      "components": 6,
+      "connections": 5,
+      "status": "complete"
+    },
+    "expected_revision": "602e9c53c656f55b5e69b1a4dd4c6f79e53b368c",
+    "scores": {
+      "components": {
+        "deployment_shown_as_application": [
+          "Serverless entry"
+        ],
+        "extra": [],
+        "matched": 6,
+        "missing": [],
+        "precision": 0.8333,
+        "proposed": 6,
+        "recall": 1.0,
+        "required_expected": 4,
+        "required_found": 4
+      },
+      "connections": {
+        "covered": 4,
+        "expected": 4,
+        "missing": [],
+        "precision": 1.0,
+        "proposed": 5,
+        "recall": 1.0,
+        "supported": 5,
+        "unsupported_for_review": {}
+      },
+      "evidence": {
+        "citations": 7,
+        "member_paths": 22,
+        "member_paths_in_snapshot": 22,
+        "resolution": 1.0,
+        "resolving": 7
+      },
+      "navigation": {
+        "evidence_items": 17,
+        "with_commit_link": 17,
+        "working_tree_items": 0
+      }
+    },
+    "second_generate_changed": false,
+    "snapshot": {
+      "files": 798,
+      "revision": "602e9c53c656f55b5e69b1a4dd4c6f79e53b368c",
+      "revision_kind": "commit"
+    },
+    "validate_exit": 0
+  },
+  "engine": {
+    "main": "45e6e807bcfe95cb2ee9a01a8b0a305215953639",
+    "pr_head": "bd714d8c7f5c1936a320cee6c0bdbc5983516687",
+    "selection_version": "1.1"
+  },
+  "flaskr": {
+    "context_preview": {
+      "context_bytes": 16858,
+      "documents": 8,
+      "first_round": [
+        [
+          "README.rst",
+          1,
+          40
+        ],
+        [
+          "flaskr/auth.py",
+          1,
+          116
+        ],
+        [
+          "flaskr/blog.py",
+          1,
+          125
+        ],
+        [
+          "flaskr/db.py",
+          1,
+          56
+        ],
+        [
+          "flaskr/templates/base.html",
+          1,
+          24
+        ],
+        [
+          "flaskr/templates/blog/index.html",
+          1,
+          28
+        ],
+        [
+          "flaskr/templates/blog/update.html",
+          1,
+          19
+        ],
+        [
+          "pyproject.toml",
+          1,
+          45
+        ]
+      ],
+      "inventory": {
+        "directories_summarized": 0,
+        "entries": 27,
+        "truncated": false
+      },
+      "omitted": {
+        "denied-name": 1
+      },
+      "redacted_files": [
+        "flaskr/auth.py"
+      ],
+      "redactions": 3
+    },
+    "discover": {
+      "components": 5,
+      "connections": 8,
+      "status": "complete"
+    },
+    "expected_revision": "49943b5a94413a530761350f04e896f76e8d620e",
+    "scores": {
+      "components": {
+        "deployment_shown_as_application": [],
+        "extra": [],
+        "matched": 5,
+        "missing": [],
+        "precision": 1.0,
+        "proposed": 5,
+        "recall": 1.0,
+        "required_expected": 5,
+        "required_found": 5
+      },
+      "connections": {
+        "covered": 8,
+        "expected": 8,
+        "missing": [],
+        "precision": 1.0,
+        "proposed": 8,
+        "recall": 1.0,
+        "supported": 8,
+        "unsupported_for_review": {}
+      },
+      "evidence": {
+        "citations": 7,
+        "member_paths": 11,
+        "member_paths_in_snapshot": 11,
+        "resolution": 1.0,
+        "resolving": 7
+      },
+      "navigation": {
+        "evidence_items": 23,
+        "with_commit_link": 23,
+        "working_tree_items": 0
+      }
+    },
+    "second_generate_changed": false,
+    "snapshot": {
+      "files": 22,
+      "revision": "49943b5a94413a530761350f04e896f76e8d620e",
+      "revision_kind": "commit"
+    },
+    "validate_exit": 0
+  },
+  "note": "Scripted reference replay re-measured after merging main into this branch. It answers from the expected set, so its scores are by construction and say nothing about model quality. Only the fields below were re-measured; the renderer, page, size and timing rows of the report were not re-run."
+}
