@@ -5,8 +5,8 @@ name: Tests
 # Uses pull_request (never pull_request_target): fork code runs without secrets or write access.
 
 on:
+  # No branch filter: pull requests stacked on other pull requests (base is not main) get the same checks.
   pull_request:
-    branches: [main]
   push:
     branches: [main]
   workflow_dispatch:
@@ -38,7 +38,21 @@ jobs:
           python-version: ${{ matrix.python }}
       - name: Install project with test dependencies
         run: python -m pip install -e ".[test]"
+      # Optional tooling for users, required here: the real, pinned Mermaid renderer (tools/mermaid) draws the
+      # generated diagrams so they are checked by Mermaid itself, not only by RepoDocs' own grammar. It uses the
+      # Chrome that GitHub-hosted runners provide, so no browser is downloaded.
+      - name: Install the pinned Mermaid renderer
+        shell: bash
+        working-directory: tools/mermaid
+        env:
+          PUPPETEER_SKIP_DOWNLOAD: "1"
+        run: |
+          node --version
+          npm ci --ignore-scripts
       - name: Run the complete test suite
+        env:
+          REPODOCS_REQUIRE_RENDERER: "1"
+          REPODOCS_MERMAID_NO_SANDBOX: "1"
         run: python -m pytest -ra
 
       # Reports the golden-fixture metrics in the log and the job summary. The suite above already

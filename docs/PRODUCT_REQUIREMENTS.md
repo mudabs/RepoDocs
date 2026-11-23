@@ -9,7 +9,7 @@ Automatically discover, generate, validate, and maintain documentation and diagr
 - Developer using local CLI, including no-account deterministic mode.
 - Team enabling GitHub Actions to propose documentation PRs after source changes.
 - Developer using Claude Code or Codex to operate RepoDocs through CLI/agent skill; MCP later.
-- Team using future hosted or self-hosted web dashboard.
+- Developer using the next local/self-hosted browser workflow over the shared Python engine (epic #63; specified in ADR-027, not implemented yet). Public hosting follows later.
 
 ## Required capabilities
 1. Project = software system, containing multiple repositories and services; a repo may contain several services.
@@ -33,10 +33,11 @@ Automatically discover, generate, validate, and maintain documentation and diagr
 - Stable generation minimizing noisy diffs.
 - Privacy, safe handling of secrets, least privilege, untrusted repository isolation.
 - Reproducible output tied to per-repository commit SHAs and generator/model versions.
+- Architecture views for stacks without an analyzer are inferred, evidence-linked, and labeled as such; structural validation is never presented as proof that a relationship is true (ADR-026).
 - Measurable quality using golden fixtures, precision/recall, provenance checks, and deterministic-versus-AI comparisons.
 
 ## Success demo
 SmartCart: React frontend repository, Spring Boot backend repository, PostgreSQL. Discover components and APIs, propose/confirm cross-repo links, generate architecture/API/ERD/component docs, publish appropriate PRs, then update docs after an endpoint changes.
 
 ## Explicit non-goals for initial MVP
-Polished SaaS, billing, comprehensive language coverage, guaranteed runtime-accurate sequence diagrams, interactive drag-and-drop editor, runtime tracing, complete UML suite, advanced enterprise governance, RepoDocs-managed AI, hosted web UI, and MCP integration.
+Polished SaaS, billing, comprehensive language coverage, guaranteed runtime-accurate sequence diagrams, interactive drag-and-drop editor, runtime tracing, complete UML suite, advanced enterprise governance, RepoDocs-managed AI, public hosted web UI, and MCP integration. A local/self-hosted browser UI is now the next delivery priority; it does not require the CLI or GitHub Actions to run a persistent service. See `WEB_WORKFLOW.md` for scope, job contracts and quality gates.

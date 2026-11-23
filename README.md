@@ -2,6 +2,10 @@
 
 RepoDocs is an evidence-backed repository documentation engine. The current implementation provides the Milestone 1 foundation and first working CLI. It scans local working trees without executing repository code, stores a versioned JSON System IR, and generates deterministic Markdown and Mermaid artifacts into one configured documentation destination.
 
+## Local web-first development
+
+The next release targets a local/self-hosted browser workflow over the same Python engine. It is specified, not implemented yet: see [the workflow contract](docs/WEB_WORKFLOW.md), ADR-027 and epic #63. The CLI remains standalone. Public hosting, managed funded AI, accounts, payments and videos are deferred.
+
 ## Start here
 - `AGENTS.md`: persistent coding-agent instructions.
 - `docs/PRODUCT_REQUIREMENTS.md`: vision, scope, acceptance goals.
@@ -103,6 +107,10 @@ When a project contains PostgreSQL table facts, `repodocs generate` produces **`
 - `repodocs validate` checks Mermaid syntax with a built-in Python validator that needs no Node.js or browser tooling and enforces attribute type syntax. It is not the Mermaid renderer and does not prove that a diagram renders.
 - `erd.mmd` is tracked in `artifact-manifest.json`, protected against unexpected edits, and safely retired when database facts are no longer present. See ADR-022.
 
+### Checking diagrams with the real Mermaid renderer (optional)
+
+RepoDocs' built-in validator checks the grammar it emits and is not Mermaid. The test suite can additionally render every generated diagram with the real, pinned Mermaid renderer: run `npm ci` in `tools/mermaid` (Node 18.19 or newer, and a local Chrome or Chromium; set `PUPPETEER_EXECUTABLE_PATH` if it is not found). Without it those tests are skipped locally and a missing renderer is reported as `not-available`, never as success. Pull-request CI installs it and fails if it is missing. Ordinary Python-only use needs none of this.
+
 ### Cross-repository candidates
 
 After analysis, `scan` matches React `http_request` findings to endpoints in
@@ -165,6 +173,7 @@ repodocs ai-interpret
 - Anything that would send the bundle off the machine, including an Ollama host that is not a loopback address, is refused until you run `repodocs ai-configure --consent-external`. `--revoke-consent` returns the project to local-only.
 - `repodocs ai-interpret` writes `.repodocs/ai-claims.json` with provider and model provenance. A claim is accepted only when every evidence and subject ID it cites exists in the bundle; others are rejected with a reason. Accepted claims are `inferred` or `proposed`, never `observed`, and a claim about an unconfirmed cross-repository candidate is always `proposed`.
 - Using a cloud provider costs money on your provider account and requires a network connection. See ADR-020.
+- Usage is bounded per run (ADR-031). Before every request the whole serialized request is checked against `ai.limits.context_window_tokens` (default 4,096 for Ollama and OpenAI, 200,000 for Anthropic) plus its reserved output; a request that does not fit is refused and nothing is sent. Optional `ai.limits` (`request_output_tokens`, `max_requests` up to 6, `max_count_requests`, `max_input_tokens`, `max_output_tokens`, `max_cost_usd`) can only lower the hard ceilings, and `ai.effort` (`low`, `medium` or `high`, Anthropic and OpenAI) is sent only when you set it. Cost limits need `ai.prices`, a versioned rate profile you supply for one provider and model in US dollars per million tokens, with all four rates; RepoDocs ships no prices. Token counts are provider counts where the provider offers them (Anthropic and OpenAI, after consent); otherwise a request is bounded at one token per byte, which is a bound and not a count and is often several times larger than the real number. Usage a provider did not report stays reserved at its worst case, never zero, and reported usage past a cap stops the run. `ai-interpret` and `architecture discover` print a `usage` summary (charged tokens and cost, estimated maximum cost, remaining allowance, stop reason) and write `.repodocs/receipts/*.json`. An Ollama prompt larger than its window is refused instead of being truncated silently; raise `ai.limits.context_window_tokens` to what your model supports, or lower the discovery context budgets.
 
 After `ai-interpret`, run `repodocs generate` to add **`architecture-ai.md`**.
 It separates inferred interpretations from proposals and records citations,
@@ -175,7 +184,7 @@ No model claim creates an authoritative relationship or confirms a candidate.
 
 ### Ollama through an authenticated /v1 gateway (optional)
 
-The `ollama` provider has two transports, chosen by the host. A host with no path (the default `http://localhost:11434`) uses Ollama's native `/api/chat`, unchanged. A host ending in `/v1` uses the chat-completions route that Ollama serves, which lets a gateway in front of Ollama authenticate requests and hide its management routes. This is an Ollama-compatible transport, not a claim that RepoDocs works with every OpenAI-style provider; no other provider is supported.
+The `ollama` provider has two transports, chosen by the host. A host with no path (the default `http://localhost:11434`) uses Ollama's native `/api/chat`. A host ending in `/v1` uses the chat-completions route that Ollama serves, which lets a gateway in front of Ollama authenticate requests and hide its management routes. This transport targets Ollama-compatible chat completions. The separate OpenAI provider uses the Responses API.
 
 ```powershell
 repodocs ai-bundle
@@ -186,13 +195,13 @@ repodocs ai-interpret
 repodocs generate
 ```
 
-- A non-loopback host is external even if you operate it, so `--consent-external` is required, and architecture discovery (Epic #47, not merged yet) will additionally need its own source-excerpt consent (ADR-026); the first never implies the second. A remote `/v1` host must use HTTPS with certificate verification, and URLs with credentials, a query or a fragment are refused. A loopback `/v1` host needs no key and does not use environment proxies.
+- A non-loopback host is external even if you operate it, so `--consent-external` is required, and architecture discovery additionally requires its own source-excerpt consent (ADR-026); the first never implies the second. A remote `/v1` host must use HTTPS with certificate verification, and URLs with credentials, a query or a fragment are refused. A loopback `/v1` host needs no key and does not use environment proxies.
 - `REPODOCS_OLLAMA_API_KEY` is read only from the environment, sent as a Bearer token to `/v1` hosts only, and never written to `repodocs.json`, the bundle, claims, or an error message. Redirects are not followed.
 - A completion is accepted only when it is a single assistant message that finished with `stop` and holds a non-empty JSON object. Content-filtered, refused, truncated (`length`), tool-call and unrecognized endings are provider errors (exit code 7), and so are authentication failures (401 and 403), rate limits (429), server errors, timeouts, unreachable hosts, malformed JSON, and oversized replies. None of them stops the deterministic documents.
-- Limits, applied to both transports unless noted: a request times out after 300 seconds; a response larger than 512 KiB is refused while it is being read, whatever `Content-Length` says; the `/v1` request asks for at most 16,000 output tokens (`max_tokens`). Context length is the server's setting and is not controlled by RepoDocs. These limits were exercised only against local stand-in servers. No live gateway or model has been tested yet, and a small model may still return JSON that does not satisfy the schema, which is also a provider error.
+- Both transports preflight the serialized request, share the run budget, and send the configured `ai.limits.request_output_tokens` as native `num_predict` or `/v1` `max_tokens`. Responses are capped at 512 KiB and the socket timeout is 300 seconds.
+- Native requests send `num_ctx`. For `/v1`, configure the gateway model's actual context window to match `ai.limits.context_window_tokens`. If reported prompt and output counts fill that window, RepoDocs rejects the completion. Missing or partial usage stays reserved in the receipt.
 - Reaching a private network address (for example over a VPN) is up to the machine that runs RepoDocs. Hosted CI runners cannot reach it, so CI uses stand-ins and no credentials.
-- The adapter sends whatever schema the caller gives it, so the same transport serves AI interpretation and, once it is merged, architecture discovery (Epic #47). Transport success says nothing about model quality, which is evaluated separately (#54).
-
+- The adapter sends whatever schema the caller gives it, so the same transport serves AI interpretation and architecture discovery. Transport success says nothing about model quality, which is evaluated separately (#54).
 
 Generation uses stored claims only: it never calls a provider. Missing claims
 leave the deterministic output complete; stale or invalid claims produce a
@@ -213,6 +222,44 @@ counts, including proposals, rejections, and structural grounding failures.
 Reviewed fake-provider golden cases currently yield 1 inference, 4 proposals,
 3 rejections, and no reviewed unsupported inferences. These are regression
 results, not a real-model factuality benchmark. See ADR-021.
+
+### Architecture discovery (optional, ADR-026)
+
+#### Native OpenAI configuration
+
+The optional `openai` provider uses the Responses API directly, with no additional SDK dependency. Select an explicit model your API account can access:
+
+```powershell
+repodocs ai-configure --provider openai --model <model-id>
+repodocs architecture context
+# Review the bounded, redacted preview before authorizing source disclosure.
+repodocs ai-configure --consent-external --consent-source-excerpts
+repodocs architecture discover
+```
+
+Supply `OPENAI_API_KEY` securely in the current process before discovery; never put its value in CLI arguments, project files or source control. A ChatGPT subscription is not used as an API credential. Scan, preview, generation and validation do not need a key. Live API usage is billed by the provider.
+
+Aggregate input/output/request/cost caps and local receipts use the same usage contract as the other providers (ADR-031). Set `ai.limits.context_window_tokens` to the model's real context window: without it the cautious 4,096-token default refuses most discovery prompts before anything is sent. Each request is first measured with OpenAI's input-token count endpoint (`/responses/input_tokens`, the same request without output options), which sends the same content to the same approved destination and is counted in the receipt; a failed count falls back to the one-token-per-byte bound. For a monetary cap supply a versioned price profile for this provider and model, with every served model identity it may report; unknown prices or usage are not reported as zero. Cached and cache-written tokens are separated from the base input total, and reasoning usage is part of output usage, not an extra billable total added twice. Effort `low`, `medium` or `high` is sent as `reasoning.effort` only when set.
+
+The transport requests schema-constrained output with `store: false`, refuses incomplete/refused responses, bounds response bytes, and follows no redirects or model fallbacks. Provider-side retention and account/model availability still require operator review. The default base is `https://api.openai.com/v1`; `--openai-base-url` selects another Responses endpoint under the same consent checks and HTTPS policy (loopback HTTP exists for local tests). Native OpenAI access is distinct from the private Ollama gateway in #62.
+
+For an application that no analyzer understands, such as a plain JavaScript and Express app, the deterministic documents list languages and dependencies but no components. Architecture discovery asks a model for a structured view of the application's components and connections, checks every claim against the scanned snapshot, and renders it. It is optional, off by default, and never changes the System IR, a cross-repository candidate, or a confirmation.
+
+Workflow:
+
+1. `repodocs scan`, then choose a provider: `repodocs ai-configure --provider ollama --model <name>` (a local model; nothing leaves the machine) or `--provider anthropic` (external).
+2. `repodocs architecture context` writes the preview `.repodocs/architecture-context.json` and contacts nothing. It is separate from the context a stored view was built from, so previewing again changes nothing already discovered. It holds redacted, bounded excerpts chosen across every repository (a short README head, a manifest, and substantive source ranked and spread over backend, frontend and storage files, with the most informative span of a long file), a name inventory that counts assets and crowded directories instead of listing them, a compact index of static imports found in the opened files (never runtime order), per-repository coverage with layers that had files but no excerpt, and what was omitted and why (denied names such as `.env` and `*.pem`, binary, oversized, stale, links, budgets). The inventory, index and an instruction reserve count against the 200 KiB total. Review it.
+3. An external provider needs two consents: `--consent-external` for the evidence bundle and, separately, `--consent-source-excerpts` for these excerpts. One never implies the other, and consent for an older policy version does not apply.
+4. `repodocs architecture discover` runs a bounded exploration (at most 3 rounds, 6 requests, 8 files per round, 200 KiB of context, 32 KiB per response by default; `architecture.budgets` in `repodocs.json` can only lower them) and stores the validated view in `.repodocs/architecture-view.json`. A current stored view is reused without contacting the provider; `--refresh` runs new inference. `generate` never calls a provider.
+5. `repodocs generate` writes `architecture-view.mmd` (and detail diagrams for crowded views) and `architecture-view-evidence.json` beside the other documents when a current view is stored, plus `architecture-view-alternatives.md` when the model reported competing interpretations (each with the components it concerns and its evidence locations; they are never drawn into the diagram). With `"architecture": {"html_export": true}` it also writes one self-contained `architecture-view.html` (zoom, pan, fit, evidence on click, and a list of the alternatives). The page embeds the pinned Mermaid bundle, so it needs the optional tooling and fails clearly without it.
+6. `repodocs validate` checks the files against the current view and reports a stale or invalid view as a warning.
+
+What to expect:
+- Items are `inferred` only when they cite excerpts of their own member files, and are otherwise `proposed`, drawn dashed and labelled in the text. A connection between repositories is drawn as unconfirmed unless a confirmed candidate is bound to it: same direction, and the candidate's observed request and endpoint files are members of the two components, with evidence cited from both sides. Valid citations show that a view is well formed, not that a relationship is true: check the evidence. Each item also has a computed `support` (ADR-028), separate from `classification`: `supported` means a deterministic fact backs it (a matching observed request/endpoint pair, observed role facts in member files, or a bound confirmed candidate), `unverified` means nothing checkable was found (the normal state on a stack with no analyzer; marked `(unverified)` and drawn dashed), and `unsupported` means a checkable literal is absent (which can still be real outside the checked excerpts). Unsupported items are left out of the diagrams and kept, with reason codes, in `.repodocs/architecture-view.json`, the evidence map and the HTML page. Supported identifies a static fact match, not proof of responsibilities or runtime behavior, and no output says verified. Routes assembled from a prefix in another file are reported unsupported by the literal check. A view stored before this change is reported invalid; refresh it with `discover --refresh`.
+- The evidence map links to the exact commit on GitHub only for a committed snapshot of a `github.com` repository. Uncommitted content is labelled with its fingerprint and not linked. The map and page hold locations and hashes, never source text.
+- A changed scan makes the view stale: its files are retired with a warning, and the deterministic documents are unaffected. CI publication from a clean clone has no stored view (it is local state and holds source excerpts, so it is not committed). Earlier architecture files are then kept as they are, `generate` and `validate` warn that their freshness was not verified, the manifest keeps the provenance each file was recorded with, and the pull request lists them as unverified. Refresh them locally with `discover --refresh`, or remove them on purpose with `repodocs generate --retire-architecture`. A discovery that ends early is stored as `partial` with its reason (`incomplete-response`, `empty-response`, `no-progress`, a budget, or a provider error), and a `--refresh` that ends early does not replace a complete current view.
+- Exit codes are the existing ones: 2 for configuration or missing consent, 7 for provider failure, 4 for edited generated files, 5 for unresolved confirmations (`validate`). A partial discovery exits 0 with a warning.
+- Redaction is pattern-based, not a guarantee, and what a model returns is untrusted. Replayed tests prove the validation contract; they do not show how good any live model is (see the evaluation, #54).
 
 ### Publishing documentation from GitHub Actions
 

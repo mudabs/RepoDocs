@@ -1,0 +1,9 @@
+{
+  "name": "repodocs-mermaid-check",
+  "private": true,
+  "description": "Optional tooling: renders RepoDocs Mermaid diagrams with the real Mermaid renderer. Not needed to use RepoDocs.",
+  "dependencies": {
+    "@mermaid-js/mermaid-cli": "11.17.0",
+    "puppeteer": "24.30.0"
+  }
+}

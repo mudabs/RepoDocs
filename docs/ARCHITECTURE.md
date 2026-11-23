@@ -6,7 +6,7 @@
 A modular monolith with a reusable core engine. Interfaces are adapters, not separate analysis implementations.
 
 ```text
-CLI / GitHub Action / Coding Agent / Future Web UI
+CLI / GitHub Action / Coding Agent / Local Web UI (planned)
                      |
            Project Orchestration
                      |
@@ -57,7 +57,15 @@ Provider-neutral adapter. Supply curated, redacted evidence bundles only after e
 
 Implemented (ADR-020): `ai-bundle` builds a deterministic, schema-versioned evidence bundle from the IR alone, with no source text and with secret redaction; `ai-interpret` sends it to Anthropic (official SDK, optional extra) or Ollama through one provider protocol and stores validated claims with provider and model provenance beside the IR, never inside it. External use requires recorded consent, so a project without it is local-only. Claims citing unknown evidence or subjects are rejected, and claims without evidence or about unconfirmed candidates are only ever `proposed`.
 
+ADR-026 (implemented as `repodocs architecture context` and `architecture discover`, with generation and validation of the stored view) defines a separate architecture-discovery path for applications that no analyzer understands: a bounded, redacted source-excerpt context bundle under its own consent, a controlled resolver for further file requests, and a schema-validated inferred architecture view (`schemas/architecture-view-1.0.json`) that drives separate diagram files. The view is `proposed` or `inferred`, never `observed`, and cannot change the IR, candidates, or confirmations; a confirmed candidate supports a cross-repository connection only when it is bound to that connection's actual components, direction, and evidence on both sides. Schema validation checks shape; semantic validation against the IR is separate. ADR-028 adds a computed per-claim `support` (`supported`, `unverified`, `unsupported`) with reason codes, derived only from deterministic facts (observed endpoints, literal routes in cited member excerpts, observed role facts, bound confirmed candidates) and never from file names or the model; unsupported claims are kept but left out of the default diagrams, and human review remains required. Deterministic mode is unchanged and has no application-component model for an unsupported stack.
+
+ADR-029 refines how that context is chosen: substantive, layered, multi-repository selection with block-aligned spans of long files, a compact static-import reference index of opened files (never runtime order), coverage and omission diagnostics, and one total budget that includes the inventory, index and an instruction reserve.
+
 ADR-021 adds optional `architecture-ai.md` generation from current, revalidated claims. The deterministic overview and diagrams stay unchanged, and no model output changes graph authority or candidate decisions. Subject-bound evidence is required for inference; multi-repository claims must explicitly cite a confirmed candidate. Stale or invalid optional claims are omitted with a warning, and owned unedited obsolete AI artifacts are retired. Model prose is escaped, and validation checks the artifact against current claims. Structural validation and golden-fixture contribution checks do not prove arbitrary model wording true.
+
+ADR-031 adds run-level usage budgets in `repodocs.ai.budgets`: a thread-safe ledger per run reserves each request's worst-case tokens and cost before it is sent (a provider count after consent, or a one-token-per-byte bound), reconciles complete provider usage, keeps unknown usage reserved, enforces the context window including reserved output and aggregate token, request and cost caps, admits token-count requests under their own allowance, stops the run when reported usage passes a cap, and writes local receipts. `repodocs.service.discover` wraps any injected provider in that ledger after the consent checks, so CLI and web runs share it; rates apply only to the provider and model a configured profile names.
+
+ADR-032 adds a native `openai` provider over the Responses API with the same protocol, consent, usage ledger and stored-view validation as Anthropic and Ollama; it is distinct from the private OpenAI-compatible gateway in #62.
 
 ### Documentation planning
 Choose artifact type, scope, required evidence, coverage, destination, and generator. Do not generate unsupported views as if complete. Maintain dependencies from IR facts to artifacts. Generated files live in dedicated paths and are tracked by a manifest; unexpected edits fail validation rather than being overwritten.
@@ -80,7 +88,7 @@ Store repository-local docs in owning repos and system-wide docs in one configur
 - CLI: local core engine, local config/cache/IR; no mandatory server or GitHub login; versioned JSON output and explicit exit codes.
 - GitHub Action: runs the same CLI on a runner; multi-repo access requires explicit credentials and the coordination repository. CI fails when required relationship confirmations remain unresolved. Implemented as a composite action over `scan --snapshot-mode pinned`, `generate`, `validate`, and `publish` (ADR-023): sources are checked out by SHA, the artifact manifest is committed, and publication builds one commit on a bot-owned branch, skipping any run whose output equals the base.
 - Coding agents: noninteractive CLI/JSON; skills first, MCP later.
-- Future web: React/TypeScript UI, proposed FastAPI orchestration, background workers, PostgreSQL, optional Redis, Docker Compose self-hosting; hosted SaaS later. It is not part of the current implementation.
+- Local web first: `repodocs.service` (ADR-030) and the access/credential/consent boundary `repodocs.web.security` (ADR-033) are implemented; the HTTP adapter and frontend are pending. React/TypeScript with Vite will be served by an optional FastAPI/Uvicorn adapter over that same Python service, already used by the CLI. One process, bounded jobs, polling and atomic local job metadata; no required PostgreSQL, Redis or external task broker. Loopback by default, ephemeral in-memory credentials, explicit provider/source consent, and no automatic inference retry on restart. Public hosting is deferred. See ADR-027 and `WEB_WORKFLOW.md`; CLI and Actions remain backend-independent.
 
 ## Security boundaries
 Untrusted repository inputs; file/path traversal protection, resource limits, sandboxing where necessary, no arbitrary builds, prompt-injection resistant AI input, secret redaction, explicit consent before external inference, local-only mode, least-privilege GitHub App/token, safe Markdown/SVG rendering, tenancy separation in hosted mode.

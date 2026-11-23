@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,18 @@ def sha256_text(value: str) -> str:
 def write_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(canonical_json(value), encoding="utf-8", newline="\n")
+
+
+def write_json_atomic(path: Path, value: Any) -> None:
+    """Write a JSON file so that a failure leaves the previous file whole, never a half-written one."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp")
+    try:
+        temporary.write_text(canonical_json(value), encoding="utf-8", newline="\n")
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 CONTROL = re.compile("[\x00-\x1f\x7f\u0085\u2028\u2029]+")

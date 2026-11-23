@@ -25,7 +25,7 @@ An experiment with a coordination repository, two source repositories, and fresh
 
 ### Manifest
 - The artifact manifest records the destination's repository ID, role, configured path, output directory, and pinned revision. It no longer records the destination's Git revision or working-tree state. `generate` still reports those live facts in its response. This amends ADR-014.
-- The manifest is committed with the documentation. The other files under `.repodocs/` are scratch state and are not.
+- The manifest is committed with the documentation. The other files under `.repodocs/` are scratch state and are not. Optional architecture-view files whose supporting state lives only in that scratch state are kept, not deleted, when a clone has none of it, and are reported as unverified (ADR-026 section 5).
 
 ### `repodocs publish`
 - `publish` validates the output first, requires every cross-repository candidate to be resolved (exit code 5 otherwise), and then builds one commit on top of the checked-out base that contains only the output directory and the manifest. It uses a throwaway index, so the working tree, the checked-out branch, and the base are never changed.

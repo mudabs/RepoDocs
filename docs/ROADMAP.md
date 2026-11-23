@@ -30,14 +30,26 @@
 - Current validated claims produce optional AI architecture explanations with provenance, subject-bound citations, safe deterministic fallback, and no graph or confirmation changes (ADR-021).
 - Golden fixtures measure bounded deterministic-versus-AI contribution and reviewed unsupported-inference counts. Real-provider semantic accuracy and broader precision/recall evaluation remain follow-up work.
 
+## Phase 3b: architecture discovery (epic #47)
+- Contracts for architecture views, bounded source context, consent, failure semantics, and the threat model are defined (ADR-026, #48). Implementation proceeds in order: context (#49), discovery (#50), rendering with a real Mermaid check (#51), source navigation (#52), CLI integration (#53), and an evaluation on DigitalBoneBox and a contrasting stack with an owner go/no-go decision (#54).
+- Implemented so far: the bounded, redacted source context and the separate source-excerpt consent (#49), replay-tested discovery with the Anthropic and Ollama adapters, validation, storage, and revalidation (#50; no CLI command yet), deterministic Mermaid architecture views with a pinned real-renderer check in CI (#51), and pinned source links, an evidence map, and an optional static HTML export (#52). and the CLI workflow `architecture context`, `architecture discover`, generate, and validate with stale, tamper, ownership, and publication handling (#53). Not started: the evaluation on real stacks (#54), so usefulness and live-model quality are unmeasured. Live-model quality is unmeasured, and replayed tests do not prove it.
+
 ## Phase 4: GitHub automation
 - GitHub Action runner integration for pinned clean revisions, `repodocs publish`, no-op detection, loop prevention, concurrency controls, and the failing check for unresolved confirmations are implemented (ADR-023).
 - Coordination-repository config for multi-repo projects uses the existing destination configuration with sources checked out under `sources/`.
 - Not yet demonstrated: a real documentation pull request opened on GitHub, which needs a token and a coordination repository, and the end-to-end SmartCart change-to-docs-PR run.
 
+## Next delivery: local web-first diagram baseline (epic #63)
+- #64 specifies workflow, shared-engine contracts, quality rubric and ADR-027; no runtime web code is included in the spike.
+- After contracts: #65 grounding (separates member citation from computed claim support, ADR-028; automation cannot prove behavior and #54 review remains), #66 useful context, #67 aggregate token/cost limits (implemented, ADR-031), #69 shared application service; #68 provider integration follows usage contracts (native OpenAI Responses provider, ADR-032).
+- #71's access, credential and consent boundary (`repodocs.web.security`, ADR-033) is implemented as a pure-Python module; #69 and #72 integrate it.
+- #70 safe sources and #71 local access/credential protection precede #72 bounded HTTP jobs and #73 browser workflow. #74 scoped views runs alongside this once its dependencies land.
+- #75 interactive evidence/downloads, #76 packaging and #77 CLI/web parity complete the local baseline; #54 remains the existing real-source quality gate and owner go/no-go.
+- Each issue ships in a focused PR with relevant tests and `Closes #<issue>` once acceptance criteria are met; verify issue closure and board status after merge to main.
+
 ## Phase 5: post-MVP
 - Hosted managed AI with quotas, privacy and cost controls.
-- Web dashboard and hosted/self-hosted workers.
+- Public hosted web service, accounts, payments and videos. No public service is implied by the local/self-hosted plan.
 - More framework adapters, advanced UML, sequence verification, MCP, interactive diagrams, sophisticated incremental impact tracking.
 
 ## Acceptance criteria
@@ -52,4 +64,4 @@
 - All advertised limitations are visible in output.
 
 ## Agent's next action
-Complete Milestone 1, validate it with fixture repositories, then report the remaining gaps before beginning framework-aware analysis.
+Complete and review #64 before dependent local web implementation. Preserve the existing CLI/Actions contracts and the unresolved real-model quality acceptance in #54.

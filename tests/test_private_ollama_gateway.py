@@ -7,12 +7,13 @@ nothing here shows that any live model or gateway works; transport success is no
 import json
 import threading
 import time
+from pathlib import Path
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 
 from repodocs.ai import providers
-from repodocs.ai.providers import MAX_OUTPUT_TOKENS, MAX_RESPONSE_BYTES, OllamaProvider, ProviderResponse, resolve_provider
+from repodocs.ai.providers import MAX_RESPONSE_BYTES, OllamaProvider, ProviderResponse, resolve_provider
 from repodocs.config import AiSettings
 from repodocs.errors import ConfigError, ConsentError, ProviderError
 
@@ -88,7 +89,8 @@ def test_authentication_schema_token_bound_and_result(monkeypatch):
     schema = {"type": "object", "properties": {"claims": {"type": "array"}}}
     server, received = serve(GOOD)
     try:
-        result = provider(server).generate("instructions", "redacted bundle", schema)
+        ollama = OllamaProvider("qwen2.5-coder:3b", f"http://127.0.0.1:{server.server_port}/v1", max_output_tokens=321)
+        result = ollama.generate("instructions", "redacted bundle", schema)
     finally:
         stop(server)
 
@@ -97,7 +99,8 @@ def test_authentication_schema_token_bound_and_result(monkeypatch):
     assert path == "/v1/chat/completions" and authorization == "Bearer test-secret"
     assert body["messages"] == [{"role": "system", "content": "instructions"}, {"role": "user", "content": "redacted bundle"}]
     assert body["response_format"]["json_schema"]["schema"] == schema
-    assert body["stream"] is False and body["max_tokens"] == MAX_OUTPUT_TOKENS
+    assert body["stream"] is False and body["max_tokens"] == 321
+    assert body == ollama.request_body("instructions", "redacted bundle", schema)
 
 
 def test_the_adapter_carries_any_caller_schema_not_only_claims(monkeypatch):
@@ -109,7 +112,7 @@ def test_the_adapter_carries_any_caller_schema_not_only_claims(monkeypatch):
         "required": ["components", "connections", "requests", "complete"],
         "additionalProperties": False,
     }
-    reply = {"model": "m", "choices": [{"finish_reason": "stop", "message": {"content": '{"components":[],"connections":[],"requests":[],"complete":true}'}}]}
+    reply = {"model": "m", "choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": '{"components":[],"connections":[],"requests":[],"complete":true}'}}]}
     server, received = serve(reply)
     try:
         result = provider(server).generate("s", "u", discovery_like)
@@ -193,6 +196,8 @@ def completion(finish, **message):
     (completion("stop", content=["not", "text"]), "no message content"),
     ({"model": "m", "choices": []}, "no chat completion"),
     ({"model": "m", "choices": ["x"]}, "no chat completion"),
+    ({"choices": GOOD["choices"] * 2}, "no chat completion"),
+    (completion("stop", role="tool", content="{}"), "no assistant message"),
     ({"model": "m"}, "no chat completion"),
     ([1, 2], "malformed"),
     (completion("stop", content="not-json"), "not valid JSON"),
@@ -209,7 +214,7 @@ def test_the_one_supported_success_is_a_stop_with_json_object_text():
 
 
 def test_a_missing_served_model_falls_back_to_the_requested_one():
-    result, _ = run({"choices": [{"finish_reason": "stop", "message": {"content": "{}"}}]})
+    result, _ = run({"choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": "{}"}}]})
 
     assert result.model == "qwen2.5-coder:3b"
 
@@ -359,7 +364,7 @@ def test_a_loopback_request_never_uses_an_environment_proxy(monkeypatch):
 
 def test_a_key_in_the_environment_is_never_sent_to_native_endpoints(monkeypatch):
     monkeypatch.setenv("REPODOCS_OLLAMA_API_KEY", SECRET)
-    server, received = serve({"model": "m", "message": {"content": "{}"}})
+    server, received = serve({"model": "m", "done": True, "done_reason": "stop", "message": {"content": "{}"}})
     try:
         provider(server, path="").generate("s", "u", {})
     finally:
@@ -391,46 +396,80 @@ def test_the_credential_never_reaches_a_persisted_artifact_or_the_cli_output(tmp
     assert SECRET not in capsys.readouterr().err
 
 
-# ------------------------------------------------------------------ with architecture discovery (Epic #47), when it is present
-def completion_for(answer):
-    return {"model": "m", "choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": json.dumps(answer)}}]}
+@pytest.mark.parametrize("transport", ["", "/v1"], ids=["native", "v1"])
+@pytest.mark.parametrize("scenario", ["repair", "budget", "truncated", "unknown", "full-context", "admission"])
+def test_shared_discovery_transport(tmp_path, capsys, monkeypatch, transport, scenario):
+    from repodocs import service
+    from repodocs.ai.budgets import RunLimits, estimate_tokens, serialized_request
+    from repodocs.architecture.discovery import RESPONSE_SCHEMA
+    from test_ai_budgets import service_project
+    from test_architecture_discovery import full_answer
 
-
-def test_architecture_discovery_runs_over_the_v1_transport_with_one_repair_for_malformed_text(tmp_path, capsys):
-    discovery = pytest.importorskip("repodocs.architecture.discovery")
-    from test_architecture_discovery import full_answer, setup
-
-    root, config, ir = setup(tmp_path, capsys)
-    calls = []
+    monkeypatch.setenv("REPODOCS_OLLAMA_API_KEY", SECRET)
+    root = service_project(tmp_path, capsys)
+    replies = 0
 
     def reply(body):
-        calls.append(body)
-        if len(calls) == 1:
-            return {"model": "m", "choices": [{"finish_reason": "stop", "message": {"content": "this is not json"}}]}
-        assert body["response_format"]["json_schema"]["schema"] == discovery.RESPONSE_SCHEMA
-        return completion_for(full_answer(json.loads(body["messages"][1]["content"])))
+        nonlocal replies
+        replies += 1
+        finish = "length" if scenario == "truncated" else "stop"
+        if scenario in ("repair", "budget") and replies == 1:
+            content = "malformed JSON"
+        else:
+            content = json.dumps(full_answer(json.loads(body["messages"][1]["content"])))
+        prompt = 65529 if scenario == "full-context" else 23
+        if transport:
+            payload = completion(finish, content=content)
+            if scenario != "unknown":
+                payload["usage"] = {"prompt_tokens": prompt, "completion_tokens": 7}
+            return payload
+        payload = {"model": "m", "done": True, "done_reason": finish, "message": {"content": content}}
+        if scenario != "unknown":
+            payload.update(prompt_eval_count=prompt, eval_count=7)
+        return payload
 
-    server, _ = serve(reply)
+    server, received = serve(reply)
     try:
-        view, _ = discovery.discover(config, ir, provider(server))
+        ollama = OllamaProvider(
+            "m", f"http://127.0.0.1:{server.server_port}{transport}",
+            context_window=65536, max_output_tokens=321,
+        )
+        limits = RunLimits(max_requests=1) if scenario == "budget" else None
+        if scenario == "admission":
+            limits = RunLimits(context_window_tokens=512, request_output_tokens=321)
+        result = service.execute("discover", service.DiscoverRequest(root, provider=ollama, limits=limits))
     finally:
         stop(server)
 
-    assert view["status"] == "complete" and view["provenance"]["requests"] == 2 and len(view["components"]) == 3
-    assert view["provenance"]["provider"] == "ollama" and view["provenance"]["external"] is False
-
-
-def test_an_unsuccessful_completion_during_discovery_is_a_provider_error_not_a_view(tmp_path, capsys):
-    discovery = pytest.importorskip("repodocs.architecture.discovery")
-    from test_architecture_discovery import setup
-
-    root, config, ir = setup(tmp_path, capsys)
-    server, _ = serve({"model": "m", "choices": [{"finish_reason": "length", "message": {"content": '{"components":'}}]})
-    try:
-        with pytest.raises(ProviderError, match="no architecture component that passed validation"):
-            discovery.discover(config, ir, provider(server))
-    finally:
-        stop(server)
+    assert result.status == ("complete" if scenario in ("repair", "unknown") else "failed"), result
+    receipt = json.loads(Path(result.data["usage"]["receipt"]).read_text(encoding="utf-8"))
+    requests = receipt["requests"]
+    assert len(received) == len(requests) == {"admission": 0, "repair": 2}.get(scenario, 1)
+    if scenario == "budget":
+        assert result.data["usage"]["stop_reason"] == "request-limit"
+    for (path, auth, body), entry in zip(received, requests, strict=True):
+        messages = body["messages"]
+        system, user = (message["content"] for message in messages)
+        assert body == ollama.request_body(system, user, RESPONSE_SCHEMA)
+        assert entry["estimate_tokens"] == estimate_tokens(serialized_request(ollama, system, user, RESPONSE_SCHEMA))
+        assert entry["output_cap_tokens"] == 321
+        if transport:
+            assert path == "/v1/chat/completions" and auth == f"Bearer {SECRET}"
+            assert body["max_tokens"] == 321
+        else:
+            assert path == "/api/chat" and auth is None
+            assert body["options"] == {"num_ctx": 65536, "num_predict": 321}
+        assert entry["usage_measured"] is (scenario != "unknown")
+        if scenario != "unknown":
+            assert entry["usage"]["input_tokens"] == (65529 if scenario == "full-context" else 23)
+            assert entry["usage"]["output_tokens"] == 7
+        else:
+            assert entry["usage"] is None
+    assert SECRET not in repr(result)
+    assert SECRET not in json.dumps(receipt)
+    for path in root.rglob("*"):
+        if path.is_file() and ".git" not in path.parts:
+            assert SECRET.encode() not in path.read_bytes(), path
 
 
 def test_a_remote_gateway_needs_the_separate_source_excerpt_consent_for_discovery(monkeypatch):

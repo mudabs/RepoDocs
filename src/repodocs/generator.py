@@ -29,6 +29,21 @@ OPTIONAL_ARTIFACT_GENERATORS = {
     AI_ARTIFACT: AI_GENERATOR_NAME,
     ERD_ARTIFACT: GENERATOR_NAME,
 }
+# Architecture-view artifacts (ADR-026) have names that depend on the view, so they are recognized by
+# prefix. They come from a validated model proposal and carry their own generator label.
+ARCHITECTURE_GENERATOR_NAME = "repodocs-architecture"
+ARCHITECTURE_PREFIX = "architecture-view"
+ARCHITECTURE_SUFFIXES = (".mmd", ".md", ".html", ".json")
+
+
+def optional_generator(path: str) -> str | None:
+    """The generator label of an optional artifact, or None when the name is not an optional one."""
+
+    if path in OPTIONAL_ARTIFACT_GENERATORS:
+        return OPTIONAL_ARTIFACT_GENERATORS[path]
+    if "/" not in path and path.startswith(ARCHITECTURE_PREFIX) and path.endswith(ARCHITECTURE_SUFFIXES):
+        return ARCHITECTURE_GENERATOR_NAME
+    return None
 
 # The fields that identify where generated output lives. Revision and tree state change
 # legitimately between runs and are deliberately not part of the identity.
@@ -609,7 +624,7 @@ def _preflight(output_dir: Path, manifest: dict[str, Any] | None, planned: set[s
             )
         return
     existing_entries = {item["path"]: item for item in manifest.get("artifacts", [])}
-    unexpected_manifest = set(existing_entries) - planned - set(OPTIONAL_ARTIFACT_GENERATORS)
+    unexpected_manifest = {path for path in existing_entries if path not in planned and optional_generator(path) is None}
     if unexpected_manifest:
         raise OwnershipError(
             "Artifact manifest contains unexpected paths: " + ", ".join(sorted(unexpected_manifest))
@@ -618,7 +633,7 @@ def _preflight(output_dir: Path, manifest: dict[str, Any] | None, planned: set[s
     if unexpected_files:
         raise OwnershipError("Generated output contains unowned files: " + ", ".join(sorted(unexpected_files)))
     for relative_path, entry in existing_entries.items():
-        if relative_path in OPTIONAL_ARTIFACT_GENERATORS and entry.get("generator") != OPTIONAL_ARTIFACT_GENERATORS[relative_path]:
+        if optional_generator(relative_path) is not None and entry.get("generator") != optional_generator(relative_path):
             raise OwnershipError(f"Artifact manifest mislabels optional output: {relative_path}")
         path = owned_path(output_dir, relative_path)
         if path.exists():
@@ -641,7 +656,7 @@ def _manifest(ir: dict[str, Any], destination: dict[str, Any], artifact_contents
                 "path": path,
                 "content_hash": sha256_text(content),
                 "source_ir_hash": source_hash,
-                "generator": OPTIONAL_ARTIFACT_GENERATORS.get(path, GENERATOR_NAME),
+                "generator": optional_generator(path) or GENERATOR_NAME,
                 "generator_version": GENERATOR_VERSION,
             }
             for path, content in sorted(artifact_contents.items())
@@ -649,13 +664,27 @@ def _manifest(ir: dict[str, Any], destination: dict[str, Any], artifact_contents
     }
 
 
+def retained_architecture_entries(manifest: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """The manifest entries of architecture-view files from an earlier run, exactly as recorded."""
+
+    return [dict(item) for item in (manifest or {}).get("artifacts", []) if item.get("generator") == ARCHITECTURE_GENERATOR_NAME]
+
+
 def generate_docs(
-    config: ProjectConfig, ir: dict[str, Any], optional: dict[str, str] | None = None
+    config: ProjectConfig,
+    ir: dict[str, Any],
+    optional: dict[str, str] | None = None,
+    *,
+    retain_architecture: bool = False,
 ) -> GenerationResult:
     """Write the deterministic artifacts plus any optional ones supplied for this run.
 
     An optional artifact that was generated before and is not supplied now is removed, so
-    output never keeps a document whose input is gone or out of date.
+    output never keeps a document whose input is gone or out of date. The one exception is
+    ``retain_architecture``, for a run that has no stored architecture view at all (a clean clone):
+    the architecture-view files from an earlier run are kept as they are, after the usual check that
+    they are unedited, and keep the manifest entry they were recorded with, so they are never
+    labelled as generated from this System IR.
     """
 
     destination = describe_destination(config)
@@ -678,15 +707,18 @@ def generate_docs(
     if erd_source is not None:
         contents[ERD_ARTIFACT] = erd_source
     for name, content in (optional or {}).items():
-        if name not in OPTIONAL_ARTIFACT_GENERATORS:
+        if optional_generator(name) is None:
             raise OwnershipError(f"Unknown optional artifact: {name}")
         contents[name] = content
     _preflight(output_dir, manifest, set(contents))
     output_dir.mkdir(parents=True, exist_ok=True)
     new_manifest = _manifest(ir, destination, contents)
+    retained = [item for item in retained_architecture_entries(manifest) if item["path"] not in contents and owned_path(output_dir, item["path"]).exists()] if retain_architecture else []
+    new_manifest["artifacts"] = sorted(new_manifest["artifacts"] + retained, key=lambda item: item["path"])
     changed = False
     # _preflight has verified that owned files are unedited, so a retired one is safe to remove.
-    for name in set(OPTIONAL_ARTIFACT_GENERATORS) - set(contents):
+    retired = set(OPTIONAL_ARTIFACT_GENERATORS) | {item["path"] for item in (manifest or {}).get("artifacts", []) if optional_generator(item["path"])}
+    for name in sorted(retired - set(contents) - {item["path"] for item in retained}):
         if owned_path(output_dir, name).exists():
             owned_path(output_dir, name).unlink()
             changed = True
@@ -699,4 +731,4 @@ def generate_docs(
     if not path_to_manifest.exists() or path_to_manifest.read_text(encoding="utf-8") != manifest_text:
         write_json(path_to_manifest, new_manifest)
         changed = True
-    return GenerationResult(changed=changed, artifacts=sorted(contents), destination=destination)
+    return GenerationResult(changed=changed, artifacts=sorted(set(contents) | {item["path"] for item in retained}), destination=destination)

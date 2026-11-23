@@ -66,3 +66,29 @@ def read_ir(root: Path) -> dict:
 
 def read_manifest(root: Path) -> dict:
     return json.loads((root / ".repodocs" / "artifact-manifest.json").read_text(encoding="utf-8"))
+
+
+@pytest.fixture(autouse=True)
+def no_token_counting_requests(monkeypatch):
+    """Ordinary tests never reach a provider, not even for a token count. A test of the count opts back in."""
+
+    from repodocs.ai.providers import AnthropicProvider
+    from repodocs.errors import ProviderError
+
+    def refuse(self, system, user, schema):
+        raise ProviderError("token counting is disabled in tests")
+
+    monkeypatch.setattr(AnthropicProvider, "count_input_tokens", refuse)
+
+
+def allow_large_context(root: Path, window: int = 131072) -> None:
+    """Tell the project its (replayed) local model has a larger window than the 4096-token default.
+
+    Without a provider count a request is bounded at one token per byte (ADR-031), so fixture prompts of a few tens
+    of kilobytes need a window this size even though their real token count is several times smaller.
+    """
+
+    path = root / "repodocs.json"
+    configuration = json.loads(path.read_text(encoding="utf-8"))
+    configuration["ai"].setdefault("limits", {})["context_window_tokens"] = window
+    path.write_text(json.dumps(configuration), encoding="utf-8")

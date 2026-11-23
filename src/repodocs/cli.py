@@ -5,10 +5,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from . import __version__
+from . import __version__, service
 from .common import write_json
 from .config import (
     AI_PROVIDERS,
@@ -17,6 +18,7 @@ from .config import (
     REPOSITORY_ROLES,
     ROLE_DESTINATION,
     ROLE_SOURCE,
+    SOURCE_POLICY_VERSION,
     AiSettings,
     ProjectConfig,
     RepositorySpec,
@@ -36,31 +38,12 @@ from .confirmations import (
     record_decision,
     save_decisions,
     status_counts,
-    unresolved_candidates,
 )
-from .errors import (
-    EXIT_AI_PROVIDER,
-    EXIT_CONFIRMATION,
-    EXIT_OK,
-    EXIT_OWNERSHIP,
-    EXIT_PUBLICATION,
-    EXIT_SNAPSHOT,
-    EXIT_USAGE,
-    EXIT_VALIDATION,
-    ConfigError,
-    ConfirmationError,
-    OwnershipError,
-    ProviderError,
-    PublicationError,
-    RepoDocsError,
-    SnapshotError,
-    ValidationError,
-)
-from .generator import generate_docs
+from .errors import EXIT_OK, EXIT_USAGE, ConfigError, RepoDocsError
 from .ir import write_ir
-from .scanner import scan_project
+from .service import load_scanned_ir, require_resolved_candidates
 from .snapshot import SNAPSHOT_MODE_LOCAL, SNAPSHOT_MODES
-from .validation import load_ir, validate_candidate_states, validate_ir, validate_project
+from .validation import validate_candidate_states, validate_project
 
 
 OUTPUT_SCHEMA_VERSION = "1.0"
@@ -83,6 +66,10 @@ def _emit(
         "warnings": warnings or [],
     }
     print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+
+
+def _emit_result(command: str, result: service.WorkflowResult) -> None:
+    _emit(command, ok=True, data=result.data, warnings=list(result.warnings))
 
 
 def _root(args: argparse.Namespace) -> Path:
@@ -188,106 +175,21 @@ def _parse_pins(values: list[str] | None) -> dict[str, str]:
 
 
 def _cmd_scan(args: argparse.Namespace) -> int:
-    config = ProjectConfig.load(_root(args))
     pins = _parse_pins(args.pins)
     for repository_id, revision in _parse_pins_json(args.pins_json).items():
         if pins.setdefault(repository_id, revision) != revision:
             raise ConfigError(f"Conflicting pins for {repository_id}: --pin and --pins-json disagree")
-    ir, warnings = scan_project(config, mode=args.snapshot_mode, pins=pins)
-    apply_decisions(ir, load_decisions(config.root))
-    validate_ir(ir)
-    config.internal_path.mkdir(parents=True, exist_ok=True)
-    ir_path = config.internal_path / "ir.json"
-    write_ir(ir_path, ir)
-    _emit(
-        "scan",
-        ok=True,
-        data={
-            "ir": ir_path.as_posix(),
-            "snapshot_mode": args.snapshot_mode,
-            "repositories": len(ir["snapshots"]),
-            "snapshots": [
-                {
-                    "repository_id": snapshot["repository_id"],
-                    "revision_kind": snapshot["revision_kind"],
-                    "revision": snapshot["revision"],
-                    "working_tree_state": snapshot["working_tree_state"],
-                }
-                for snapshot in ir["snapshots"]
-            ],
-            "nodes": len(ir["nodes"]),
-            "relationships": len(ir["relationships"]),
-            "evidence": len(ir["evidence"]),
-            "claims": len(ir["claims"]),
-            "limitations": len(ir["limitations"]),
-            "candidates": len(ir["candidates"]),
-            "candidate_states": status_counts(ir),
-            "analyzers": ir["provenance"]["analyzers"],
-        },
-        warnings=warnings,
-    )
+    _emit_result("scan", service.scan(service.ScanRequest(_root(args), snapshot_mode=args.snapshot_mode, pins=pins)))
     return EXIT_OK
 
 
 def _cmd_generate(args: argparse.Namespace) -> int:
-    config = ProjectConfig.load(_root(args))
-    ir = _load_scanned_ir(config)
-    # Never render a decision the confirmations file no longer records.
-    validate_candidate_states(config, ir)
-    # The AI package is loaded only when claims have been stored; otherwise generation is
-    # purely deterministic and needs nothing from it.
-    ai_status, optional = "absent", {}
-    if (config.internal_path / "ai-claims.json").exists():
-        from .ai.docs import ai_artifact
-
-        ai_status, optional = ai_artifact(config.internal_path, ir)
-    result = generate_docs(config, ir, optional)
-    warnings = []
-    if ai_status in ("stale", "invalid"):
-        warnings.append(
-            f"Stored AI claims are {ai_status} for the current System IR and were not rendered; "
-            "run `repodocs ai-interpret` to refresh them"
-        )
-    _emit(
-        "generate",
-        ok=True,
-        data={
-            "changed": result.changed,
-            "destination": result.destination,
-            "output_directory": config.output_path.as_posix(),
-            "artifacts": result.artifacts,
-            "ai": {"claims": ai_status, "rendered": bool(optional)},
-        },
-        warnings=warnings,
-    )
+    _emit_result("generate", service.generate(service.GenerateRequest(_root(args), retire_architecture=args.retire_architecture)))
     return EXIT_OK
 
 
-def _require_resolved_candidates(ir: dict[str, Any]) -> None:
-    unresolved = unresolved_candidates(ir)
-    if unresolved:
-        shown = ", ".join(item["id"] for item in unresolved[:10])
-        raise ConfirmationError(
-            f"{len(unresolved)} cross-repository candidate(s) require confirmation or rejection "
-            f"(unresolved or stale): {shown}{', ...' if len(unresolved) > 10 else ''}; "
-            "list them with `repodocs candidates`"
-        )
-
-
 def _cmd_validate(args: argparse.Namespace) -> int:
-    config = ProjectConfig.load(_root(args))
-    artifacts, ir = validate_project(config)
-    if not args.allow_unresolved:
-        _require_resolved_candidates(ir)
-    _emit(
-        "validate",
-        ok=True,
-        data={
-            "destination": config.destination().id,
-            "artifacts": artifacts,
-            "candidate_states": status_counts(ir),
-        },
-    )
+    _emit_result("validate", service.validate(service.ValidateRequest(_root(args), allow_unresolved=args.allow_unresolved)))
     return EXIT_OK
 
 
@@ -312,15 +214,9 @@ def _candidate_summary(candidate: dict[str, Any], nodes: dict[str, dict[str, Any
     return summary
 
 
-def _load_scanned_ir(config: ProjectConfig) -> dict[str, Any]:
-    ir = load_ir(config.internal_path / "ir.json")
-    validate_ir(ir)
-    return ir
-
-
 def _cmd_candidates(args: argparse.Namespace) -> int:
     config = ProjectConfig.load(_root(args))
-    ir = _load_scanned_ir(config)
+    ir = load_scanned_ir(config)
     validate_candidate_states(config, ir)
     wanted = UNRESOLVED_STATUSES if args.status == "unresolved" else STATUSES if args.status == "all" else (args.status,)
     nodes = {node["id"]: node for node in ir["nodes"]}
@@ -341,7 +237,7 @@ def _cmd_decide(args: argparse.Namespace) -> int:
     """Record confirm or reject decisions for candidates in the current scan, all or nothing."""
 
     config = ProjectConfig.load(_root(args))
-    ir = _load_scanned_ir(config)
+    ir = load_scanned_ir(config)
     decisions = load_decisions(config.root)
     # Start from the states the current file produces, in case it was edited since the scan.
     apply_decisions(ir, decisions)
@@ -372,7 +268,7 @@ def _cmd_publish(args: argparse.Namespace) -> int:
     config = ProjectConfig.load(_root(args))
     # Never publish output that has not just been validated, with confirmations resolved.
     _, ir = validate_project(config)
-    _require_resolved_candidates(ir)
+    require_resolved_candidates(ir)
     token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
     pull_requests = None
     if not args.dry_run:
@@ -400,14 +296,66 @@ def _cmd_ai_configure(args: argparse.Namespace) -> int:
     config = ProjectConfig.load(_root(args))
     current = config.ai
     consent = True if args.consent_external else False if args.revoke_consent else current.external_consent
-    config.ai = AiSettings(
+    source = True if args.consent_source_excerpts else False if args.revoke_source_consent else current.source_excerpts_consent
+    selected = args.provider or current.provider
+    changed = (
+        selected != current.provider
+        or (args.model is not None and args.model != current.model)
+        or (selected == "ollama" and args.ollama_host is not None and args.ollama_host != current.ollama_host)
+        or (selected == "openai" and args.openai_base_url is not None and args.openai_base_url != current.openai_base_url)
+    )
+    if args.openai_base_url is not None:
+        from .ai.openai import check_base_url
+
+        # Refused before anything is saved: a credential or key in the URL must never reach repodocs.json.
+        check_base_url(args.openai_base_url)
+    if changed:
+        # An existing grant is not permission to disclose the same source to a different destination/model.
+        consent = bool(args.consent_external)
+        source = bool(args.consent_source_excerpts)
+    # replace() keeps the usage settings (limits, effort, prices) that this command does not edit.
+    config.ai = replace(
+        current,
+        source_excerpts_consent=source,
+        source_consent_policy=SOURCE_POLICY_VERSION if source else None,
         provider=args.provider or current.provider,
         model=args.model or (current.model if not args.provider or args.provider == current.provider else None),
         external_consent=consent,
         ollama_host=args.ollama_host or current.ollama_host,
+        openai_base_url=args.openai_base_url or current.openai_base_url,
     )
     config.save()
     _emit("ai-configure", ok=True, data=config.ai.to_dict())
+    return EXIT_OK
+
+
+def _cmd_architecture_context(args: argparse.Namespace) -> int:
+    """Write the bounded, redacted source context for review. Never contacts a provider."""
+
+    from .ai import providers
+
+    config = ProjectConfig.load(_root(args))
+    provider = None
+    if config.ai.provider != "none":
+        try:
+            provider = providers.resolve_provider(replace(config.ai, external_consent=True))
+        except RepoDocsError:
+            provider = None
+    _emit_result("architecture-context", service.preview_context(service.ContextRequest(_root(args), provider=provider)))
+    return EXIT_OK
+
+
+def _cmd_architecture_discover(args: argparse.Namespace) -> int:
+    """Run bounded architecture discovery and store the validated view. Contacts the provider only here."""
+
+    from .ai import providers
+
+    request = service.DiscoverRequest(_root(args), refresh=args.refresh)
+    if not service.can_reuse_view(request):
+        # Consent and settings are checked before any context is sent.
+        provider = providers.resolve_discovery_provider(ProjectConfig.load(_root(args)).ai)
+        request = replace(request, provider=provider)
+    _emit_result("architecture-discover", service.discover(request))
     return EXIT_OK
 
 
@@ -415,7 +363,7 @@ def _write_bundle(config: ProjectConfig) -> tuple[dict[str, Any], Path]:
     from .ai.bundle import build_bundle
     from .ai.claims import BUNDLE_FILENAME
 
-    ir = _load_scanned_ir(config)
+    ir = load_scanned_ir(config)
     validate_candidate_states(config, ir)
     bundle = build_bundle(ir)
     path = config.internal_path / BUNDLE_FILENAME
@@ -446,7 +394,7 @@ def _cmd_ai_bundle(args: argparse.Namespace) -> int:
 
 
 def _cmd_ai_interpret(args: argparse.Namespace) -> int:
-    from .ai import providers
+    from .ai import budgets, providers
     from .ai.claims import CLAIMS_FILENAME, interpret
 
     config = ProjectConfig.load(_root(args))
@@ -456,7 +404,16 @@ def _cmd_ai_interpret(args: argparse.Namespace) -> int:
         _emit("ai-interpret", ok=True, data={"status": "disabled", "provider": "none"})
         return EXIT_OK
     bundle, bundle_path = _write_bundle(config)
-    document = interpret(bundle, provider)
+    budgeted = budgets.budgeted(provider, config.ai)
+    try:
+        document = interpret(bundle, budgeted)
+    except RepoDocsError as exc:
+        exc.receipt = budgets.write_receipt(config.internal_path, "ai-interpret", budgeted)  # type: ignore[attr-defined]
+        raise
+    except BaseException:
+        budgets.write_receipt(config.internal_path, "ai-interpret", budgeted)
+        raise
+    usage = budgets.write_receipt(config.internal_path, "ai-interpret", budgeted)
     from .ai.evaluation import contribution
 
     claims_path = config.internal_path / CLAIMS_FILENAME
@@ -470,8 +427,9 @@ def _cmd_ai_interpret(args: argparse.Namespace) -> int:
             "provenance": document["provenance"],
             "accepted": len(document["accepted"]),
             "rejected": len(document["rejected"]),
-            "contribution": contribution(_load_scanned_ir(config), document),
+            "contribution": contribution(load_scanned_ir(config), document),
             "bundle": _bundle_summary(bundle, bundle_path),
+            "usage": usage,
         },
     )
     return EXIT_OK
@@ -547,6 +505,11 @@ def _build_parser() -> argparse.ArgumentParser:
     generate_parser = subparsers.add_parser(
         "generate", help="Generate deterministic documentation into the destination"
     )
+    generate_parser.add_argument(
+        "--retire-architecture",
+        action="store_true",
+        help="Remove the generated architecture-view files (owned and unedited only) instead of keeping or rendering them",
+    )
     generate_parser.set_defaults(handler=_cmd_generate)
 
     validate_parser = subparsers.add_parser(
@@ -590,6 +553,7 @@ def _build_parser() -> argparse.ArgumentParser:
     ai_configure.add_argument("--provider", choices=AI_PROVIDERS)
     ai_configure.add_argument("--model")
     ai_configure.add_argument("--ollama-host", help="Ollama server URL (default http://localhost:11434)")
+    ai_configure.add_argument("--openai-base-url", help="Responses API base URL (HTTPS; default https://api.openai.com/v1)")
     consent = ai_configure.add_mutually_exclusive_group()
     consent.add_argument(
         "--consent-external",
@@ -597,6 +561,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Consent to sending the redacted evidence bundle off this machine",
     )
     consent.add_argument("--revoke-consent", action="store_true", help="Return the project to local-only")
+    source_consent = ai_configure.add_mutually_exclusive_group()
+    source_consent.add_argument(
+        "--consent-source-excerpts",
+        action="store_true",
+        help="Consent to sending bounded, redacted source excerpts to an external provider for architecture discovery",
+    )
+    source_consent.add_argument("--revoke-source-consent", action="store_true", help="Withdraw consent for source excerpts")
     ai_configure.set_defaults(handler=_cmd_ai_configure)
 
     ai_bundle = subparsers.add_parser("ai-bundle", help="Write the redacted evidence bundle for review; sends nothing")
@@ -606,6 +577,18 @@ def _build_parser() -> argparse.ArgumentParser:
         "ai-interpret", help="Ask the configured provider for claims and validate them against the evidence"
     )
     ai_interpret.set_defaults(handler=_cmd_ai_interpret)
+
+    architecture = subparsers.add_parser("architecture", help="Architecture discovery (ADR-026)")
+    architecture_commands = architecture.add_subparsers(dest="architecture_command", required=True)
+    architecture_context = architecture_commands.add_parser(
+        "context", help="Write the bounded, redacted source context for review; sends nothing"
+    )
+    architecture_context.set_defaults(handler=_cmd_architecture_context)
+    architecture_discover = architecture_commands.add_parser(
+        "discover", help="Ask the configured provider for an architecture view and validate it; reuses a current stored view"
+    )
+    architecture_discover.add_argument("--refresh", action="store_true", help="Run new inference even when a current view is stored")
+    architecture_discover.set_defaults(handler=_cmd_architecture_discover)
     return parser
 
 
@@ -614,27 +597,12 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return args.handler(args)
-    except SnapshotError as exc:
-        _emit(args.command, ok=False, errors=[str(exc)])
-        return EXIT_SNAPSHOT
-    except OwnershipError as exc:
-        _emit(args.command, ok=False, errors=[str(exc)])
-        return EXIT_OWNERSHIP
-    except ConfirmationError as exc:
-        _emit(args.command, ok=False, errors=[str(exc)])
-        return EXIT_CONFIRMATION
-    except PublicationError as exc:
-        _emit(args.command, ok=False, errors=[str(exc)])
-        return EXIT_PUBLICATION
-    except ProviderError as exc:
-        _emit(args.command, ok=False, errors=[f"{exc}. Deterministic scan, generate, and validate are unaffected"])
-        return EXIT_AI_PROVIDER
-    except ValidationError as exc:
-        _emit(args.command, ok=False, errors=[str(exc)])
-        return EXIT_VALIDATION
     except RepoDocsError as exc:
-        _emit(args.command, ok=False, errors=[str(exc)])
-        return EXIT_USAGE
+        error = service.describe_error(exc)
+        # A run that reached a provider shows its usage receipt even when it failed.
+        receipt = getattr(exc, "receipt", None)
+        _emit(args.command, ok=False, data=None if receipt is None else {"usage": receipt}, errors=[error.message])
+        return error.exit_code
     except Exception as exc:  # pragma: no cover - defensive CLI boundary
         _emit(args.command, ok=False, errors=[f"Unexpected error: {exc}"])
         return EXIT_USAGE
