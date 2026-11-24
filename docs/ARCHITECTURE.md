@@ -81,6 +81,8 @@ Choose artifact type, scope, required evidence, coverage, destination, and gener
 
 Rendering is not AI drawing: Mermaid performs initial rendering/layout; PlantUML and Graphviz/ELK.js remain extension points. React Flow is a possible later interactive UI, not required by CLI. Sequence diagrams are particularly difficult: a call graph alone does not establish runtime ordering or branches; do not assert observed sequence without adequate evidence.
 
+Implemented (ADR-035): A single validated architecture view drives deterministic overview and focused subsystem detail views without additional inference calls. Subsystem groups with two or more components or crowded views (>12 components) project focused detail diagrams with focal components and dotted boundary context stubs. Diagram legends are compact; diagnostic notes use Mermaid comments; detail views are indexed in `evidence_map.json`. Entity-relationship diagrams (`erd.mmd`) require supported schema table facts, while unsupported dynamic sequence and runtime activity/state diagrams are explicitly documented as unavailable. Improved projection does not alter grounding boundaries (#54 remains open).
+
 ### Publishing
 Store repository-local docs in owning repos and system-wide docs in one configured coordination repository. In project configuration this is the single documentation destination: a `source` repository or one `destination`-only repository, with a dedicated output directory inside it (ADR-014). Generated artifact manifests track ownership, hashes, source SHAs, versions, and dependencies. Preserve human-authored files and fail on unexpected edits. The GitHub Action creates reviewable PRs in the coordination repository, suppressing empty PRs and bot loops.
 
@@ -103,3 +105,7 @@ Representative golden fixtures define expected facts and relationships. Evaluati
 
 ## Major failure modes
 Inaccurate dynamic code inference; cross-repo false matches; stale multi-repo snapshots; hallucinated AI steps; malformed or overcrowded diagrams; nondeterministic PR churn; overwritten manual docs; leaked secrets; fork-PR token exposure; expensive AI usage; GitHub rate limits and concurrent runs; excessive MVP scope.
+
+### Focused architecture projections
+
+ADR-035 bounds detail views to ten focal components and eight boundary nodes, with deterministic existing-connection traversal, identity-bound filenames and an owned Markdown index. Detailed diagnostics stay in comments and the evidence map. Presentation slices do not establish subsystem or deployment facts; #54/#77 retain semantic and intended-user acceptance.

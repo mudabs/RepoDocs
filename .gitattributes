@@ -1,0 +1,5 @@
+# Preserve upstream fixture bytes and provenance hashes across Windows/Linux.
+tests/fixtures/architecture-projections/** -text
+# These source files intentionally retain upstream trailing spaces for hash verification.
+tests/fixtures/architecture-projections/digitalbonebox/source/boneset-api/server.js -whitespace
+tests/fixtures/architecture-projections/digitalbonebox/source/data_extraction/xml_boneset_reader.py -whitespace

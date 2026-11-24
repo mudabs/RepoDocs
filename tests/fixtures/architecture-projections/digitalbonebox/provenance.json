@@ -1,0 +1,17 @@
+{
+  "repository": "https://github.com/oss-slu/DigitalBoneBox",
+  "revision": "602e9c53c656f55b5e69b1a4dd4c6f79e53b368c",
+  "revision_date": "2026-11-09",
+  "license": "MIT (LICENSE in the repository root)",
+  "stack": "Node.js and Express API, vanilla JavaScript and HTML client, JSON data files, Python extraction scripts",
+  "path_prefix": "",
+  "files": {
+    "templates/js/api.js": "927ff165a2a6be69f005e24516cdd77e87c15e2e6a8e414a4a65970bb012e5b3",
+    "boneset-api/server.js": "50725f6965cedab77f34ee2ebf55326e04d244f85c5b5d8723748b3f290c1c40",
+    "boneset-api/scenes.js": "e15a3207d776ca14bba2c16ee51d5840b29b2130c03e0bb18f79376355b10a89",
+    "boneset-api/data/bones/anterior.json": "f54750de26c8a0544fd28feb5b2819cd3bb9ccd39de3aaaa7ee1c0721c11fd18",
+    "data_extraction/xml_boneset_reader.py": "85c3a7ee62cff7420468425833c8fa310ff11dd198fb2fe6bda9f49306f465ac",
+    "api/index.js": "f44ae638cac270bdc43f50b63983175c6e691736c8927330795f1a7afeec7d1a"
+  },
+  "note": "Exact licensed source files from the recorded upstream commit, not a complete Git checkout. Tests scan this subset as local content."
+}
