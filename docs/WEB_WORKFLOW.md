@@ -1,6 +1,6 @@
 # Local web-first workflow contract 1.0
 
-This is a development contract for #64 under epic #63, not an implemented web API. The existing CLI remains usable independently. See ADR-027 and `schemas/web-workflow-1.0.json`.
+This contract (#64, epic #63) is implemented on the backend by the local HTTP jobs adapter (#72, ADR-036, the optional `repodocs[web]` extra); the browser UI (#73) is not built yet. The existing CLI remains usable independently. See ADR-027 and `schemas/web-workflow-1.0.json`.
 
 ## Browser journey
 
@@ -16,8 +16,8 @@ This is a development contract for #64 under epic #63, not an implemented web AP
 ## Shared service and HTTP boundary
 
 - #69 implements (ADR-030, `repodocs.service`) ordinary Python request/result types and callbacks around existing core operations, not an event bus or plugin framework. Credential/provider objects are passed per run; never swap process-wide environment variables per user.
-- #72 exposes `POST /api/v1/jobs`, `GET /api/v1/jobs/{job_id}` and `POST /api/v1/jobs/{job_id}/cancel`. Proposed adapter endpoints, not current CLI commands. POST returns 202 for a new accepted job; replaying an identical admitted request returns its original job. Same workspace/key with a different request returns 409. Authentication and access checks run before revealing even an existing job.
-- Invalid input is 422, missing consent is 403, stale preview/idempotency conflict is 409, a full bounded queue is 429, and an unknown/inaccessible handle is 404. Admission failure creates no model request. Errors contain a stable code and a sanitized message, never provider bodies or keys.
+- #72 implements `POST /api/v1/jobs`, `GET /api/v1/jobs/{job_id}` and `POST /api/v1/jobs/{job_id}/cancel`, plus the session, workspace, preview, provider-session, consent and artifact routes the journey needs (ADR-036). They are adapter routes, not CLI commands. POST returns 202 for a new accepted job; replaying an identical admitted request returns its original job. Same workspace/key with a different request returns 409. Authentication and access checks run before revealing even an existing job.
+- Invalid input is 422, missing consent is 403, stale preview/idempotency conflict is 409, a full bounded queue is 429, and an unknown/inaccessible handle is 404. Admission failure creates no model request. Errors contain a stable code and a sanitized message, never provider bodies or keys; non-2xx bodies use the contract's `api_error` envelope.
 - Polling returns `sequence`, a monotonic per-job revision. Start at one-second polling, back off to five seconds and stop on terminal state. No elapsed percentage is invented. There is no automatic retry of paid work; any permitted repair counts against the same budget.
 - A workspace retains one active job and at most one queued job by default. Idempotency covers the normalized request and source/context hashes, not credentials. Queue admission reserves the configured worst-case allowance. #67 defines measured/estimated/unknown accounting and prevents retries from bypassing aggregate caps.
 - A result references existing IR/view hashes and opaque artifact handles, not embedded copies of the IR, executable markup or provider responses. The service resolves handles through an owned manifest and checks access, path containment and unexpected edits before returning bytes.
@@ -26,6 +26,7 @@ This is a development contract for #64 under epic #63, not an implemented web AP
 
 - `repodocs.web.security` is implemented and tested without HTTP. #72 must call `SessionGuard.authorize` first on every request (and `open_session` for the first same-origin contact, which needs no OAuth), apply `response_headers`, and never add CORS headers. Non-loopback exposure needs `AccessConfig` with an HTTPS origin and an auth token.
 - Provider credentials arrive per request into `ProviderSessions`, stay in memory and are never returned (`public_view` is the browser form). Consent receipts come from `ConsentLedger.grant` after the preview. #69 must run every model, token-count and retry request through `RunGate.call`, so revoked, expired, missing or mismatched consent starts nothing.
+- An Ollama session takes no credential, and a remote authenticated Ollama `/v1` gateway is refused before any request; such gateways are CLI-only in this release (ADR-036). A web run never reads `REPODOCS_OLLAMA_API_KEY` or any other operator environment credential.
 - Not provided: persistent or secure credential storage, login rate limiting, an HTTP server and UI rendering. Loopback trusts local processes of the same machine.
 
 ## State and recovery rules
@@ -33,6 +34,7 @@ This is a development contract for #64 under epic #63, not an implemented web AP
 | State | Meaning | Result treatment |
 |---|---|---|
 | queued | Admitted, no execution yet | No result |
+| preflight | Claimed by a worker; scanning and checking the reviewed context; no provider request, no artifact write | No result |
 | running | Stage executing | No final result |
 | succeeded | All requested supported outputs generated and validated | Complete current result; not a semantic-quality claim |
 | partial | Discovery explicitly ended incomplete | Partial preview, warning and reason; no complete-success badge |
@@ -51,9 +53,9 @@ This is a development contract for #64 under epic #63, not an implemented web AP
 ## Contract examples and fixtures
 
 - `docs/examples/web-workflow.example.json` contains a request and every job state. `tests/test_web_workflow_contracts.py` checks schema shape and rejects false success, malformed errors, unknown state/version, injected credentials and missing architecture budget fields.
-- For #69/#72/#73 use `tests/fixtures/express-shop-repo` through a scripted provider: scan, preview, configure an ephemeral fake session, submit, poll queued/running/succeeded, inspect Mermaid/evidence, download and compare hashes with CLI outputs. This is a specified acceptance journey; the web endpoints do not exist yet.
-- Run separate fixtures for partial discovery, exhausted aggregate budget, cancellation during inference, failed provider, changed source and interrupted restart. Assert no extra provider requests on reconnect, cancel, viewing or download. No CI credential or paid model is needed.
-- PR #55-60 is merged and supplies the core discovery, rendering, navigation and CLI workflow. PR #61 adds evaluation/context-selection work and remains unmerged; inspect it before reuse. PR #62 remains a draft authenticated gateway adapter. Neither unmerged branch is assumed to be part of main.
+- For #69/#72/#73 use `tests/fixtures/express-shop-repo` through a scripted provider: scan, preview, configure an ephemeral fake session, submit, poll queued/running/succeeded, inspect Mermaid/evidence, download and compare hashes with CLI outputs. This is the acceptance journey the HTTP adapter tests run.
+- Run separate fixtures for partial discovery, exhausted aggregate budget, cancellation during inference, failed provider, changed source and interrupted restart. Assert no extra provider requests on reconnect, cancel, viewing or download. No CI credential or paid model is needed. `tests/test_web_jobs.py` runs this journey and these fixtures through the HTTP adapter with scripted providers.
+- PR #55-60 is merged and supplies the core discovery, rendering, navigation and CLI workflow. PR #61 (the #54 evaluation harness) is merged. PR #62, the authenticated gateway adapter, is open and separate from #72; it is not assumed to be part of main.
 
 ## Release quality rubric (review with #64 before new scoring)
 
@@ -69,5 +71,5 @@ This is a development contract for #64 under epic #63, not an implemented web AP
 
 - #65 grounding; #66 bounded source context; #67 model-aware usage; #68 OpenAI provider; #69 application seam; #70 sources; #71 security; #72 jobs; #73 browser journey; #74 scoped diagrams; #75 evidence/downloads; #76 packaging; #77 parity/quality gate.
 - #70 is implemented as the backend workspace core in `src/repodocs/web/workspaces.py` (ADR-034, D50). It returns the `ProjectConfig` that #69 consumes and adds no routes or UI. Local sources are chosen by configured name; public GitHub sources need an exact SHA, a bounded tree preflight and hardened depth-1 Git. Symlinks, submodules, private repositories and other hosts are refused.
-- This spike adds schemas, examples, tests and documentation only. No runtime API, public hosting, account/billing service, new paid calls, video generation or speculative backend is included.
+- The #64 spike added schemas, examples, tests and documentation only. #72 adds the local runtime adapter (ADR-036). No public hosting, account/billing service, new paid calls, video generation or speculative backend is included.
 - Public deployment policy, production default model, funded quotas and changed disclosure ceilings require separate decisions. Version 1.0 of this adapter contract may evolve through reviewed PRs before the first web release; CLI/IR contracts do not change implicitly.

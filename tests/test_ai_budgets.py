@@ -22,6 +22,7 @@ from conftest import allow_large_context, invoke
 from repodocs.ai import budgets, providers
 from repodocs.ai.budgets import (
     BudgetedProvider, Ledger, PriceProfile, RunLimits, RunStopped, Usage, budgeted, estimate_tokens, ledger_for, usage_from_counts,
+    write_receipt,
 )
 from repodocs.ai.providers import AnthropicProvider, OllamaProvider, ProviderResponse
 from repodocs.architecture.discovery import discover
@@ -1273,3 +1274,54 @@ def test_a_caller_budget_must_use_the_projects_price_profile_and_still_stops_on_
     result = service.execute("discover", service.DiscoverRequest(root, provider=own), service.RunHooks(cancel=token))
 
     assert result.status == "cancelled" and counting.counts == 1 and not counting.messages
+
+
+# ------------------------------------------------------------------ the total token cap (#72)
+def test_the_total_token_cap_counts_prompt_and_output_together_and_sends_nothing_past_it() -> None:
+    fake = Fake(None, count=400)
+    provider = wrap(fake, request_output_tokens=100, max_total_tokens=1000)  # each request reserves 400 + 100
+
+    go(provider)
+    go(provider)
+    with pytest.raises(RunStopped) as stopped:
+        go(provider)
+
+    assert stopped.value.reason == "total-token-limit" and fake.calls == 2 and "1000 total token cap" in str(stopped.value)
+    snapshot = provider.ledger.snapshot()
+    assert snapshot["limits"]["max_total_tokens"] == 1000 and snapshot["remaining"]["total_tokens"] == 0
+    # Neither category alone was near its own cap: only the total stopped the run.
+    assert snapshot["remaining"]["input_tokens"] > 0 and snapshot["remaining"]["output_tokens"] > 0
+
+
+def test_reported_usage_past_the_total_cap_stops_the_run() -> None:
+    fake = Fake(Usage(input_tokens=900, output_tokens=200, cache_read_tokens=0, cache_write_tokens=0), count=1)
+    provider = wrap(fake, request_output_tokens=8, max_total_tokens=1000)
+
+    with pytest.raises(RunStopped) as stopped:
+        go(provider)
+
+    assert stopped.value.reason == "reported-usage-over-limit" and "1100/1000 total tokens" in str(stopped.value)
+    with pytest.raises(RunStopped):
+        go(provider)
+    assert fake.calls == 1
+
+
+def test_the_total_cap_has_no_default_and_a_run_can_only_lower_it() -> None:
+    assert RunLimits().resolved("ollama").max_total_tokens is None
+    assert ledger().snapshot()["remaining"]["total_tokens"] is None
+    assert RunLimits(max_total_tokens=5000).narrowed(RunLimits(max_total_tokens=9000)).max_total_tokens == 5000
+    assert RunLimits().narrowed(RunLimits(max_total_tokens=9000)).max_total_tokens == 9000
+    assert RunLimits.from_dict({"max_total_tokens": 7}).max_total_tokens == 7
+    with pytest.raises(ConfigError):
+        RunLimits(max_total_tokens=0)
+
+
+def test_a_receipt_with_a_total_cap_matches_its_schema(tmp_path: Path) -> None:
+    provider = wrap(Fake(None, count=10), max_total_tokens=50_000)
+    go(provider)
+
+    summary = write_receipt(tmp_path, "architecture-discover", provider)
+
+    receipt = json.loads(Path(summary["receipt"]).read_text(encoding="utf-8"))
+    assert_valid("usage-receipt-1.0.json", receipt)
+    assert receipt["limits"]["max_total_tokens"] == 50_000 and summary["remaining"]["total_tokens"] < 50_000

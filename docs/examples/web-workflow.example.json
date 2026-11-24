@@ -42,9 +42,9 @@
     "kind": "job",
     "job_id": "job-1",
     "workspace_id": "fixture-shop",
-    "sequence": 1,
-    "state": "running",
-    "stage": "discover",
+    "sequence": 2,
+    "state": "preflight",
+    "stage": "context",
     "error": null,
     "result": null,
     "usage": {
@@ -53,6 +53,35 @@
       "cost_microunits": null,
       "currency": null,
       "accounting": "unknown"
+    }
+  },
+  {
+    "contract_version": "1.0",
+    "kind": "job",
+    "job_id": "job-1",
+    "workspace_id": "fixture-shop",
+    "sequence": 3,
+    "state": "running",
+    "stage": "discover",
+    "error": null,
+    "result": null,
+    "usage": {
+      "input_tokens": 6000,
+      "output_tokens": 2000,
+      "cost_microunits": null,
+      "currency": null,
+      "accounting": "estimated"
+    },
+    "budget": {
+      "requests": 1,
+      "count_requests": 0,
+      "remaining_requests": 2,
+      "remaining_total_tokens": 4000,
+      "remaining_cost_microunits": null,
+      "max_estimated_cost_microunits": null,
+      "usage_complete": false,
+      "stop_reason": null,
+      "stop_message": null
     }
   },
   {
@@ -241,6 +270,15 @@
       "cost_microunits": null,
       "currency": null,
       "accounting": "unknown"
+    }
+  },
+  {
+    "contract_version": "1.0",
+    "kind": "error",
+    "error": {
+      "code": "stale-preview",
+      "message": "The context changed or was never previewed; preview again and review it before submitting",
+      "retryable": false
     }
   }
 ]

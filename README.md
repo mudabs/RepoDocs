@@ -4,7 +4,7 @@ RepoDocs is an evidence-backed repository documentation engine. The current impl
 
 ## Local web-first development
 
-The next release targets a local/self-hosted browser workflow over the same Python engine. It is specified, not implemented yet: see [the workflow contract](docs/WEB_WORKFLOW.md), ADR-027 and epic #63. The CLI remains standalone. Public hosting, managed funded AI, accounts, payments and videos are deferred.
+The next release targets a local/self-hosted browser workflow over the same Python engine: see [the workflow contract](docs/WEB_WORKFLOW.md), ADR-027 and epic #63. Its backend HTTP jobs adapter is implemented as the optional `repodocs[web]` extra (ADR-036); the browser UI, installation and startup command are not yet. The CLI remains standalone. Public hosting, managed funded AI, accounts, payments and videos are deferred.
 
 ## Start here
 - `AGENTS.md`: persistent coding-agent instructions.

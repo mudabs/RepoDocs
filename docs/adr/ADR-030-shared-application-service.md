@@ -27,6 +27,7 @@ ADR-027 requires the CLI and the browser workflow to call one Python implementat
 
 - A second adapter calls the same functions and gets the same IR, view and artifacts for the same inputs and provider replay; tests assert byte parity with the CLI.
 - Because `ai-interpret`, `publish` and candidate decisions remain in the CLI, a web workflow that needs them requires a follow-up extraction.
+- Amended by ADR-036 (#72): `DiscoverRequest.gate` carries an adapter's per-run consent gate (ADR-033). With it the service takes consent for that run from the gate, never writing it to the project, and sends every model and token-count request through the gate inside the run ledger. After each provider request the service emits a `provider-response` progress event carrying the ledger snapshot.
 
 ## Integration point for budgeted providers (#67)
 

@@ -572,3 +572,21 @@ def test_anthropic_adapter_explains_a_missing_sdk(monkeypatch) -> None:
     monkeypatch.setitem(sys.modules, "anthropic", None)
     with pytest.raises(ConfigError, match=r"repodocs\[ai\]"):
         AnthropicProvider(None).generate("s", "u", OUTPUT_SCHEMA)
+
+
+def test_a_per_run_credential_and_host_reach_the_client_while_the_cli_keeps_the_environment(monkeypatch) -> None:
+    """The web service passes both (ADR-033, #72), so the SDK never falls back to ANTHROPIC_API_KEY or ANTHROPIC_BASE_URL."""
+
+    fake_anthropic(monkeypatch)
+    module, clients = sys.modules["anthropic"], []
+    build = module.Anthropic
+    module.Anthropic = lambda **kwargs: clients.append(kwargs) or build(**kwargs)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "from-the-environment")
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://elsewhere.example")
+
+    AnthropicProvider(None, api_key="per-run-key", base_url="https://api.example.test").generate("s", "u", OUTPUT_SCHEMA)
+    assert clients[-1]["api_key"] == "per-run-key" and clients[-1]["base_url"] == "https://api.example.test"
+    assert clients[-1]["max_retries"] == 0
+
+    AnthropicProvider(None).generate("s", "u", OUTPUT_SCHEMA)
+    assert "api_key" not in clients[-1] and "base_url" not in clients[-1]

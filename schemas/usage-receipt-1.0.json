@@ -29,6 +29,7 @@
         "max_count_requests": {"type": "integer", "minimum": 1},
         "max_input_tokens": {"type": "integer", "minimum": 1},
         "max_output_tokens": {"type": "integer", "minimum": 1},
+        "max_total_tokens": {"type": "integer", "minimum": 1},
         "max_cost_usd": {"type": "number", "exclusiveMinimum": 0}
       }
     },
@@ -119,10 +120,11 @@
         "count_requests": {"type": "integer", "minimum": 0},
         "input_tokens": {"type": "integer", "minimum": 0},
         "output_tokens": {"type": "integer", "minimum": 0},
+        "total_tokens": {"type": ["integer", "null"], "minimum": 0},
         "cost_usd": {"type": ["string", "null"]}
       }
     },
-    "stop_reason": {"enum": [null, "cancelled", "request-limit", "context-window", "input-token-limit", "output-token-limit", "cost-limit", "reported-usage-over-limit", "unpriced-usage"]},
+    "stop_reason": {"enum": [null, "cancelled", "request-limit", "context-window", "input-token-limit", "output-token-limit", "total-token-limit", "cost-limit", "reported-usage-over-limit", "unpriced-usage"]},
     "stop_message": {"type": ["string", "null"]},
     "notes": {"type": "array", "items": {"type": "string"}}
   }

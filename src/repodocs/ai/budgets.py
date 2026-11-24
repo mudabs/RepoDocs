@@ -55,6 +55,7 @@ LIMIT_CEILINGS: dict[str, int] = {
 }
 _INTEGER_LIMITS = (
     "context_window_tokens", "request_output_tokens", "max_requests", "max_count_requests", "max_input_tokens", "max_output_tokens",
+    "max_total_tokens",
 )
 # Used when the project does not state a context window. They are conservative configuration
 # defaults, not facts about a model; the window of the model actually served is the project's to set.
@@ -78,6 +79,7 @@ STOP_REQUESTS = "request-limit"
 STOP_CONTEXT = "context-window"
 STOP_INPUT = "input-token-limit"
 STOP_OUTPUT = "output-token-limit"
+STOP_TOTAL = "total-token-limit"
 STOP_COST = "cost-limit"
 STOP_OVERAGE = "reported-usage-over-limit"
 STOP_UNPRICED = "unpriced-usage"
@@ -261,6 +263,8 @@ class RunLimits:
     ``context_window_tokens`` is the runtime's window, which a request must fit including its reserved
     output. ``request_output_tokens`` is the explicit output cap sent with every request. The other
     token and request fields cap the whole run, and ``max_cost_usd`` needs a complete price profile.
+    ``max_total_tokens`` caps prompt and output tokens together; it has no default and is set only by a
+    configuration or a run (for example a web job's ``max_total_tokens``).
     Values are checked on construction, so no caller can exceed a ceiling by building one directly.
     """
 
@@ -271,6 +275,7 @@ class RunLimits:
     max_output_tokens: int | None = None
     max_cost_usd: Decimal | None = None
     max_count_requests: int | None = None
+    max_total_tokens: int | None = None
 
     def __post_init__(self) -> None:
         for name in _INTEGER_LIMITS:
@@ -333,6 +338,7 @@ class RunLimits:
             max_output_tokens=self.max_output_tokens or LIMIT_CEILINGS["max_output_tokens"],
             max_cost_usd=self.max_cost_usd,
             max_count_requests=self.max_count_requests or requests,
+            max_total_tokens=self.max_total_tokens,
         )
 
 
@@ -419,6 +425,11 @@ class Ledger:
             return STOP_INPUT, f"The next request would take the run past its {limits.max_input_tokens} input token cap ({spent_input} already charged)"
         if spent_output + output > limits.max_output_tokens:  # type: ignore[operator]
             return STOP_OUTPUT, f"The next request could take the run past its {limits.max_output_tokens} output token cap ({spent_output} already charged)"
+        if limits.max_total_tokens is not None and spent_input + spent_output + estimate + output > limits.max_total_tokens:
+            return STOP_TOTAL, (
+                f"The next request could take the run past its {limits.max_total_tokens} total token cap "
+                f"({spent_input + spent_output} already charged, up to {estimate + output} more reserved)"
+            )
         cap = self._cost_cap()
         if cap is not None and self.prices is not None:
             worst = self.prices.reserve_micro_usd(estimate, output)  # type: ignore[arg-type]
@@ -513,10 +524,15 @@ class Ledger:
         spent_input, spent_output, spent_cost = self._charged()
         cap = self._cost_cap()
         problem: tuple[str, str] | None = None
-        if spent_input > limits.max_input_tokens or spent_output > limits.max_output_tokens or (cap is not None and (spent_cost or 0) > cap):  # type: ignore[operator]
+        total = limits.max_total_tokens
+        if (
+            spent_input > limits.max_input_tokens or spent_output > limits.max_output_tokens  # type: ignore[operator]
+            or (total is not None and spent_input + spent_output > total) or (cap is not None and (spent_cost or 0) > cap)
+        ):
             problem = STOP_OVERAGE, (
                 f"Request {request.index} reported usage that takes the run past its limits ({spent_input}/{limits.max_input_tokens} "
                 f"input tokens, {spent_output}/{limits.max_output_tokens} output tokens"
+                + (f", {spent_input + spent_output}/{total} total tokens" if total is not None else "")
                 + (f", {format_usd(spent_cost)}/{format_usd(cap)} USD" if cap is not None else "")
                 + "). Its response was not used and no further request is sent; the provider has already billed it, which cannot be undone"
             )
@@ -577,6 +593,7 @@ class Ledger:
                     "count_requests": max(0, limits.max_count_requests - self._counts),  # type: ignore[operator]
                     "input_tokens": max(0, limits.max_input_tokens - spent_input),  # type: ignore[operator]
                     "output_tokens": max(0, limits.max_output_tokens - spent_output),  # type: ignore[operator]
+                    "total_tokens": None if limits.max_total_tokens is None else max(0, limits.max_total_tokens - spent_input - spent_output),
                     "cost_usd": None if cap is None or unpriced else format_usd(max(0, cap - (spent_cost or 0))),
                 },
                 "stop_reason": None if self._stop is None else self._stop[0],

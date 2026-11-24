@@ -80,15 +80,25 @@ def _anthropic_usage(response: Any) -> Usage | None:
 
 
 class AnthropicProvider:
-    """Claude through the official SDK. Credentials come from the environment, never from config."""
+    """Claude through the official SDK. Credentials never come from config.
+
+    The CLI leaves ``api_key`` and ``base_url`` unset, so the SDK reads its usual environment. An adapter that holds a
+    per-run credential (the web service, ADR-033) passes both, so the environment is never consulted and the request
+    goes only to the host that consent was given for.
+    """
 
     name = AI_PROVIDER_ANTHROPIC
     external = True
 
-    def __init__(self, model: str | None, *, max_output_tokens: int = MAX_OUTPUT_TOKENS, effort: str | None = None) -> None:
+    def __init__(
+        self, model: str | None, *, max_output_tokens: int = MAX_OUTPUT_TOKENS, effort: str | None = None,
+        api_key: str | None = None, base_url: str | None = None,
+    ) -> None:
         self.model = model or DEFAULT_ANTHROPIC_MODEL
         self.max_output_tokens = max_output_tokens
         self.effort = effort
+        self._api_key = api_key
+        self._base_url = base_url
 
     def request_body(self, system: str, user: str, schema: dict[str, Any]) -> dict[str, Any]:
         """The exact request. The output cap and effort are explicit and are never changed on the way."""
@@ -112,14 +122,14 @@ class AnthropicProvider:
             raise ConfigError('The anthropic provider needs the SDK; install it with: pip install "repodocs[ai]"') from None
         return anthropic
 
-    @staticmethod
-    def _client(anthropic: Any) -> Any:
+    def _client(self, anthropic: Any) -> Any:
         # The SDK follows redirects by default. A redirect would send the evidence bundle to a
         # target nobody approved, so the transport is built here without that, and the client
         # (which closes it) is a context manager.
         # The SDK also retries failed requests internally by default. Each retry would be a request the run ledger
         # never reserved, so retries are off; a failed request is reported, not repeated.
-        return anthropic.Anthropic(max_retries=0, http_client=anthropic.DefaultHttpxClient(follow_redirects=False))
+        explicit = {key: value for key, value in (("api_key", self._api_key), ("base_url", self._base_url)) if value is not None}
+        return anthropic.Anthropic(max_retries=0, http_client=anthropic.DefaultHttpxClient(follow_redirects=False), **explicit)
 
     def count_input_tokens(self, system: str, user: str, schema: dict[str, Any]) -> int:
         """The provider's own count of this request. Callers use it only after consent for this provider."""
