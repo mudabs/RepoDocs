@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -106,6 +107,12 @@ def test_reviewed_sources_flow_through_validation_generation_and_evidence(tmp_pa
     diagram_names = {name for name in artifacts if name.endswith(".mmd")}
     assert set(evidence["diagrams"]) == diagram_names
     assert len(diagram_names) >= 2
+    if os.environ.get("REPODOCS_REQUIRE_RENDERER") == "1":
+        from repodocs.architecture.render_check import RENDERED, render, svg_problems
+        rendered = render({name: artifacts[name] for name in diagram_names})
+        assert rendered.status == RENDERED, rendered.message
+        assert set(rendered.svgs) == diagram_names
+        assert all(not svg_problems(svg) for svg in rendered.svgs.values())
     for name in diagram_names:
         assert f"]({name})" in artifacts["architecture-view-index.md"]
     assert {item["name"] for item in view["components"]} == {item["name"] for item in expected["components"]}
