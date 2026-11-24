@@ -182,6 +182,28 @@ escaped prose, not executable HTML or Markdown links. The deterministic
 `architecture.md`, `architecture.mmd`, and IR remain unchanged by model output.
 No model claim creates an authoritative relationship or confirms a candidate.
 
+### Ollama through an authenticated /v1 gateway (optional)
+
+The `ollama` provider has two transports, chosen by the host. A host with no path (the default `http://localhost:11434`) uses Ollama's native `/api/chat`. A host ending in `/v1` uses the chat-completions route that Ollama serves, which lets a gateway in front of Ollama authenticate requests and hide its management routes. This transport targets Ollama-compatible chat completions. The separate OpenAI provider uses the Responses API.
+
+```powershell
+repodocs ai-bundle
+repodocs ai-configure --provider ollama --model <model> --ollama-host https://gateway.example.net/v1
+repodocs ai-configure --consent-external
+$env:REPODOCS_OLLAMA_API_KEY = "<token>"   # set it in the environment, never in repodocs.json
+repodocs ai-interpret
+repodocs generate
+```
+
+- A non-loopback host is external even if you operate it, so `--consent-external` is required, and architecture discovery additionally requires its own source-excerpt consent (ADR-026); the first never implies the second. A remote `/v1` host must use HTTPS with certificate verification, and URLs with credentials, a query or a fragment are refused. A loopback `/v1` host needs no key and does not use environment proxies.
+- `REPODOCS_OLLAMA_API_KEY` is read only from the environment, sent as a Bearer token to `/v1` hosts only, and never written to `repodocs.json`, the bundle, claims, or an error message. Redirects are not followed.
+- Only the CLI reads that variable: it builds the provider with an explicit environment credential source. Any other caller builds it with no credential, so the variable is never read, a loopback `/v1` host gets no `Authorization` header and a remote `/v1` gateway is refused before any request. The local web service is such a caller: a browser session can never use the operator's key.
+- A completion is accepted only when it is a single assistant message that finished with `stop` and holds a non-empty JSON object. Content-filtered, refused, truncated (`length`), tool-call and unrecognized endings are provider errors (exit code 7), and so are authentication failures (401 and 403), rate limits (429), server errors, timeouts, unreachable hosts, malformed JSON, and oversized replies. None of them stops the deterministic documents.
+- Both transports preflight the serialized request, share the run budget, and send the configured `ai.limits.request_output_tokens` as native `num_predict` or `/v1` `max_tokens`. Responses are capped at 512 KiB and the socket timeout is 300 seconds.
+- Native requests send `num_ctx`. For `/v1`, configure the gateway model's actual context window to match `ai.limits.context_window_tokens`. If reported prompt and output counts fill that window, RepoDocs rejects the completion. Missing or partial usage stays reserved in the receipt.
+- Reaching a private network address (for example over a VPN) is up to the machine that runs RepoDocs. Hosted CI runners cannot reach it, so CI uses stand-ins and no credentials.
+- The adapter sends whatever schema the caller gives it, so the same transport serves AI interpretation and architecture discovery. Transport success says nothing about model quality, which is evaluated separately (#54).
+
 Generation uses stored claims only: it never calls a provider. Missing claims
 leave the deterministic output complete; stale or invalid claims produce a
 warning and are omitted. After source or confirmation changes, explicitly run

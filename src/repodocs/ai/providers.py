@@ -7,8 +7,11 @@ returns the parsed JSON object plus the model that served it.
 
 from __future__ import annotations
 
+import enum
+import http.client
 import ipaddress
 import json
+import os
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, replace
@@ -17,13 +20,17 @@ from urllib.parse import urlsplit
 
 from ..config import AI_PROVIDER_ANTHROPIC, AI_PROVIDER_NONE, AI_PROVIDER_OLLAMA, AI_PROVIDER_OPENAI, AiSettings
 from ..errors import ConfigError, ConsentError, MalformedProviderOutput, ProviderError
-from .budgets import DEFAULT_CONTEXT_WINDOWS, Usage, usage_from_counts
+from .budgets import DEFAULT_CONTEXT_WINDOWS, Usage, serialized_request, usage_from_counts
 
 
 DEFAULT_ANTHROPIC_MODEL = "claude-opus-5-5"
 DEFAULT_OLLAMA_HOST = "http://localhost:11434"
 MAX_OUTPUT_TOKENS = 16000
 REQUEST_TIMEOUT_SECONDS = 300
+# The most a local or private Ollama server may send back for one request (the whole HTTP body, counted
+# while it is read, never trusting Content-Length). It is generous for MAX_OUTPUT_TOKENS of JSON, with room
+# for escaping, and well above the 32 KiB architecture discovery accepts as a model answer.
+MAX_RESPONSE_BYTES = 512 * 1024
 
 
 @dataclass(frozen=True)
@@ -53,8 +60,8 @@ def _failed(error: ProviderError, usage: Usage | None) -> ProviderError:
 def _parse_object(text: str, provider: str, usage: Usage | None = None) -> dict[str, Any]:
     try:
         data = json.loads(text)
-    except (TypeError, ValueError) as exc:
-        raise _failed(MalformedProviderOutput(f"{provider} returned output that is not valid JSON"), usage) from exc
+    except (TypeError, ValueError, RecursionError):
+        raise _failed(MalformedProviderOutput(f"{provider} returned output that is not valid JSON"), usage) from None
     if not isinstance(data, dict):
         raise _failed(MalformedProviderOutput(f"{provider} returned JSON that is not an object"), usage)
     return data
@@ -102,7 +109,7 @@ class AnthropicProvider:
         try:
             import anthropic
         except ImportError as exc:
-            raise ConfigError('The anthropic provider needs the SDK; install it with: pip install "repodocs[ai]"') from exc
+            raise ConfigError('The anthropic provider needs the SDK; install it with: pip install "repodocs[ai]"') from None
         return anthropic
 
     @staticmethod
@@ -124,7 +131,7 @@ class AnthropicProvider:
             with self._client(anthropic) as client:
                 return int(client.beta.messages.count_tokens(**body).input_tokens)
         except Exception as exc:
-            raise ProviderError("Anthropic could not count the request tokens") from exc
+            raise ProviderError("Anthropic could not count the request tokens") from None
 
     def generate(self, system: str, user: str, schema: dict[str, Any]) -> ProviderResponse:
         anthropic = self._sdk()
@@ -134,18 +141,18 @@ class AnthropicProvider:
             with self._client(anthropic) as client:
                 response = client.beta.messages.create(**self.request_body(system, user, schema))
         except anthropic.AuthenticationError as exc:
-            raise ProviderError("Anthropic rejected the credentials; set ANTHROPIC_API_KEY or run `ant auth login`") from exc
+            raise ProviderError("Anthropic rejected the credentials; set ANTHROPIC_API_KEY or run `ant auth login`") from None
         except anthropic.RateLimitError as exc:
-            raise ProviderError("Anthropic rate limit reached; retry later") from exc
+            raise ProviderError("Anthropic rate limit reached; retry later") from None
         except anthropic.APIStatusError as exc:
             if 300 <= exc.status_code < 400:
                 raise ProviderError(
                     f"Anthropic answered with a redirect (HTTP {exc.status_code}), which is not followed so the "
                     "bundle is not sent anywhere else; check ANTHROPIC_BASE_URL"
-                ) from exc
-            raise ProviderError(f"Anthropic API error (HTTP {exc.status_code})") from exc
+                ) from None
+            raise ProviderError(f"Anthropic API error (HTTP {exc.status_code})") from None
         except anthropic.APIConnectionError as exc:
-            raise ProviderError("Unable to reach the Anthropic API") from exc
+            raise ProviderError("Unable to reach the Anthropic API") from None
         usage = _anthropic_usage(response)
         if response.stop_reason == "refusal":
             raise _failed(ProviderError("The model declined the request"), usage)
@@ -189,77 +196,210 @@ def _opener(external: bool) -> urllib.request.OpenerDirector:
     return urllib.request.build_opener(*handlers)
 
 
+def _read_bounded(response: Any, limit: int) -> bytes:
+    """The response body, refusing to read more than ``limit`` bytes.
+
+    A declared length over the limit is refused before reading. An undeclared or understated length
+    is caught while reading, so a hostile or broken server cannot make RepoDocs buffer an unbounded body.
+    """
+
+    declared = response.headers.get("Content-Length")
+    if declared is not None and declared.strip().isdigit() and int(declared) > limit:
+        raise ProviderError(f"Ollama response is larger than the {limit} byte limit")
+    data = response.read(limit + 1)
+    if len(data) > limit:
+        raise ProviderError(f"Ollama response is larger than the {limit} byte limit")
+    return data
+
+
+def _openai_completion_text(payload: dict[str, Any]) -> str:
+    """The text of a successful chat completion, or a ProviderError saying why it is not one.
+
+    Only one outcome is a success: exactly one assistant message, finished with ``stop``, holding
+    non-empty text and nothing else the request did not ask for (no refusal, no tool calls).
+    """
+
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or len(choices) != 1 or not isinstance(choices[0], dict):
+        raise ProviderError("Ollama gateway returned no chat completion")
+    choice = choices[0]
+    message = choice.get("message")
+    message = message if isinstance(message, dict) else {}
+    finish = choice.get("finish_reason")
+    if message.get("refusal"):
+        raise ProviderError("The model declined the request")
+    if finish == "length":
+        raise ProviderError("Ollama gateway output was cut off at the token limit")
+    if finish == "content_filter":
+        raise ProviderError("Ollama gateway withheld the output (content filter)")
+    if finish in ("tool_calls", "function_call") or message.get("tool_calls") or message.get("function_call"):
+        raise ProviderError("Ollama gateway answered with a tool call, which this request does not allow")
+    if finish != "stop":
+        raise ProviderError("Ollama gateway ended the completion in an unsupported state")
+    if message.get("role") != "assistant":
+        raise ProviderError("Ollama gateway returned no assistant message")
+    content = message.get("content")
+    if not isinstance(content, str) or not content.strip():
+        raise ProviderError("Ollama returned no message content")
+    return content
+
+
+class OllamaCredential(enum.Enum):
+    """Where an Ollama /v1 gateway key comes from. There is deliberately no default that reads the environment.
+
+    ``ENVIRONMENT`` is the CLI's choice (``resolve_provider``): the key is ``REPODOCS_OLLAMA_API_KEY``, read when a request
+    is made. ``NONE`` means this run has no credential: the environment is never read, a loopback ``/v1`` host gets no
+    ``Authorization`` header and a remote ``/v1`` gateway is refused before any request. A caller that holds keys for
+    other people's sessions (the web service) uses ``NONE``, so it can never send the operator's key.
+    """
+
+    ENVIRONMENT = "environment"
+    NONE = "none"
+
+
 class OllamaProvider:
-    """A local Ollama server. A non-loopback host leaves the machine and counts as external."""
+    """Ollama through its native /api/chat or an authenticated Ollama-compatible /v1 gateway.
+
+    A host ending in /v1 uses chat completions, as Ollama serves them (``response_format`` with a JSON
+    schema, ``max_tokens``, ``finish_reason``). This is a transport for Ollama and gateways that
+    proxy it, not a claim of compatibility with every OpenAI-style provider. Other supported hosts use
+    the native endpoint. Both keep the same provider identity and claim validation, and both
+    take whatever schema the caller passes.
+    """
 
     name = AI_PROVIDER_OLLAMA
 
     def __init__(
-        self, model: str | None, host: str | None, *, context_window: int | None = None, max_output_tokens: int | None = None
+        self, model: str | None, host: str | None, *, context_window: int | None = None, max_output_tokens: int | None = None,
+        credential: OllamaCredential = OllamaCredential.NONE,
     ) -> None:
+        if not isinstance(credential, OllamaCredential):
+            raise TypeError("credential must be an OllamaCredential")
         if not model:
-            raise ConfigError("The ollama provider needs a model; set one with `repodocs ai-configure --provider ollama --model <name>`")
+            raise ConfigError("The ollama provider needs a model; set one with repodocs ai-configure --provider ollama --model NAME")
         self.model = model
         self.host = (host or DEFAULT_OLLAMA_HOST).rstrip("/")
-        parts = urlsplit(self.host)
-        if parts.scheme not in ("http", "https") or not parts.hostname:
-            raise ConfigError(f"Ollama host must be an http(s) URL: {self.host}")
+        try:
+            parts = urlsplit(self.host)
+            port = parts.port
+        except ValueError:
+            raise ConfigError("Ollama host must be a valid http(s) URL") from None
+        if parts.scheme not in ("http", "https") or not parts.hostname or port == 0:
+            raise ConfigError("Ollama host must be an http(s) URL")
+        if parts.username is not None or parts.password is not None or "?" in self.host or "#" in self.host or parts.path not in ("", "/v1"):
+            raise ConfigError("Ollama host must be a base URL or end in /v1, without URL credentials, query or fragment")
+        self.openai_compatible = parts.path == "/v1"
         self.external = not is_loopback(self.host)
-        # The window is sent with every request. A runtime that is not told silently truncates a prompt
-        # that does not fit its own default, which is what the preflight check exists to prevent.
+        if self.openai_compatible and self.external and parts.scheme != "https":
+            raise ConfigError("A remote Ollama /v1 gateway must use HTTPS")
+        if self.openai_compatible and self.external and credential is OllamaCredential.NONE:
+            raise ConfigError("A remote Ollama /v1 gateway needs a credential, and this run has none")
+        self.credential = credential
         self.context_window = context_window or DEFAULT_CONTEXT_WINDOWS[AI_PROVIDER_OLLAMA]
         self.max_output_tokens = max_output_tokens or min(MAX_OUTPUT_TOKENS, self.context_window // 2)
 
     def request_body(self, system: str, user: str, schema: dict[str, Any]) -> dict[str, Any]:
-        return {
+        body = {
             "model": self.model,
             "stream": False,
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+        }
+        if self.openai_compatible:
+            return {
+                **body,
+                "max_tokens": self.max_output_tokens,
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {"name": "repodocs_response", "schema": schema},
+                },
+            }
+        return {
+            **body,
             "format": schema,
             "options": {"num_ctx": self.context_window, "num_predict": self.max_output_tokens},
-            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
         }
 
     def generate(self, system: str, user: str, schema: dict[str, Any]) -> ProviderResponse:
-        body = json.dumps(self.request_body(system, user, schema)).encode("utf-8")
+        headers = {"Content-Type": "application/json"}
+        url = f"{self.host}/api/chat"
+        if self.openai_compatible:
+            url = f"{self.host}/chat/completions"
+            # Only the CLI's explicit choice reads the environment; a run with no credential never does.
+            key = os.environ.get("REPODOCS_OLLAMA_API_KEY", "").strip() if self.credential is OllamaCredential.ENVIRONMENT else ""
+            if self.external and not key:
+                raise ConfigError("The remote Ollama /v1 gateway needs REPODOCS_OLLAMA_API_KEY in the environment")
+            if key and not (key.isascii() and key.isprintable()):
+                raise ConfigError("REPODOCS_OLLAMA_API_KEY must be printable ASCII with no line breaks")
+            if key:
+                headers["Authorization"] = f"Bearer {key}"
+        body = serialized_request(self, system, user, schema).encode("utf-8")
         request = urllib.request.Request(
-            f"{self.host}/api/chat", data=body, headers={"Content-Type": "application/json"}, method="POST"
+            url, data=body, headers=headers, method="POST"
         )
         try:
-            with _opener(self.external).open(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:  # noqa: S310 - scheme checked above
-                payload = json.loads(response.read().decode("utf-8"))
+            with _opener(self.external).open(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:  # noqa: S310
+                raw = _read_bounded(response, MAX_RESPONSE_BYTES)
+            payload = json.loads(raw.decode("utf-8"))
         except urllib.error.HTTPError as exc:
             if 300 <= exc.code < 400:
                 raise ProviderError(
-                    f"Ollama at {self.host} answered with a redirect (HTTP {exc.code}), which is not followed so the "
-                    "bundle is not sent anywhere else; set ollama_host to the final address"
-                ) from exc
-            raise ProviderError(f"Ollama error (HTTP {exc.code}); is the model `{self.model}` pulled?") from exc
-        except (urllib.error.URLError, OSError, ValueError) as exc:
-            raise ProviderError(f"Unable to reach Ollama at {self.host}") from exc
-        message = payload.get("message") if isinstance(payload, dict) else None
-        content = message.get("content") if isinstance(message, dict) else None
-        if not isinstance(content, str):
-            raise ProviderError("Ollama returned no message content")
-        usage = _ollama_usage(payload)
-        if payload.get("done_reason") == "length":
-            raise _failed(ProviderError("The Ollama output was cut off at the token limit"), usage)
-        # Only a finished completion is an answer. An unfinished frame, or one that ended for another reason
-        # (a model load or unload, an abort), is incomplete even when its content happens to parse.
-        if payload.get("done") is not True or payload.get("done_reason") != "stop":
-            raise _failed(ProviderError("Ollama did not report a finished completion (done_reason was not stop)"), usage)
-        if usage is not None and usage.measured and usage.prompt_tokens + usage.output_tokens >= self.context_window:  # type: ignore[operator]
-            raise _failed(ProviderError(
-                f"The prompt and output filled the {self.context_window}-token context window, so the runtime may have "
-                "truncated the prompt or the answer; raise ai.limits.context_window_tokens only if the model supports it"
-            ), usage)
+                    f"Ollama returned a redirect (HTTP {exc.code}), which is not followed so the bundle "
+                    "is not sent anywhere else; configure the final host address"
+                ) from None
+            if self.openai_compatible and exc.code in (401, 403):
+                hint = "check REPODOCS_OLLAMA_API_KEY" if self.credential is OllamaCredential.ENVIRONMENT else "this run sent no credential"
+                raise ProviderError(f"Ollama gateway authentication failed (HTTP {exc.code}); {hint}") from None
+            if self.openai_compatible and exc.code == 429:
+                raise ProviderError("Ollama gateway is rate-limiting requests (HTTP 429)") from None
+            raise ProviderError(f"Ollama error (HTTP {exc.code}); is the model pulled and gateway configured?") from None
+        except TimeoutError:
+            raise ProviderError(f"Ollama did not answer within {REQUEST_TIMEOUT_SECONDS} seconds") from None
+        except (ValueError, RecursionError):
+            raise ProviderError("Ollama returned a response that is not valid JSON") from None
+        except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
+            if isinstance(getattr(exc, "reason", None), TimeoutError):
+                raise ProviderError(f"Ollama did not answer within {REQUEST_TIMEOUT_SECONDS} seconds") from None
+            raise ProviderError("Unable to reach Ollama") from None
+
+        if not isinstance(payload, dict):
+            raise ProviderError("Ollama returned a malformed response")
+        usage = _ollama_usage(payload, gateway=self.openai_compatible)
+        try:
+            content = _openai_completion_text(payload) if self.openai_compatible else _native_completion_text(payload)
+        except ProviderError as exc:
+            raise _failed(exc, usage) from None
+        if usage is not None and usage.prompt_tokens is not None and usage.output_tokens is not None:
+            if usage.prompt_tokens + usage.output_tokens >= self.context_window:
+                raise _failed(ProviderError(
+                    f"The prompt and output filled the {self.context_window}-token context window, so the runtime may have "
+                    "truncated the prompt or the answer; raise ai.limits.context_window_tokens only if the model supports it"
+                ), usage)
         model = payload.get("model")
         return ProviderResponse(_parse_object(content, "Ollama", usage), model if isinstance(model, str) and model else self.model, usage)
 
 
-def _ollama_usage(payload: Any) -> Usage | None:
-    usage = usage_from_counts(payload.get("prompt_eval_count"), payload.get("eval_count"), None, None)
+def _native_completion_text(payload: dict[str, Any]) -> str:
+    if payload.get("done_reason") == "length":
+        raise ProviderError("The Ollama output was cut off at the token limit")
+    if payload.get("done") is not True or payload.get("done_reason") != "stop":
+        raise ProviderError("Ollama did not report a finished completion (done_reason was not stop)")
+    message = payload.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if not isinstance(content, str):
+        raise ProviderError("Ollama returned no message content")
+    return content
+
+
+def _ollama_usage(payload: dict[str, Any], *, gateway: bool = False) -> Usage | None:
+    if gateway:
+        raw = payload.get("usage")
+        if not isinstance(raw, dict):
+            return None
+        usage = usage_from_counts(raw.get("prompt_tokens"), raw.get("completion_tokens"), None, None)
+    else:
+        usage = usage_from_counts(payload.get("prompt_eval_count"), payload.get("eval_count"), None, None)
     if usage is not None and usage.input_tokens is not None and usage.output_tokens is not None:
-        # A local server has no cache tier that bills, so complete counts mean both cache fields are zero.
+        # Both Ollama transports count total prompt and output with no separate billed cache tier.
         usage = replace(usage, cache_read_tokens=0, cache_write_tokens=0)
     return usage
 
@@ -313,6 +453,7 @@ def resolve_provider(settings: AiSettings) -> Provider | None:
         provider = OllamaProvider(
             settings.model, settings.ollama_host,
             context_window=limits.context_window_tokens, max_output_tokens=limits.request_output_tokens,
+            credential=OllamaCredential.ENVIRONMENT,
         )
     if provider.external and not settings.external_consent:
         raise ConsentError(
