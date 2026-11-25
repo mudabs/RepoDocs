@@ -7,6 +7,7 @@ only when starting the HTTP server so the core CLI never depends on web packages
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import sys
 from pathlib import Path
@@ -105,6 +106,9 @@ def build_settings(argv: Sequence[str] | None = None) -> tuple[AccessConfig, Wor
         public_origin=args.public_origin,
         auth_token=auth_token,
     )
+    if args.cleanup_max_age_hours is not None:
+        if not math.isfinite(args.cleanup_max_age_hours) or args.cleanup_max_age_hours < 0:
+            raise ValueError("--cleanup-max-age-hours must be a finite non-negative number")
     workspaces = WorkspaceSettings(store_root=store_root, local_roots=local_roots)
     frontend_dist = args.frontend_dist.expanduser().resolve() if args.frontend_dist else None
     return access, workspaces, frontend_dist, args.cleanup_max_age_hours

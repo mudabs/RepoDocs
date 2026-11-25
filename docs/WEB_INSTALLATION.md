@@ -33,6 +33,17 @@ This writes static assets to `frontend/dist`. When `frontend/dist` (or packaged
 `repodocs/web/static`) exists, the HTTP server serves the browser UI from the same origin as the
 API. When the UI is not built, the API remains usable and non-API routes return a JSON `404`.
 
+To build a wheel or installable package that bundles the static UI (so the target runtime needs
+no Node.js installation):
+
+```bash
+python scripts/build_web_package.py
+python -m pip wheel --no-deps -w dist .
+```
+
+Then install the resulting wheel with `pip install "dist/repodocs-*.whl[web]"` in a clean
+Python environment.
+
 ## 3. Starting and stopping the service
 
 Start the loopback service with an explicit workspace store directory and one or more

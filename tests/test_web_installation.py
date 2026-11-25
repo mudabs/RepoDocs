@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import math
 import os
+import shutil
 import subprocess
 import sys
 import time
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -17,11 +20,12 @@ from fastapi.testclient import TestClient  # noqa: E402
 from repodocs.web import server  # noqa: E402
 from repodocs.web.app import WebSettings, create_app  # noqa: E402
 from repodocs.web.cleanup import cleanup_workspaces  # noqa: E402
-from repodocs.web.jobs import JOBS_DIRECTORY  # noqa: E402
+from repodocs.web.jobs import JOBS_DIRECTORY, RECORD_VERSION  # noqa: E402
 from repodocs.web.security import AccessConfig  # noqa: E402
 from repodocs.web.workspaces import MARKER_KIND, MARKER_NAME, MARKER_VERSION, WorkspaceSettings  # noqa: E402
 
-from test_web_jobs import ORIGIN, settings  # noqa: E402
+from test_architecture_discovery import full_answer  # noqa: E402
+from test_web_jobs import ORIGIN, Factory, Replay, request, running, settings  # noqa: E402
 
 
 def _make_owned_workspace(store_root: Path, ws_id: str, *, age_seconds: float = 0.0, active_job: bool = False) -> Path:
@@ -37,9 +41,22 @@ def _make_owned_workspace(store_root: Path, ws_id: str, *, age_seconds: float = 
     if active_job:
         jobs_dir = ws_dir / JOBS_DIRECTORY
         jobs_dir.mkdir(parents=True, exist_ok=True)
-        (jobs_dir / "job-1.json").write_text(json.dumps({"state": "running"}), encoding="utf-8")
+        (jobs_dir / "job-1.json").write_text(
+            json.dumps(
+                {
+                    "record_version": RECORD_VERSION,
+                    "created_at": time.time() - age_seconds,
+                    "job": {"job_id": "job-1", "workspace_id": ws_id, "state": "running"},
+                }
+            ),
+            encoding="utf-8",
+        )
     if age_seconds > 0:
         old_time = time.time() - age_seconds
+        os.utime(ws_dir / MARKER_NAME, (old_time, old_time))
+        if (ws_dir / JOBS_DIRECTORY).is_dir():
+            for p in (ws_dir / JOBS_DIRECTORY).iterdir():
+                os.utime(p, (old_time, old_time))
         os.utime(ws_dir, (old_time, old_time))
     return ws_dir
 
@@ -183,3 +200,140 @@ def test_core_cli_imports_without_web_dependencies() -> None:
     )
     assert proc.returncode == 0, proc.stderr
     assert "ok" in proc.stdout
+
+
+def test_cleanup_preserves_workspace_with_real_persisted_running_job(tmp_path: Path) -> None:
+    """Cleanup reading real JobService-persisted records never deletes an active workspace."""
+    provider = Replay(full_answer).hold()
+    store = tmp_path / "store"
+    with running(tmp_path, Factory(provider)) as (api, _app, _factory):
+        workspace_id = api.workspace()
+        prov_id = api.provider()
+        preview = api.preview(workspace_id, prov_id)
+        r = api.submit(request(workspace_id, key="cleanup-real-1", provider=prov_id, context=preview["context_hash"]))
+        assert r.status_code == 202
+        assert provider.started.wait(15)
+
+        ws_dir = store / workspace_id
+        assert (ws_dir / JOBS_DIRECTORY).is_dir()
+        # Even if the root directory mtime is backdated, the real nested running record protects it.
+        old_time = time.time() - 7200
+        os.utime(ws_dir, (old_time, old_time))
+
+        report = cleanup_workspaces(store, max_age_seconds=3600)
+        assert workspace_id in report.skipped_active
+        assert workspace_id not in report.deleted
+        assert ws_dir.exists()
+
+        provider.release.set()
+        api.wait(r.json()["job_id"])
+
+
+def test_cleanup_preserves_uncertain_job_record_and_rejects_invalid_retention(tmp_path: Path) -> None:
+    store = tmp_path / "store"
+    store.mkdir()
+    ws_id = "ws-" + "f" * 32
+    ws_dir = _make_owned_workspace(store, ws_id, age_seconds=7200)
+    jobs_dir = ws_dir / JOBS_DIRECTORY
+    jobs_dir.mkdir()
+    (jobs_dir / "corrupt.json").write_text("{not valid json", encoding="utf-8")
+
+    report = cleanup_workspaces(store, max_age_seconds=3600)
+    assert ws_id in report.skipped_active
+    assert ws_dir.exists()
+
+    for bad_age in (-1.0, math.nan, math.inf, -math.inf):
+        with pytest.raises(ValueError):
+            cleanup_workspaces(store, max_age_seconds=bad_age)
+
+    assert server.main(["--store-root", str(store), "--cleanup-max-age-hours", "-5"]) == 2
+    assert server.main(["--store-root", str(store), "--cleanup-max-age-hours", "nan"]) == 2
+
+
+def test_wheel_packages_frontend_assets_and_runs_outside_checkout(tmp_path: Path) -> None:
+    """Building a wheel bundles frontend assets and serves the UI outside the checkout without Node."""
+    root = Path(__file__).resolve().parents[1]
+    frontend_dist = root / "frontend" / "dist"
+    static_dir = root / "src" / "repodocs" / "web" / "static"
+    if not (frontend_dist / "index.html").is_file():
+        if os.environ.get("REPODOCS_REQUIRE_RENDERER") == "1":
+            pytest.fail("REPODOCS_REQUIRE_RENDERER=1 but frontend/dist is missing")
+        pytest.skip("frontend/dist is not built")
+
+    created_static = not static_dir.exists()
+    wheel_dir = tmp_path / "wheels"
+    install_dir = tmp_path / "site"
+    outside_dir = tmp_path / "outside"
+    wheel_dir.mkdir()
+    install_dir.mkdir()
+    outside_dir.mkdir()
+
+    try:
+        if static_dir.exists():
+            shutil.rmtree(static_dir)
+        shutil.copytree(frontend_dist, static_dir)
+
+        wheel_proc = subprocess.run(
+            [sys.executable, "-m", "pip", "wheel", "--no-deps", "--no-build-isolation", "-w", str(wheel_dir), str(root)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert wheel_proc.returncode == 0, wheel_proc.stderr
+        wheels = list(wheel_dir.glob("repodocs-*.whl"))
+        assert len(wheels) == 1
+
+        with zipfile.ZipFile(wheels[0]) as zf:
+            names = set(zf.namelist())
+        assert "repodocs/web/static/index.html" in names
+        assert any(n.startswith("repodocs/web/static/assets/") for n in names)
+
+        install_proc = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--no-deps", "--no-index", "--target", str(install_dir), str(wheels[0])],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert install_proc.returncode == 0, install_proc.stderr
+
+        # Run from outside the checkout with installed package first on sys.path
+        verify_code = (
+            "import sys; sys.path.insert(0, sys.argv[1]); "
+            "from pathlib import Path; "
+            "from fastapi.testclient import TestClient; "
+            "from repodocs.web.app import WebSettings, create_app; "
+            "from repodocs.web.security import AccessConfig; "
+            "from repodocs.web.workspaces import WorkspaceSettings; "
+            "store = Path(sys.argv[2]); store.mkdir(exist_ok=True); "
+            "app = create_app(WebSettings(AccessConfig(), WorkspaceSettings(store, {}))); "
+            "c = TestClient(app, base_url='http://127.0.0.1:8000'); "
+            "assert c.get('/').status_code == 200; "
+            "assert c.get('/viewer/job-1').status_code == 200; "
+            "assert c.get('/ready').json() == {'status': 'ready', 'ui_built': True}; "
+            "assert c.get('/health').json() == {'status': 'ok'}; "
+            "assert c.get('/api/v1/jobs/x', headers={'Origin': 'http://127.0.0.1:8000'}).status_code == 401; "
+            "print('wheel-ok')"
+        )
+        run_proc = subprocess.run(
+            [sys.executable, "-c", verify_code, str(install_dir), str(outside_dir / "store")],
+            cwd=outside_dir,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert run_proc.returncode == 0, run_proc.stderr
+        assert "wheel-ok" in run_proc.stdout
+
+        # Standalone CLI runs outside checkout with empty PATH (no Node)
+        cli_proc = subprocess.run(
+            [sys.executable, "-c", "import sys; sys.path.insert(0, sys.argv[1]); from repodocs.cli import main; raise SystemExit(main(['--help']))", str(install_dir)],
+            cwd=outside_dir,
+            env={"PATH": ""},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert cli_proc.returncode == 0, cli_proc.stderr
+    finally:
+        if created_static and static_dir.exists():
+            shutil.rmtree(static_dir, ignore_errors=True)
