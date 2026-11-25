@@ -72,61 +72,149 @@ const report = await withBrowser(async (browser) => {
   });
 
   if (scenario === 'cross-origin-attack') {
-    // extraArg is JSON: { attackerUrl, workspaceId, jobId, validJobBody }
-    const cfg = JSON.parse(extraArg);
-    // Step 1: Establish a genuine victim session on the RepoDocs origin (positive control in browser).
+    const attackerUrl = extraArg;
+    // Step 1: On the RepoDocs origin, establish the victim session, workspace, provider,
+    // and two successful positive-control jobs (deterministic + provider-backed) in this same browser session.
     await page.goto(baseUrl, { waitUntil: 'networkidle0', timeout: 20000 });
-    await clickButton(page, 'Open session');
-    await waitForText(page, 'Select source repositories');
+    const victimIds = await page.evaluate(async () => {
+      async function api(method, path, body, csrf) {
+        const headers = { 'Content-Type': 'application/json' };
+        if (csrf) headers['x-csrf-token'] = csrf;
+        const resp = await fetch(path, {
+          method,
+          credentials: 'include',
+          headers,
+          body: body !== undefined ? JSON.stringify(body) : undefined,
+        });
+        if (!resp.ok) throw new Error(`Victim setup ${method} ${path} failed: ${resp.status}`);
+        return resp.json();
+      }
+      async function waitJob(jobId) {
+        for (let i = 0; i < 200; i += 1) {
+          const j = await api('GET', `/api/v1/jobs/${jobId}`);
+          if (j.state === 'succeeded') return j;
+          if (['failed', 'cancelled', 'interrupted'].includes(j.state)) {
+            throw new Error(`Positive control job ${jobId} ended in ${j.state}`);
+          }
+          await new Promise((r) => setTimeout(r, 50));
+        }
+        throw new Error(`Timed out waiting for ${jobId}`);
+      }
 
-    // Step 2: Navigate in the same browser context (holding the victim cookie) to the unrelated attacker origin.
-    // Attacker JS receives NO victim CSRF token or API key; only public target URLs/IDs.
-    await page.goto(cfg.attackerUrl, { waitUntil: 'networkidle0', timeout: 20000 });
-    const attackResults = await page.evaluate(async (targetBase, jobId, validBody) => {
+      const { csrf_token: csrf } = await api('POST', '/api/v1/session', {});
+      const ws = await api('POST', '/api/v1/workspaces', { name: 'Shop', sources: [{ kind: 'local', name: 'shop' }] }, csrf);
+      const prov = await api('POST', '/api/v1/providers', { provider: 'ollama', host: 'http://127.0.0.1:11434', model: 'replay-model' }, csrf);
+      const pre = await api('POST', `/api/v1/workspaces/${ws.workspace_id}/preview`, { provider_session_id: prov.provider_session_id }, csrf);
+
+      const detBody = {
+        contract_version: '1.0',
+        kind: 'request',
+        workspace_id: ws.workspace_id,
+        idempotency_key: 'pos-det-1',
+        mode: 'deterministic',
+        provider_session_id: null,
+        context_hash: null,
+        consent_receipt_id: null,
+        views: ['overview', 'erd'],
+        limits: { max_requests: 0, max_total_tokens: null, max_cost_microunits: 0, currency: 'USD' },
+      };
+      const detJob = await api('POST', '/api/v1/jobs', detBody, csrf);
+      await waitJob(detJob.job_id);
+
+      const archBody = {
+        contract_version: '1.0',
+        kind: 'request',
+        workspace_id: ws.workspace_id,
+        idempotency_key: 'pos-arch-1',
+        mode: 'architecture',
+        provider_session_id: prov.provider_session_id,
+        context_hash: pre.context_hash,
+        consent_receipt_id: null,
+        views: ['overview', 'components'],
+        limits: { max_requests: 3, max_total_tokens: 100000, max_cost_microunits: null, currency: null },
+      };
+      const archJob = await api('POST', '/api/v1/jobs', archBody, csrf);
+      await waitJob(archJob.job_id);
+
+      // Return ONLY public IDs/hashes; CSRF token and cookies stay out of attacker JS.
+      return {
+        workspaceId: ws.workspace_id,
+        providerSessionId: prov.provider_session_id,
+        contextHash: pre.context_hash,
+        jobId: archJob.job_id,
+      };
+    });
+
+    // Step 2: Navigate the SAME browser session (holding the victim cookie) to the unrelated attacker origin.
+    // Attacker JS receives NO victim CSRF token or API key.
+    await page.goto(attackerUrl, { waitUntil: 'networkidle0', timeout: 20000 });
+    const attackResults = await page.evaluate(async (targetBase, ids) => {
+      const detAttack = {
+        contract_version: '1.0',
+        kind: 'request',
+        workspace_id: ids.workspaceId,
+        idempotency_key: 'atk-det-preflight-1',
+        mode: 'deterministic',
+        provider_session_id: null,
+        context_hash: null,
+        consent_receipt_id: null,
+        views: ['overview'],
+        limits: { max_requests: 0, max_total_tokens: null, max_cost_microunits: 0, currency: 'USD' },
+      };
+      const archAttack = {
+        contract_version: '1.0',
+        kind: 'request',
+        workspace_id: ids.workspaceId,
+        idempotency_key: 'atk-arch-simple-1',
+        mode: 'architecture',
+        provider_session_id: ids.providerSessionId,
+        context_hash: ids.contextHash,
+        consent_receipt_id: null,
+        views: ['overview', 'components'],
+        limits: { max_requests: 3, max_total_tokens: 100000, max_cost_microunits: null, currency: null },
+      };
+      const noCorsAttack = { ...detAttack, idempotency_key: 'atk-det-nocors-1' };
+
       const results = {};
-      // 1) Preflighted JSON POST with otherwise-valid payload
       try {
         const resp = await fetch(`${targetBase}/api/v1/jobs`, {
           method: 'POST',
           credentials: 'include',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(validBody),
+          body: JSON.stringify(detAttack),
         });
         results.preflightedJob = { readable: true, status: resp.status };
       } catch (err) {
         results.preflightedJob = { readable: false, error: String(err) };
       }
 
-      // 2) Simple/no-preflight text/plain CORS POST with otherwise-valid payload
       try {
         const resp = await fetch(`${targetBase}/api/v1/jobs`, {
           method: 'POST',
           credentials: 'include',
           headers: { 'Content-Type': 'text/plain' },
-          body: JSON.stringify(validBody),
+          body: JSON.stringify(archAttack),
         });
         results.simpleCorsJob = { readable: true, status: resp.status };
       } catch (err) {
         results.simpleCorsJob = { readable: false, error: String(err) };
       }
 
-      // 3) Simple/no-preflight no-cors POST (opaque response; server must still reject)
       try {
         const resp = await fetch(`${targetBase}/api/v1/jobs`, {
           method: 'POST',
           mode: 'no-cors',
           credentials: 'include',
           headers: { 'Content-Type': 'text/plain' },
-          body: JSON.stringify(validBody),
+          body: JSON.stringify(noCorsAttack),
         });
         results.noCorsJob = { type: resp.type, status: resp.status, ok: resp.ok };
       } catch (err) {
         results.noCorsJob = { error: String(err) };
       }
 
-      // 4) Simple GET on victim's protected job endpoint
       try {
-        const resp = await fetch(`${targetBase}/api/v1/jobs/${jobId}`, {
+        const resp = await fetch(`${targetBase}/api/v1/jobs/${ids.jobId}`, {
           method: 'GET',
           credentials: 'include',
         });
@@ -136,9 +224,9 @@ const report = await withBrowser(async (browser) => {
       }
 
       return results;
-    }, baseUrl, cfg.jobId, cfg.validJobBody);
+    }, baseUrl, victimIds);
 
-    return { ok: true, attackResults, dialogs, pageErrors, externalRequests };
+    return { ok: true, victimIds, attackResults, dialogs, pageErrors, externalRequests };
   }
 
   if (scenario === 'hostile-pinned-viewer') {

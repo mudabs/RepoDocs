@@ -114,10 +114,8 @@ def _run_security_browser(scenario: str, base_url: str, extra: str) -> dict[str,
 # ------------------------------------------------------------------ 1. Unrelated websites & exposed auth
 
 def test_browser_cross_origin_page_cannot_open_session_or_start_job(tmp_path: Path) -> None:
-    """With a live victim session + positive control, an unrelated origin cannot start jobs or read responses."""
+    """With Chrome holding the victim session + positive controls, an unrelated origin cannot start jobs."""
     _browser_or_skip()
-    import http.cookiejar
-    import urllib.request
 
     class _AttackerHandler(http.server.BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802
@@ -135,52 +133,10 @@ def test_browser_cross_origin_page_cannot_open_session_or_start_job(tmp_path: Pa
     httpd = http.server.ThreadingHTTPServer(("127.0.0.1", evil_port), _AttackerHandler)
     evil_thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     evil_thread.start()
+    attacker_origin = f"http://127.0.0.1:{evil_port}"
     try:
         with _live_server(tmp_path, factory, recorded_requests=recorded) as base_url:
-            # Positive control: legitimate same-origin session creates workspace, connects provider, runs job.
-            opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
-
-            def _api(method: str, path: str, body: dict[str, Any] | None = None, csrf: str | None = None) -> dict[str, Any]:
-                hdrs: dict[str, str] = {"Origin": base_url, "Content-Type": "application/json"}
-                if csrf:
-                    hdrs["x-csrf-token"] = csrf
-                req = urllib.request.Request(
-                    f"{base_url}{path}",
-                    data=json.dumps(body).encode("utf-8") if body is not None else None,
-                    headers=hdrs,
-                    method=method,
-                )
-                with opener.open(req, timeout=10) as resp:
-                    return json.loads(resp.read().decode("utf-8"))
-
-            csrf = _api("POST", "/api/v1/session", {})["csrf_token"]
-            ws_id = _api("POST", "/api/v1/workspaces", {"name": "Shop", "sources": [{"kind": "local", "name": "shop"}]}, csrf)["workspace_id"]
-            prov_id = _api("POST", "/api/v1/providers", {"provider": "ollama", "host": "http://127.0.0.1:11434", "model": "replay-model"}, csrf)["provider_session_id"]
-            pre = _api("POST", f"/api/v1/workspaces/{ws_id}/preview", {"provider_session_id": prov_id}, csrf)
-            pos_job = _api("POST", "/api/v1/jobs", request(ws_id, key="pos-ctrl-1", provider=prov_id, context=pre["context_hash"]), csrf)
-            pos_job_id = pos_job["job_id"]
-            deadline = time.monotonic() + 20
-            while time.monotonic() < deadline:
-                state = _api("GET", f"/api/v1/jobs/{pos_job_id}")["state"]
-                if state == "succeeded":
-                    break
-                time.sleep(0.05)
-            assert state == "succeeded"
-            assert len(factory.contexts) == 1
-
-            recorded.clear()
-            attacker_origin = f"http://127.0.0.1:{evil_port}"
-            valid_job_body = request(ws_id, key="attacker-job-1", mode="deterministic")
-            report = _run_security_browser(
-                "cross-origin-attack",
-                base_url,
-                json.dumps({
-                    "attackerUrl": f"{attacker_origin}/",
-                    "workspaceId": ws_id,
-                    "jobId": pos_job_id,
-                    "validJobBody": valid_job_body,
-                }),
-            )
+            report = _run_security_browser("cross-origin-attack", base_url, f"{attacker_origin}/")
     finally:
         httpd.shutdown()
         httpd.server_close()
@@ -197,13 +153,16 @@ def test_browser_cross_origin_page_cannot_open_session_or_start_job(tmp_path: Pa
         or "TypeError: Failed to fetch" in no_cors.get("error", "")
     ), no_cors
 
-    # Server-side telemetry: attacker cross-origin requests were received and denied (403/401); no extra job ran.
+    ws_id = report["victimIds"]["workspaceId"]
+    job_id = report["victimIds"]["jobId"]
+    # Server-side telemetry: attacker cross-origin requests hit the server and were denied (403/401);
+    # only the 2 positive-control jobs (deterministic + provider-backed) ran.
     attacker_hits = [r for r in recorded if r[2] == attacker_origin]
     assert any(m == "POST" and p == "/api/v1/jobs" and st == 403 for m, p, _o, st in attacker_hits), recorded
-    assert any(m == "GET" and p == f"/api/v1/jobs/{pos_job_id}" and st in (401, 403) for m, p, _o, st in attacker_hits), recorded
+    assert any(m == "GET" and p == f"/api/v1/jobs/{job_id}" and st in (401, 403) for m, p, _o, st in attacker_hits), recorded
     assert len(factory.contexts) == 1
     jobs_dir = tmp_path / "store" / ws_id / "jobs"
-    assert len(list(jobs_dir.glob("*.json"))) == 1
+    assert len(list(jobs_dir.glob("*.json"))) == 2
 
 
 def test_self_hosted_auth_failure_and_success_boundary(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
