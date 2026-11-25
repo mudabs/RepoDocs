@@ -9,3 +9,7 @@ dist/
 
 # Optional Mermaid renderer tooling (npm ci in tools/mermaid)
 tools/mermaid/node_modules/
+
+# Frontend build artifacts (npm ci && npm run build in frontend/)
+frontend/node_modules/
+frontend/dist/

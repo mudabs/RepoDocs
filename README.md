@@ -6,6 +6,42 @@ RepoDocs is an evidence-backed repository documentation engine. The current impl
 
 The next release targets a local/self-hosted browser workflow over the same Python engine: see [the workflow contract](docs/WEB_WORKFLOW.md), ADR-027 and epic #63. Its backend HTTP jobs adapter is implemented as the optional `repodocs[web]` extra (ADR-036); the browser UI, installation and startup command are not yet. The CLI remains standalone. Public hosting, managed funded AI, accounts, payments and videos are deferred.
 
+## Web interface
+
+A browser-based workflow UI is included in `frontend/`. It is a React/TypeScript/Vite single-page application that runs against the local HTTP API provided by `repodocs[web]`.
+
+**Prerequisites:** Node.js 20+, Python with `repodocs[web]` installed.
+
+```powershell
+# Build the frontend once
+cd frontend
+npm ci
+npm run build
+
+# Start the local service (from the project root)
+python -c "
+from repodocs.web.app import WebSettings, serve
+from repodocs.web.security import AccessConfig
+from repodocs.web.workspaces import WorkspaceSettings
+from pathlib import Path
+
+serve(WebSettings(
+    access=AccessConfig(),
+    workspaces=WorkspaceSettings(
+        store_root=Path('repodocs-store'),
+        local_roots={'my-service': Path('../my-service')},
+    ),
+))
+"
+```
+
+Then open `http://127.0.0.1:8000` in your browser. The UI walks you through:
+source selection, workspace creation, scan and preview, mode selection (deterministic or
+architecture with your own provider), budget limits, consent, and job submission with live
+progress. All credentials are transient: they are not stored anywhere between sessions.
+
+The CLI remains standalone. The web UI requires the service to be running locally.
+
 ## Start here
 - `AGENTS.md`: persistent coding-agent instructions.
 - `docs/PRODUCT_REQUIREMENTS.md`: vision, scope, acceptance goals.
