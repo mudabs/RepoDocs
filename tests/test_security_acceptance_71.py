@@ -61,6 +61,7 @@ def _live_server(
     factory: Factory | None = None,
     *,
     shop_source: Path | None = None,
+    recorded_requests: list[tuple[str, str, str | None, int]] | None = None,
 ) -> Iterator[str]:
     port = _free_port()
     shop = shop_source or (tmp_path / "approved" / "shop")
@@ -73,6 +74,12 @@ def _live_server(
         frontend_dist=FRONTEND_DIST,
     )
     app = create_app(ws_settings, provider_factory=factory or Factory())
+    if recorded_requests is not None:
+        @app.middleware("http")
+        async def _record(req: Any, call_next: Any) -> Any:
+            resp = await call_next(req)
+            recorded_requests.append((req.method, req.url.path, req.headers.get("origin"), resp.status_code))
+            return resp
     config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
     server = uvicorn.Server(config)
     thread = threading.Thread(target=server.run, daemon=True)
@@ -107,8 +114,10 @@ def _run_security_browser(scenario: str, base_url: str, extra: str) -> dict[str,
 # ------------------------------------------------------------------ 1. Unrelated websites & exposed auth
 
 def test_browser_cross_origin_page_cannot_open_session_or_start_job(tmp_path: Path) -> None:
-    """A real Chrome page on an unrelated origin cannot open a session, read jobs, or submit a job."""
+    """With a live victim session + positive control, an unrelated origin cannot start jobs or read responses."""
     _browser_or_skip()
+    import http.cookiejar
+    import urllib.request
 
     class _AttackerHandler(http.server.BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802
@@ -120,23 +129,81 @@ def test_browser_cross_origin_page_cannot_open_session_or_start_job(tmp_path: Pa
         def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
             return
 
+    recorded: list[tuple[str, str, str | None, int]] = []
+    factory = Factory(Replay(full_answer))
     evil_port = _free_port()
     httpd = http.server.ThreadingHTTPServer(("127.0.0.1", evil_port), _AttackerHandler)
     evil_thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     evil_thread.start()
     try:
-        with _live_server(tmp_path) as base_url:
-            report = _run_security_browser("cross-origin-attack", base_url, f"http://127.0.0.1:{evil_port}/")
+        with _live_server(tmp_path, factory, recorded_requests=recorded) as base_url:
+            # Positive control: legitimate same-origin session creates workspace, connects provider, runs job.
+            opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+
+            def _api(method: str, path: str, body: dict[str, Any] | None = None, csrf: str | None = None) -> dict[str, Any]:
+                hdrs: dict[str, str] = {"Origin": base_url, "Content-Type": "application/json"}
+                if csrf:
+                    hdrs["x-csrf-token"] = csrf
+                req = urllib.request.Request(
+                    f"{base_url}{path}",
+                    data=json.dumps(body).encode("utf-8") if body is not None else None,
+                    headers=hdrs,
+                    method=method,
+                )
+                with opener.open(req, timeout=10) as resp:
+                    return json.loads(resp.read().decode("utf-8"))
+
+            csrf = _api("POST", "/api/v1/session", {})["csrf_token"]
+            ws_id = _api("POST", "/api/v1/workspaces", {"name": "Shop", "sources": [{"kind": "local", "name": "shop"}]}, csrf)["workspace_id"]
+            prov_id = _api("POST", "/api/v1/providers", {"provider": "ollama", "host": "http://127.0.0.1:11434", "model": "replay-model"}, csrf)["provider_session_id"]
+            pre = _api("POST", f"/api/v1/workspaces/{ws_id}/preview", {"provider_session_id": prov_id}, csrf)
+            pos_job = _api("POST", "/api/v1/jobs", request(ws_id, key="pos-ctrl-1", provider=prov_id, context=pre["context_hash"]), csrf)
+            pos_job_id = pos_job["job_id"]
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline:
+                state = _api("GET", f"/api/v1/jobs/{pos_job_id}")["state"]
+                if state == "succeeded":
+                    break
+                time.sleep(0.05)
+            assert state == "succeeded"
+            assert len(factory.contexts) == 1
+
+            recorded.clear()
+            attacker_origin = f"http://127.0.0.1:{evil_port}"
+            valid_job_body = request(ws_id, key="attacker-job-1", mode="deterministic")
+            report = _run_security_browser(
+                "cross-origin-attack",
+                base_url,
+                json.dumps({
+                    "attackerUrl": f"{attacker_origin}/",
+                    "workspaceId": ws_id,
+                    "jobId": pos_job_id,
+                    "validJobBody": valid_job_body,
+                }),
+            )
     finally:
         httpd.shutdown()
         httpd.server_close()
 
     assert report["pageErrors"] == []
     assert report["dialogs"] == []
-    for action, result in report["attackResults"].items():
-        assert result["blockedByCors"] is True, f"Cross-origin {action} was not blocked by CORS: {result}"
-    store = tmp_path / "store"
-    assert not store.exists() or list(store.iterdir()) == []
+    res = report["attackResults"]
+    assert res["preflightedJob"]["readable"] is False
+    assert res["simpleCorsJob"]["readable"] is False
+    assert res["readJob"]["readable"] is False
+    no_cors = res["noCorsJob"]
+    assert (
+        (no_cors.get("type") == "opaque" and no_cors.get("status") == 0)
+        or "TypeError: Failed to fetch" in no_cors.get("error", "")
+    ), no_cors
+
+    # Server-side telemetry: attacker cross-origin requests were received and denied (403/401); no extra job ran.
+    attacker_hits = [r for r in recorded if r[2] == attacker_origin]
+    assert any(m == "POST" and p == "/api/v1/jobs" and st == 403 for m, p, _o, st in attacker_hits), recorded
+    assert any(m == "GET" and p == f"/api/v1/jobs/{pos_job_id}" and st in (401, 403) for m, p, _o, st in attacker_hits), recorded
+    assert len(factory.contexts) == 1
+    jobs_dir = tmp_path / "store" / ws_id / "jobs"
+    assert len(list(jobs_dir.glob("*.json"))) == 1
 
 
 def test_self_hosted_auth_failure_and_success_boundary(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
@@ -169,72 +236,135 @@ def test_self_hosted_auth_failure_and_success_boundary(tmp_path: Path, caplog: p
 
 # ------------------------------------------------------------------ 2. Credential isolation & env keys
 
-def test_concurrent_sessions_isolate_canaries_and_block_env_credentials(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+def _openai_stand_in(received: list[tuple[int, str, str | None]], barrier: threading.Barrier) -> Any:
+    """Loopback OpenAI /responses stand-in synchronized on a barrier to prove true concurrent execution."""
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            received.append((self.server.server_port, self.path, self.headers.get("Authorization")))
+            if self.path.endswith("/input_tokens"):
+                payload = json.dumps({"input_tokens": 11}).encode()
+            else:
+                barrier.wait()
+                user_msg = json.loads(body["input"][0]["content"])
+                content = json.dumps(full_answer(user_msg))
+                payload = json.dumps({
+                    "id": "resp_test",
+                    "model": body["model"],
+                    "status": "completed",
+                    "output": [{"type": "message", "status": "completed", "role": "assistant", "content": [{"type": "output_text", "text": content}]}],
+                    "usage": {"input_tokens": 11, "output_tokens": 7, "total_tokens": 18},
+                }).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *args: Any) -> None:
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+def _run_concurrent_keyed_sessions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, *, max_active_jobs: int,
 ) -> None:
-    """Concurrent sessions isolate secret canaries and never inherit operator environment keys."""
+    from repodocs.web.jobs import build_provider
+
     env_canary = "sk-env-operator-canary-999999999999999999"
-    session_a_canary = CANARY
+    canary_a = "sk-session-a-canary-11111111111111111111"
+    canary_b = "sk-session-b-canary-22222222222222222222"
     monkeypatch.setenv("OPENAI_API_KEY", env_canary)
     monkeypatch.setenv("ANTHROPIC_API_KEY", env_canary)
     monkeypatch.setenv("REPODOCS_OLLAMA_API_KEY", env_canary)
+    caplog.set_level("DEBUG")
 
+    received: list[tuple[int, str, str | None]] = []
+    barrier = threading.Barrier(2, timeout=3.0)
+    srv_a = _openai_stand_in(received, barrier)
+    srv_b = _openai_stand_in(received, barrier)
     shop = tmp_path / "approved" / "shop"
     shutil.copytree(FIXTURE, shop)
-    factory = Factory(Replay(full_answer, name="openai", external=True), Replay(full_answer, name="ollama", external=False))
     app = create_app(
         WebSettings(
             AccessConfig(),
             WorkspaceSettings(tmp_path / "store", {"shop": shop}),
-            JobSettings(max_active_jobs=2, run_limits=RunLimits(context_window_tokens=131072)),
+            JobSettings(max_active_jobs=max_active_jobs, run_limits=RunLimits(context_window_tokens=131072)),
         ),
-        provider_factory=factory,
+        provider_factory=build_provider,
     )
     origin = "http://127.0.0.1:8000"
-    with TestClient(app, base_url=origin) as client_a, TestClient(app, base_url=origin) as client_b:
-        sa = client_a.post("/api/v1/session", headers={"Origin": origin}).json()["csrf_token"]
-        sb = client_b.post("/api/v1/session", headers={"Origin": origin}).json()["csrf_token"]
-        ha = {"Origin": origin, "x-csrf-token": sa}
-        hb = {"Origin": origin, "x-csrf-token": sb}
+    try:
+        with TestClient(app, base_url=origin) as client_a, TestClient(app, base_url=origin) as client_b:
+            sa = client_a.post("/api/v1/session", headers={"Origin": origin}).json()["csrf_token"]
+            sb = client_b.post("/api/v1/session", headers={"Origin": origin}).json()["csrf_token"]
+            ha = {"Origin": origin, "x-csrf-token": sa}
+            hb = {"Origin": origin, "x-csrf-token": sb}
 
-        wsa = client_a.post("/api/v1/workspaces", json={"name": "A", "sources": [{"kind": "local", "name": "shop"}]}, headers=ha).json()["workspace_id"]
-        wsb = client_b.post("/api/v1/workspaces", json={"name": "B", "sources": [{"kind": "local", "name": "shop"}]}, headers=hb).json()["workspace_id"]
+            wsa = client_a.post("/api/v1/workspaces", json={"name": "A", "sources": [{"kind": "local", "name": "shop"}]}, headers=ha).json()["workspace_id"]
+            wsb = client_b.post("/api/v1/workspaces", json={"name": "B", "sources": [{"kind": "local", "name": "shop"}]}, headers=hb).json()["workspace_id"]
 
-        pa = client_a.post("/api/v1/providers", json={"provider": "openai", "host": "https://api.openai.com/v1", "model": "gpt-4o-mini", "api_key": session_a_canary}, headers=ha).json()["provider_session_id"]
-        pb = client_b.post("/api/v1/providers", json={"provider": "ollama", "host": "http://127.0.0.1:11434", "model": "replay-model"}, headers=hb).json()["provider_session_id"]
+            pa = client_a.post("/api/v1/providers", json={"provider": "openai", "host": f"http://127.0.0.1:{srv_a.server_port}/v1", "model": "gpt-4o-mini", "api_key": canary_a}, headers=ha).json()["provider_session_id"]
+            pb = client_b.post("/api/v1/providers", json={"provider": "openai", "host": f"http://127.0.0.1:{srv_b.server_port}/v1", "model": "gpt-4o-mini", "api_key": canary_b}, headers=hb).json()["provider_session_id"]
 
-        pre_a = client_a.post(f"/api/v1/workspaces/{wsa}/preview", json={"provider_session_id": pa}, headers=ha).json()
-        pre_b = client_b.post(f"/api/v1/workspaces/{wsb}/preview", json={"provider_session_id": pb}, headers=hb).json()
+            pre_a = client_a.post(f"/api/v1/workspaces/{wsa}/preview", json={"provider_session_id": pa}, headers=ha).json()
+            pre_b = client_b.post(f"/api/v1/workspaces/{wsb}/preview", json={"provider_session_id": pb}, headers=hb).json()
 
-        ca = client_a.post("/api/v1/consents", json={"workspace_id": wsa, "provider_session_id": pa, "context_hash": pre_a["context_hash"], "kinds": ["external", "source-excerpts"]}, headers=ha).json()["consent_receipt_id"]
+            ja = client_a.post("/api/v1/jobs", json=request(wsa, key="ca-1", provider=pa, context=pre_a["context_hash"]), headers=ha).json()["job_id"]
+            jb = client_b.post("/api/v1/jobs", json=request(wsb, key="cb-1", provider=pb, context=pre_b["context_hash"]), headers=hb).json()["job_id"]
 
-        ja = client_a.post("/api/v1/jobs", json=request(wsa, key="ca-1", provider=pa, context=pre_a["context_hash"], receipt=ca), headers=ha).json()["job_id"]
-        jb = client_b.post("/api/v1/jobs", json=request(wsb, key="cb-1", provider=pb, context=pre_b["context_hash"]), headers=hb).json()["job_id"]
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline:
+                ra = client_a.get(f"/api/v1/jobs/{ja}", headers={"Origin": origin}).json()
+                rb = client_b.get(f"/api/v1/jobs/{jb}", headers={"Origin": origin}).json()
+                if ra["state"] in ("succeeded", "failed") and rb["state"] in ("succeeded", "failed"):
+                    break
+                time.sleep(0.02)
 
-        deadline = time.monotonic() + 20
-        while time.monotonic() < deadline:
-            ra = client_a.get(f"/api/v1/jobs/{ja}", headers={"Origin": origin}).json()
-            rb = client_b.get(f"/api/v1/jobs/{jb}", headers={"Origin": origin}).json()
-            if ra["state"] == "succeeded" and rb["state"] == "succeeded":
-                break
-            time.sleep(0.02)
-        assert ra["state"] == "succeeded" and rb["state"] == "succeeded"
+            assert ra["state"] == "succeeded", ra
+            assert rb["state"] == "succeeded", rb
 
-        # Session A disconnects its provider; Session B never saw session_a_canary or env_canary
-        assert client_a.post(f"/api/v1/providers/{pa}/disconnect", headers=ha).status_code == 204
-        assert factory.secrets == [session_a_canary, None]
+            # Cross-session isolation and disconnect revocation
+            assert client_b.get(f"/api/v1/jobs/{ja}", headers={"Origin": origin}).status_code == 404
+            assert client_b.get(f"/api/v1/providers/{pa}", headers={"Origin": origin}).status_code == 404
+            assert client_a.post(f"/api/v1/providers/{pa}/disconnect", headers=ha).status_code == 204
+            assert client_a.get(f"/api/v1/providers/{pa}", headers={"Origin": origin}).status_code == 404
 
-        for aid in rb["result"]["artifact_ids"]:
-            content = client_b.get(f"/api/v1/jobs/{jb}/artifacts/{aid}", headers={"Origin": origin}).text
-            assert session_a_canary not in content and env_canary not in content
+            for aid in rb["result"]["artifact_ids"]:
+                content = client_b.get(f"/api/v1/jobs/{jb}/artifacts/{aid}", headers={"Origin": origin}).text
+                assert canary_a not in content and env_canary not in content
+    finally:
+        for srv in (srv_a, srv_b):
+            srv.shutdown()
+            srv.server_close()
 
+    by_port = {port: [auth for p, path, auth in received if p == port and path.endswith("/responses")] for port in (srv_a.server_port, srv_b.server_port)}
+    assert by_port[srv_a.server_port] == [f"Bearer {canary_a}"]
+    assert by_port[srv_b.server_port] == [f"Bearer {canary_b}"]
     for file_path in (tmp_path / "store").rglob("*"):
         if file_path.is_file():
             text = file_path.read_text(encoding="utf-8", errors="ignore")
-            assert session_a_canary not in text
-            assert env_canary not in text
-    assert session_a_canary not in caplog.text
-    assert env_canary not in caplog.text
+            assert canary_a not in text and canary_b not in text and env_canary not in text
+    assert canary_a not in caplog.text and canary_b not in caplog.text and env_canary not in caplog.text
+
+
+def test_concurrent_sessions_isolate_canaries_and_block_env_credentials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Two overlapping keyed sessions hit real local OpenAI transports together with isolated canaries."""
+    _run_concurrent_keyed_sessions(tmp_path, monkeypatch, caplog, max_active_jobs=2)
+
+
+def test_concurrent_credential_isolation_fails_when_restricted_to_one_worker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Restricting JobSettings to max_active_jobs=1 fails the Barrier(2) overlap check."""
+    with pytest.raises(AssertionError):
+        _run_concurrent_keyed_sessions(tmp_path, monkeypatch, caplog, max_active_jobs=1)
 
 
 # ------------------------------------------------------------------ 3. Mid-run consent revocation & scope binding
@@ -303,9 +433,15 @@ def test_provider_model_or_host_switch_cannot_inherit_consent(tmp_path: Path) ->
 
         # Switch model on same host
         p2 = client.post("/api/v1/providers", json={"provider": "openai", "host": "https://api.openai.com/v1", "model": "gpt-4o", "api_key": CANARY}, headers=hdrs).json()["provider_session_id"]
-        r = client.post("/api/v1/jobs", json=request(ws, key="switch-1", provider=p2, context=pre["context_hash"], receipt=receipt), headers=hdrs)
-        assert r.status_code == 403
-        assert r.json()["error"]["code"] == "consent-required"
+        r_model = client.post("/api/v1/jobs", json=request(ws, key="switch-model", provider=p2, context=pre["context_hash"], receipt=receipt), headers=hdrs)
+        assert r_model.status_code == 403
+        assert r_model.json()["error"]["code"] == "consent-required"
+
+        # Switch host with same provider and model
+        p3 = client.post("/api/v1/providers", json={"provider": "openai", "host": "https://api.example.invalid/v1", "model": "gpt-4o-mini", "api_key": CANARY}, headers=hdrs).json()["provider_session_id"]
+        r_host = client.post("/api/v1/jobs", json=request(ws, key="switch-host", provider=p3, context=pre["context_hash"], receipt=receipt), headers=hdrs)
+        assert r_host.status_code == 403
+        assert r_host.json()["error"]["code"] == "consent-required"
 
 
 # ------------------------------------------------------------------ 4. Hostile content + pinned GitHub links

@@ -72,30 +72,71 @@ const report = await withBrowser(async (browser) => {
   });
 
   if (scenario === 'cross-origin-attack') {
-    const attackerUrl = extraArg;
-    await page.goto(attackerUrl, { waitUntil: 'networkidle0', timeout: 20000 });
-    const attackResults = await page.evaluate(async (targetBase) => {
+    // extraArg is JSON: { attackerUrl, workspaceId, jobId, validJobBody }
+    const cfg = JSON.parse(extraArg);
+    // Step 1: Establish a genuine victim session on the RepoDocs origin (positive control in browser).
+    await page.goto(baseUrl, { waitUntil: 'networkidle0', timeout: 20000 });
+    await clickButton(page, 'Open session');
+    await waitForText(page, 'Select source repositories');
+
+    // Step 2: Navigate in the same browser context (holding the victim cookie) to the unrelated attacker origin.
+    // Attacker JS receives NO victim CSRF token or API key; only public target URLs/IDs.
+    await page.goto(cfg.attackerUrl, { waitUntil: 'networkidle0', timeout: 20000 });
+    const attackResults = await page.evaluate(async (targetBase, jobId, validBody) => {
       const results = {};
-      for (const [label, path, method, body] of [
-        ['session', '/api/v1/session', 'POST', {}],
-        ['workspace', '/api/v1/workspaces', 'POST', { name: 'evil', sources: [{ kind: 'local', name: 'shop' }] }],
-        ['job', '/api/v1/jobs', 'POST', { contract_version: '1.0', kind: 'request' }],
-        ['read_job', '/api/v1/jobs/job-1', 'GET', null],
-      ]) {
-        try {
-          const resp = await fetch(`${targetBase}${path}`, {
-            method,
-            credentials: 'include',
-            headers: body ? { 'Content-Type': 'application/json' } : undefined,
-            body: body ? JSON.stringify(body) : undefined,
-          });
-          results[label] = { blockedByCors: false, status: resp.status };
-        } catch (err) {
-          results[label] = { blockedByCors: true, message: String(err) };
-        }
+      // 1) Preflighted JSON POST with otherwise-valid payload
+      try {
+        const resp = await fetch(`${targetBase}/api/v1/jobs`, {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(validBody),
+        });
+        results.preflightedJob = { readable: true, status: resp.status };
+      } catch (err) {
+        results.preflightedJob = { readable: false, error: String(err) };
       }
+
+      // 2) Simple/no-preflight text/plain CORS POST with otherwise-valid payload
+      try {
+        const resp = await fetch(`${targetBase}/api/v1/jobs`, {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'text/plain' },
+          body: JSON.stringify(validBody),
+        });
+        results.simpleCorsJob = { readable: true, status: resp.status };
+      } catch (err) {
+        results.simpleCorsJob = { readable: false, error: String(err) };
+      }
+
+      // 3) Simple/no-preflight no-cors POST (opaque response; server must still reject)
+      try {
+        const resp = await fetch(`${targetBase}/api/v1/jobs`, {
+          method: 'POST',
+          mode: 'no-cors',
+          credentials: 'include',
+          headers: { 'Content-Type': 'text/plain' },
+          body: JSON.stringify(validBody),
+        });
+        results.noCorsJob = { type: resp.type, status: resp.status, ok: resp.ok };
+      } catch (err) {
+        results.noCorsJob = { error: String(err) };
+      }
+
+      // 4) Simple GET on victim's protected job endpoint
+      try {
+        const resp = await fetch(`${targetBase}/api/v1/jobs/${jobId}`, {
+          method: 'GET',
+          credentials: 'include',
+        });
+        results.readJob = { readable: true, status: resp.status };
+      } catch (err) {
+        results.readJob = { readable: false, error: String(err) };
+      }
+
       return results;
-    }, baseUrl);
+    }, baseUrl, cfg.jobId, cfg.validJobBody);
 
     return { ok: true, attackResults, dialogs, pageErrors, externalRequests };
   }
