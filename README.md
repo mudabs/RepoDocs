@@ -19,21 +19,10 @@ npm ci
 npm run build
 
 # Start the local service (from the project root)
-python -c "
-from repodocs.web.app import WebSettings, serve
-from repodocs.web.security import AccessConfig
-from repodocs.web.workspaces import WorkspaceSettings
-from pathlib import Path
-
-serve(WebSettings(
-    access=AccessConfig(),
-    workspaces=WorkspaceSettings(
-        store_root=Path('repodocs-store'),
-        local_roots={'my-service': Path('../my-service')},
-    ),
-))
-"
+repodocs-web --store-root repodocs-store --source my-service=../my-service
 ```
+
+See [the web installation guide](docs/WEB_INSTALLATION.md) for non-loopback exposure, health/readiness endpoints, retention cleanup, and troubleshooting.
 
 Then open `http://127.0.0.1:8000` in your browser. The UI walks you through:
 source selection, workspace creation, scan and preview, mode selection (deterministic or

@@ -21,6 +21,7 @@ web = ["fastapi>=0.115", "uvicorn>=0.30"]
 
 [project.scripts]
 repodocs = "repodocs.cli:main"
+repodocs-web = "repodocs.web.server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
