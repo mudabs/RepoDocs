@@ -13,3 +13,4 @@ tools/mermaid/node_modules/
 # Frontend build artifacts (npm ci && npm run build in frontend/)
 frontend/node_modules/
 frontend/dist/
+src/repodocs/web/static/

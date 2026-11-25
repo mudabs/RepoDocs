@@ -24,8 +24,11 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
-_FRONTEND_DIST = Path(__file__).resolve().parents[3] / "frontend" / "dist"
+_PACKAGED_FRONTEND = Path(__file__).resolve().parent / "static"
+_SOURCE_FRONTEND = Path(__file__).resolve().parents[3] / "frontend" / "dist"
+_FRONTEND_DIST = _PACKAGED_FRONTEND if _PACKAGED_FRONTEND.is_dir() else _SOURCE_FRONTEND
 
+from .health import health_payload, readiness_status
 from .jobs import CONTRACT_VERSION, JobError, JobService, JobSettings, ProviderFactory, build_provider
 from .security import (
     Access,
@@ -97,11 +100,13 @@ def create_app(
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         yield
+        app.state.closed = True
         await run_in_threadpool(jobs.close)
         providers.clear()
 
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     app.state.jobs = jobs
+    app.state.closed = False
 
     @app.middleware("http")
     async def defensive_headers(request: Request, call_next: Callable[[Request], Any]) -> Response:
@@ -248,15 +253,31 @@ def create_app(
 
         return await guarded(request, run)
 
+    if frontend_dist is ...:  # type: ignore[comparison-overlap]
+        frontend_dist = settings.frontend_dist if settings.frontend_dist is not None else _FRONTEND_DIST
+    _frontend: Path | None = frontend_dist  # type: ignore[assignment]
+
+    # ------------------------------------------------------------------ health and readiness
+    @app.get("/health", include_in_schema=False)
+    async def health() -> Response:
+        return _json(200, health_payload())
+
+    @app.get("/ready", include_in_schema=False)
+    async def ready() -> Response:
+        ui_built = _frontend is not None and _frontend.is_dir()
+        status_code, payload = readiness_status(
+            settings.workspaces.store_root,
+            closed=bool(app.state.closed),
+            ui_built=ui_built,
+        )
+        return _json(status_code, payload)
+
     # ------------------------------------------------------------------ frontend
     # Serve the built static frontend when it is present. The frontend is an
     # optional build artifact (frontend/dist). It is never required by the API
     # or the CLI. When the dist directory does not exist, the API still works;
     # any non-API GET returns a 404 JSON error so the caller knows the UI is not
     # built yet.
-    if frontend_dist is ...:  # type: ignore[comparison-overlap]
-        frontend_dist = settings.frontend_dist if settings.frontend_dist is not None else _FRONTEND_DIST
-    _frontend: Path | None = frontend_dist  # type: ignore[assignment]
     if _frontend is not None and _frontend.is_dir():
         assets_dir = _frontend / "assets"
         if assets_dir.is_dir():

@@ -14,16 +14,20 @@ authors = [{ name = "RepoDocs contributors" }]
 dependencies = []
 
 [project.optional-dependencies]
-test = ["pytest>=8", "jsonschema>=4.18", "anthropic>=1.0", "fastapi>=0.115", "uvicorn>=0.30", "httpx>=0.27"]
+test = ["pytest>=8", "jsonschema>=4.18", "anthropic>=1.0", "fastapi>=0.115", "uvicorn>=0.30", "httpx>=0.27", "setuptools>=77"]
 ai = ["anthropic>=1.0"]
 # The optional local web service (ADR-027, ADR-036). The CLI and the shared service never need it.
 web = ["fastapi>=0.115", "uvicorn>=0.30"]
 
 [project.scripts]
 repodocs = "repodocs.cli:main"
+repodocs-web = "repodocs.web.server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"repodocs.web" = ["static/*", "static/assets/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
