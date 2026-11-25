@@ -98,6 +98,12 @@ Neither endpoint exposes credentials, filesystem paths, or job records.
   External providers require explicit separate consent for external transmission and source
   excerpts. You are responsible for all usage charges on your own API key. RepoDocs does not
   provide managed or free cloud inference.
+- **Model limits and pricing**: configure per-request capacity and aggregate job caps on
+  `repodocs-web` without editing code using `--context-window-tokens`, `--request-output-tokens`,
+  `--max-requests`, `--max-input-tokens`, `--max-output-tokens`, `--max-total-tokens`,
+  `--max-cost-usd`, and `--prices-file <path-to-prices.json>`. Unconfigured models use
+  conservative fallback limits (`4096` tokens) which are never claimed as the served model's
+  verified capacity.
 
 ## 7. Data locations, retention, and cleanup
 

@@ -15,7 +15,18 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Callable, Mapping, Protocol, TypeVar
 
-from .ai.budgets import BudgetedProvider, RunLimits, RunStopped, budgeted, ledger_for, write_receipt
+from .ai.budgets import (
+    DEFAULT_CONTEXT_WINDOWS,
+    METHOD_BYTE_BOUND,
+    BudgetedProvider,
+    RunLimits,
+    RunStopped,
+    budgeted,
+    estimate_tokens,
+    ledger_for,
+    serialized_request,
+    write_receipt,
+)
 from .ai.providers import Provider, ProviderResponse, require_source_consent
 from .common import write_json
 from .confirmations import apply_decisions, load_decisions, status_counts, unresolved_candidates
@@ -350,6 +361,7 @@ def preview_context(request: ContextRequest, hooks: RunHooks = NO_HOOKS) -> Work
     """Write the bounded, redacted source context for review. Never contacts a provider."""
 
     from .architecture.context import CONTEXT_FILENAME, build_context, context_hash
+    from .architecture.discovery import initial_prompt_inputs
 
     config = ProjectConfig.load(request.root)
     ir = load_scanned_ir(config)
@@ -362,9 +374,49 @@ def preview_context(request: ContextRequest, hooks: RunHooks = NO_HOOKS) -> Work
         reasons[item["reason"]] = reasons.get(item["reason"], 0) + 1
     budget: dict[str, Any] | None = None
     if request.provider is not None:
-        # The limits and worst-case cost a run would start with. Nothing is counted or sent.
-        snapshot = ledger_for(request.provider, config.ai).snapshot()
-        budget = {key: snapshot[key] for key in ("limits", "price_profile", "max_estimated_cost_usd", "notes")}
+        # The limits, initial local estimate, and worst-case cost a run would start with. Nothing is counted or sent.
+        ledger = ledger_for(request.provider, config.ai)
+        snapshot = ledger.snapshot()
+        system, user, schema = initial_prompt_inputs(config, ir)
+        input_estimate = estimate_tokens(serialized_request(request.provider, system, user, schema))
+        window = int(snapshot["limits"]["context_window_tokens"])
+        reserved_output = int(snapshot["limits"]["request_output_tokens"])
+        total_estimate = input_estimate + reserved_output
+        fits_window = total_estimate <= window
+        if config.ai.limits.context_window_tokens is not None:
+            window_source = "operator"
+        elif request.provider.name in DEFAULT_CONTEXT_WINDOWS:
+            window_source = "provider-default"
+        else:
+            window_source = "fallback"
+        preflight_error: dict[str, str] | None = None
+        if not fits_window:
+            preflight_error = {
+                "code": "context-window",
+                "message": (
+                    f"Initial request needs up to {input_estimate} input tokens ({METHOD_BYTE_BOUND}) plus "
+                    f"{reserved_output} reserved output tokens ({total_estimate} total), exceeding the configured "
+                    f"{window}-token context window ({window_source}). Narrow repository scope or configure a larger "
+                    "context window via --context-window-tokens."
+                ),
+            }
+        budget = {
+            "limits": snapshot["limits"],
+            "price_profile": snapshot["price_profile"],
+            "max_estimated_cost_usd": snapshot["max_estimated_cost_usd"],
+            "notes": snapshot["notes"],
+            "context_window_source": window_source,
+            "initial_request": {
+                "input_tokens": input_estimate,
+                "estimate_method": METHOD_BYTE_BOUND,
+                "reserved_output_tokens": reserved_output,
+                "total_tokens": total_estimate,
+                "context_window_tokens": window,
+                "fits_context_window": fits_window,
+            },
+            "preflight_ok": fits_window,
+            "preflight_error": preflight_error,
+        }
     data = {
         "context": path.as_posix(),
         "context_version": bundle["context_version"],
