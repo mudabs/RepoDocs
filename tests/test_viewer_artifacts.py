@@ -205,3 +205,41 @@ def test_generated_architecture_evidence_json_uses_dictionary_contract(tmp_path:
         assert "revision_kind" in ev["repositories"][0]
         # Downloading evidence did not trigger another provider call.
         assert len(factory.contexts) == 1
+
+
+def test_offline_html_export_download_when_bundle_installed(tmp_path: Path) -> None:
+    """When architecture.html_export is enabled and Mermaid bundle is installed, offline HTML downloads safely."""
+    from repodocs.architecture.export import HTML_NAME, mermaid_bundle
+
+    if mermaid_bundle() is None:
+        pytest.skip("optional Mermaid bundle is not installed")
+
+    provider = Replay(full_answer)
+    with running(tmp_path, Factory(provider)) as (api, _app, factory):
+        workspace_id = api.workspace()
+        cfg_path = tmp_path / "store" / workspace_id / "repodocs.json"
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        cfg.setdefault("architecture", {})["html_export"] = True
+        cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
+
+        prov_id = api.provider()
+        preview = api.preview(workspace_id, prov_id)
+        r = api.submit(
+            request(
+                workspace_id,
+                key="offline-html-1",
+                provider=prov_id,
+                context=preview["context_hash"],
+                views=("overview", "components"),
+            )
+        )
+        assert r.status_code == 202
+        job = api.wait(r.json()["job_id"])
+        assert job["state"] == "succeeded"
+        assert HTML_NAME in job["result"]["artifact_ids"]
+
+        html_resp = api.download(job["job_id"], HTML_NAME)
+        assert html_resp.status_code == 200
+        assert f'attachment; filename="{HTML_NAME}"' == html_resp.headers.get("content-disposition")
+        assert b"Content-Security-Policy" in html_resp.content
+        assert len(factory.contexts) == 1

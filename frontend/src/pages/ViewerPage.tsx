@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { client } from '../api/client'
 import type { Job } from '../api/types'
 import { ArtifactDownloads } from '../components/ArtifactDownloads'
-import { DiagramViewer } from '../components/DiagramViewer'
+import { DiagramViewer, type SelectedEdge } from '../components/DiagramViewer'
 import { type EvidenceMapData, EvidencePanel } from '../components/EvidencePanel'
 import { RevisionBadge } from '../components/RevisionBadge'
 import { ScopeSelector } from '../components/ScopeSelector'
@@ -20,12 +20,14 @@ export function ViewerPage({ jobId, onBack }: Props) {
   const [diagramText, setDiagramText] = useState<string>('')
   const [evidenceMap, setEvidenceMap] = useState<EvidenceMapData | null>(null)
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
+  const [selectedEdge, setSelectedEdge] = useState<SelectedEdge | null>(null)
 
   useEffect(() => {
     let cancelled = false
     setError(null)
     setEvidenceMap(null)
     setSelectedKey(null)
+    setSelectedEdge(null)
 
     client
       .getJob(jobId)
@@ -181,6 +183,7 @@ export function ViewerPage({ jobId, onBack }: Props) {
             onSelect={id => {
               setDiagramText('')
               setSelectedKey(null)
+              setSelectedEdge(null)
               setSelectedArtifact(id)
             }}
           />
@@ -200,7 +203,14 @@ export function ViewerPage({ jobId, onBack }: Props) {
                   artifactId={selectedArtifact}
                   fetchArtifactText={fetchArtifactText}
                   onDiagramTextLoaded={setDiagramText}
-                  onSelectNode={setSelectedKey}
+                  onSelectNode={key => {
+                    setSelectedEdge(null)
+                    setSelectedKey(key)
+                  }}
+                  onSelectEdge={edge => {
+                    setSelectedKey(null)
+                    setSelectedEdge(edge)
+                  }}
                 />
               ) : (
                 <div
@@ -222,7 +232,11 @@ export function ViewerPage({ jobId, onBack }: Props) {
                 evidenceMap={evidenceMap}
                 diagramText={diagramText}
                 selectedKey={selectedKey}
-                onSelectKey={setSelectedKey}
+                selectedEdge={selectedEdge}
+                onSelectKey={key => {
+                  setSelectedEdge(null)
+                  setSelectedKey(key)
+                }}
               />
               <ArtifactDownloads
                 jobId={job.job_id}

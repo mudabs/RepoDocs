@@ -1,7 +1,9 @@
 import { useMemo, useState } from 'react'
+import type { SelectedEdge } from './DiagramViewer'
 import type { RepositoryRevision } from './RevisionBadge'
 
 export interface EvidenceCitation {
+  id?: string
   key?: string
   repository_id: string
   path: string
@@ -122,10 +124,11 @@ interface Props {
   evidenceMap: EvidenceMapData | null
   diagramText: string
   selectedKey: string | null
+  selectedEdge?: SelectedEdge | null
   onSelectKey: (key: string) => void
 }
 
-export function EvidencePanel({ evidenceMap, diagramText, selectedKey, onSelectKey }: Props) {
+export function EvidencePanel({ evidenceMap, diagramText, selectedKey, selectedEdge, onSelectKey }: Props) {
   const [selectedAlternativeIdx, setSelectedAlternativeIdx] = useState<number | null>(null)
   const mermaidEntries = useMemo(() => parseMermaidEvidenceComments(diagramText), [diagramText])
 
@@ -149,7 +152,10 @@ export function EvidencePanel({ evidenceMap, diagramText, selectedKey, onSelectK
     if (comment) {
       for (const cid of componentIds) {
         const entry = evidenceMap.components[cid]
-        if (entry.evidence.some(ev => ev.key && comment.evidenceIds.includes(ev.key))) {
+        if (entry.evidence.some(ev => {
+          const evId = ev.id ?? ev.key
+          return Boolean(evId && comment.evidenceIds.includes(evId))
+        })) {
           return { id: cid, entry }
         }
       }
@@ -164,12 +170,25 @@ export function EvidencePanel({ evidenceMap, diagramText, selectedKey, onSelectK
   }, [evidenceMap, selectedKey, mermaidEntries, componentIds])
 
   const resolvedConnection = useMemo(() => {
-    if (!evidenceMap || !selectedKey) return null
-    if (evidenceMap.connections[selectedKey]) {
+    if (!evidenceMap) return null
+    if (selectedKey && evidenceMap.connections[selectedKey]) {
       return { id: selectedKey, entry: evidenceMap.connections[selectedKey] }
     }
+    if (selectedEdge && selectedEdge.evidenceIds.length > 0) {
+      const targetIds = new Set(selectedEdge.evidenceIds)
+      let best: { id: string; entry: ConnectionEvidenceEntry; score: number } | null = null
+      for (const cid of connectionIds) {
+        const entry = evidenceMap.connections[cid]
+        const keys = entry.evidence.map(ev => ev.id ?? ev.key).filter((k): k is string => Boolean(k))
+        const overlap = keys.filter(k => targetIds.has(k)).length
+        if (overlap > 0 && (!best || overlap > best.score)) {
+          best = { id: cid, entry, score: overlap }
+        }
+      }
+      if (best) return { id: best.id, entry: best.entry }
+    }
     return null
-  }, [evidenceMap, selectedKey])
+  }, [evidenceMap, selectedKey, selectedEdge, connectionIds])
 
   const selectedComment = useMemo(() => {
     if (!selectedKey) return null
@@ -263,7 +282,23 @@ export function EvidencePanel({ evidenceMap, diagramText, selectedKey, onSelectK
         </div>
       )}
 
-      {!resolvedComponent && !resolvedConnection && selectedComment && (
+      {!resolvedComponent && !resolvedConnection && selectedEdge && (
+        <div
+          role="region"
+          aria-label="Selected edge evidence"
+          style={{ background: '#f8fafc', border: '1px solid #cbd5e1', borderRadius: '0.4rem', padding: '0.65rem' }}
+        >
+          <div style={{ fontWeight: 600, fontSize: '0.88rem' }}>
+            {selectedEdge.source} -&gt; {selectedEdge.target}
+            {selectedEdge.label ? `: ${selectedEdge.label}` : ''}
+          </div>
+          <div style={{ fontSize: '0.78rem', fontFamily: 'monospace', color: '#475569', marginTop: '0.25rem' }}>
+            Evidence IDs: {selectedEdge.evidenceIds.join(', ') || 'none'}
+          </div>
+        </div>
+      )}
+
+      {!resolvedComponent && !resolvedConnection && !selectedEdge && selectedComment && (
         <div
           role="region"
           aria-label="Selected diagram element evidence"

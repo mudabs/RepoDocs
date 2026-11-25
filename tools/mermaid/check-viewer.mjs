@@ -1,11 +1,11 @@
 // Drives the real RepoDocs React viewer against a live local HTTP server in headless Chrome.
-// Usage: node check-viewer.mjs <baseUrl> <browserPath> [--no-sandbox|--]
+// Usage: node check-viewer.mjs <baseUrl> <browserPath> <scenario> [--no-sandbox|--]
 import puppeteer from 'puppeteer';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-const [baseUrl, browserPath, flag] = process.argv.slice(2);
+const [baseUrl, browserPath, scenario, flag] = process.argv.slice(2);
 
 async function withBrowser(fn) {
   const profile = await mkdtemp(join(tmpdir(), 'repodocs-viewer-e2e-'));
@@ -51,7 +51,12 @@ const report = await withBrowser(async (browser) => {
   const page = await browser.newPage();
   const pageErrors = [];
   const consoleErrors = [];
+  const dialogs = [];
   page.on('pageerror', (err) => pageErrors.push(String(err)));
+  page.on('dialog', async (d) => {
+    dialogs.push(d.message());
+    await d.dismiss();
+  });
   page.on('console', (msg) => {
     if (msg.type() === 'error') consoleErrors.push(msg.text());
   });
@@ -60,26 +65,33 @@ const report = await withBrowser(async (browser) => {
   await clickButton(page, 'Open session');
   await waitForText(page, 'Select source repositories');
 
-  // Fill local source 'shop'
-  await page.evaluate(() => {
-    const input = document.querySelector('input[aria-label="Local source name"]');
-    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-    setter.call(input, 'shop');
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    input.dispatchEvent(new Event('change', { bubbles: true }));
-  });
+  const fillLocal = async (name) => {
+    await page.evaluate((val) => {
+      const input = document.querySelector('input[aria-label="Local source name"]');
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+      setter.call(input, val);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    }, name);
+  };
+
+  if (scenario === 'cross-repo-viewer') {
+    await fillLocal('shop');
+    await clickButton(page, 'Add source');
+    await fillLocal('shop2');
+    await clickButton(page, 'Add source');
+  } else {
+    await fillLocal('shop');
+  }
   await clickButton(page, 'Create workspace');
   await waitForText(page, 'Scan and preview');
   await clickButton(page, 'Scan and preview');
   await waitForText(page, 'Select mode');
 
-  // Select Architecture mode + components view
   await page.evaluate(() => {
     const radios = Array.from(document.querySelectorAll('input[type="radio"]'));
     const arch = radios.find((r) => r.parentElement && r.parentElement.textContent.includes('Architecture'));
     arch.click();
-  });
-  await page.evaluate(() => {
     const checks = Array.from(document.querySelectorAll('input[type="checkbox"]'));
     const comp = checks.find((c) => c.parentElement && c.parentElement.textContent.includes('components'));
     if (comp && !comp.checked) comp.click();
@@ -104,34 +116,98 @@ const report = await withBrowser(async (browser) => {
   await waitForText(page, 'Succeeded');
   await clickButton(page, 'View diagrams');
 
-  // Wait for SVG diagram and evidence map to render
-  await page.waitForFunction(() => Boolean(document.querySelector('svg')), { timeout: 20000 });
+  await page.waitForFunction(() => Boolean(document.querySelector('svg g.node[role="button"]')), { timeout: 20000 });
   await waitForText(page, 'Components (');
   await waitForText(page, 'working-tree (unverified)');
 
-  // Click Fit button
+  // 1. Click Fit button
   await clickButton(page, 'Fit');
 
-  // Click first component button in EvidencePanel
+  // 2. Click a rendered diagram NODE directly in the SVG (not sidebar)
   await page.evaluate(() => {
-    const aside = document.querySelector('aside[aria-label="Evidence panel"]');
-    const btn = aside.querySelector('ul button');
-    if (!btn) throw new Error('No component button in EvidencePanel');
-    btn.click();
+    const node = document.querySelector('svg g.node[role="button"]');
+    if (!node) throw new Error('No clickable g.node in SVG');
+    node.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
   });
-  await waitForText(page, 'Support:');
-  await waitForText(page, 'Evidence:');
+  await page.waitForFunction(
+    () => Boolean(document.querySelector('[aria-label="Selected component evidence"]')),
+    { timeout: 10000 },
+  );
+  const nodePanelText = await page.evaluate(
+    () => document.querySelector('[aria-label="Selected component evidence"]').textContent || '',
+  );
+
+  // 3. Click and keyboard-activate rendered diagram EDGE(s) directly in the SVG
+  const edgeCount = await page.evaluate(() => document.querySelectorAll('svg g.edgePaths path[role="button"]').length);
+  if (edgeCount < 1) throw new Error('Expected at least 1 clickable edge path in SVG');
+
+  await page.evaluate(() => {
+    const edge = document.querySelector('svg g.edgePaths path[role="button"]');
+    edge.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+  });
+  await page.waitForFunction(
+    () => Boolean(
+      document.querySelector('[aria-label="Selected connection evidence"]') ||
+      document.querySelector('[aria-label="Selected edge evidence"]'),
+    ),
+    { timeout: 10000 },
+  );
+
+  // Also test keyboard Enter on an edge (last edge, to exercise parallel/multiple edges if present)
+  await page.evaluate(() => {
+    const edges = document.querySelectorAll('svg g.edgePaths path[role="button"]');
+    const target = edges[edges.length - 1];
+    target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+  });
+  const edgePanelText = await page.evaluate(() => {
+    const el =
+      document.querySelector('[aria-label="Selected connection evidence"]') ||
+      document.querySelector('[aria-label="Selected edge evidence"]');
+    return el ? el.textContent || '' : '';
+  });
+
+  // 4. Perform actual artifact download fetches from the rendered download anchors
+  const downloaded = await page.evaluate(async () => {
+    const anchors = Array.from(document.querySelectorAll('section[aria-label="Artifact downloads"] a[download]'));
+    const results = [];
+    for (const a of anchors) {
+      const resp = await fetch(a.getAttribute('href'), { credentials: 'include' });
+      const text = await resp.text();
+      results.push({
+        name: a.getAttribute('download'),
+        status: resp.status,
+        disposition: resp.headers.get('content-disposition') || '',
+        bytes: text.length,
+      });
+    }
+    return results;
+  });
+
+  // 5. Inspect all rendered links to ensure no javascript: or non-allowlisted external hrefs exist
+  const badLinks = await page.evaluate(() =>
+    Array.from(document.querySelectorAll('a[href]'))
+      .map((a) => a.getAttribute('href') || '')
+      .filter((href) => href.startsWith('javascript:') || href.includes('evil.example')),
+  );
 
   const details = await page.evaluate(() => ({
     svgCount: document.querySelectorAll('svg').length,
-    downloadLinks: Array.from(document.querySelectorAll('section[aria-label="Artifact downloads"] a[download]')).map(
-      (a) => a.getAttribute('download'),
-    ),
     revisionText: document.querySelector('[aria-label="Repository revisions"]')?.textContent || '',
     bodyText: document.body.innerText,
   }));
 
-  return { ok: true, details, pageErrors, consoleErrors };
+  return {
+    ok: true,
+    edgeCount,
+    nodePanelText,
+    edgePanelText,
+    downloaded,
+    badLinks,
+    dialogs,
+    details,
+    pageErrors,
+    consoleErrors,
+  };
 });
 
 console.log(JSON.stringify(report));

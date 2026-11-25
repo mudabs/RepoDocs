@@ -15,17 +15,80 @@ function ensureMermaidInitialized() {
   }
 }
 
+export interface SelectedEdge {
+  source: string
+  target: string
+  label: string
+  occurrence: number
+  evidenceIds: string[]
+}
+
+interface ParsedEdge {
+  source: string
+  target: string
+  label: string
+  occurrence: number
+  evidenceIds: string[]
+}
+
+function parseDiagramEdges(mmdText: string): ParsedEdge[] {
+  const edgeDeclarations: Array<{ source: string; target: string; label: string }> = []
+  const evidenceByPair = new Map<string, string[][]>()
+
+  for (const rawLine of mmdText.split(/\r?\n/)) {
+    const line = rawLine.trim()
+    if (line.startsWith('%% evidence ')) {
+      const rest = line.slice('%% evidence '.length)
+      const colonIdx = rest.indexOf(':')
+      if (colonIdx !== -1) {
+        const subject = rest.slice(0, colonIdx).trim()
+        if (subject.includes('->')) {
+          const ids = rest
+            .slice(colonIdx + 1)
+            .split(/[,\s]+/)
+            .map(s => s.trim())
+            .filter(Boolean)
+          const existing = evidenceByPair.get(subject) ?? []
+          existing.push(ids)
+          evidenceByPair.set(subject, existing)
+        }
+      }
+      continue
+    }
+
+    const edgeMatch = /^([A-Za-z0-9_.-]+)\s+(?:-->|-.->|==>)\|"?([^"|]*)"?\|\s+([A-Za-z0-9_.-]+)$/.exec(line)
+    if (edgeMatch) {
+      edgeDeclarations.push({
+        source: edgeMatch[1],
+        target: edgeMatch[3],
+        label: edgeMatch[2],
+      })
+    }
+  }
+
+  const pairCounts = new Map<string, number>()
+  return edgeDeclarations.map(edge => {
+    const pairKey = `${edge.source}->${edge.target}`
+    const occurrence = pairCounts.get(pairKey) ?? 0
+    pairCounts.set(pairKey, occurrence + 1)
+    const pairEvidenceLists = evidenceByPair.get(pairKey) ?? []
+    const evidenceIds = pairEvidenceLists[occurrence] ?? pairEvidenceLists[0] ?? []
+    return { ...edge, occurrence, evidenceIds }
+  })
+}
+
 interface Props {
   jobId: string
   artifactId: string
   fetchArtifactText: (jobId: string, artifactId: string) => Promise<string>
   onDiagramTextLoaded?: (text: string) => void
   onSelectNode?: (nodeKey: string) => void
+  onSelectEdge?: (edge: SelectedEdge) => void
 }
 
 /**
  * Renders a Mermaid .mmd artifact with securityLevel:'strict' and htmlLabels:false,
- * interactive pan/zoom/fit, and clickable diagram node selection.
+ * interactive pan/zoom/fit, and clickable + keyboard-accessible node and edge selection.
  */
 export function DiagramViewer({
   jobId,
@@ -33,6 +96,7 @@ export function DiagramViewer({
   fetchArtifactText,
   onDiagramTextLoaded,
   onSelectNode,
+  onSelectEdge,
 }: Props) {
   const stageRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -77,6 +141,7 @@ export function DiagramViewer({
         const text = await fetchArtifactText(jobId, artifactId)
         if (cancelled) return
         onDiagramTextLoaded?.(text)
+        const parsedEdges = parseDiagramEdges(text)
 
         ensureMermaidInitialized()
         const renderId = `repodocs-mermaid-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
@@ -91,7 +156,8 @@ export function DiagramViewer({
           const svgEl = doc.documentElement
           if (svgEl && svgEl.nodeName.toLowerCase() === 'svg') {
             const imported = document.importNode(svgEl, true)
-            // Wire clickable node IDs (c_<hex> / g_<hex> or entity IDs)
+
+            // Wire clickable + keyboard-accessible node selection
             imported.querySelectorAll('g.node').forEach(node => {
               const idAttr = node.getAttribute('id') || ''
               const match = /(?:^|-)((?:c|g)_[0-9a-f]{12,16})(?:-|$)/.exec(idAttr)
@@ -101,6 +167,7 @@ export function DiagramViewer({
                 ;(node as SVGElement).style.cursor = 'pointer'
                 node.setAttribute('tabindex', '0')
                 node.setAttribute('role', 'button')
+                node.setAttribute('aria-label', `Select node ${key}`)
                 node.addEventListener('click', e => {
                   e.stopPropagation()
                   onSelectNode(key)
@@ -113,6 +180,46 @@ export function DiagramViewer({
                 })
               }
             })
+
+            // Wire clickable + keyboard-accessible edge selection (including parallel edges)
+            if (onSelectEdge && parsedEdges.length > 0) {
+              const edgePaths = Array.from(imported.querySelectorAll('g.edgePaths path'))
+              const edgeLabels = Array.from(imported.querySelectorAll('g.edgeLabels g.edgeLabel'))
+
+              const bindEdgeElement = (targetEl: Element, edge: ParsedEdge) => {
+                ;(targetEl as SVGElement).style.cursor = 'pointer'
+                targetEl.setAttribute('tabindex', '0')
+                targetEl.setAttribute('role', 'button')
+                targetEl.setAttribute(
+                  'aria-label',
+                  `Select edge ${edge.source} to ${edge.target}: ${edge.label || 'connection'} (${edge.occurrence + 1})`,
+                )
+                targetEl.setAttribute('data-edge-source', edge.source)
+                targetEl.setAttribute('data-edge-target', edge.target)
+                targetEl.setAttribute('data-edge-index', String(edge.occurrence))
+                const activate = (e: Event) => {
+                  e.stopPropagation()
+                  onSelectEdge(edge)
+                }
+                targetEl.addEventListener('click', activate)
+                targetEl.addEventListener('keydown', e => {
+                  if ((e as KeyboardEvent).key === 'Enter' || (e as KeyboardEvent).key === ' ') {
+                    e.preventDefault()
+                    activate(e)
+                  }
+                })
+              }
+
+              edgePaths.forEach((pathEl, idx) => {
+                const edge = parsedEdges[idx]
+                if (!edge) return
+                bindEdgeElement(pathEl, edge)
+                if (edgeLabels[idx]) {
+                  bindEdgeElement(edgeLabels[idx], edge)
+                }
+              })
+            }
+
             el.appendChild(imported)
             requestAnimationFrame(() => {
               if (!cancelled) fitToStage()
@@ -139,7 +246,7 @@ export function DiagramViewer({
     return () => {
       cancelled = true
     }
-  }, [jobId, artifactId, fetchArtifactText, onDiagramTextLoaded, onSelectNode])
+  }, [jobId, artifactId, fetchArtifactText, onDiagramTextLoaded, onSelectNode, onSelectEdge])
 
   function handleWheel(e: React.WheelEvent) {
     e.preventDefault()
