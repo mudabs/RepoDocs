@@ -20,7 +20,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 from repodocs.web import server  # noqa: E402
 from repodocs.web.app import WebSettings, create_app  # noqa: E402
 from repodocs.web.cleanup import cleanup_workspaces  # noqa: E402
-from repodocs.web.jobs import JOBS_DIRECTORY, RECORD_VERSION  # noqa: E402
+from repodocs.web.jobs import CONTRACT_VERSION, JOBS_DIRECTORY, RECORD_VERSION  # noqa: E402
 from repodocs.web.security import AccessConfig  # noqa: E402
 from repodocs.web.workspaces import MARKER_KIND, MARKER_NAME, MARKER_VERSION, WorkspaceSettings  # noqa: E402
 
@@ -46,7 +46,13 @@ def _make_owned_workspace(store_root: Path, ws_id: str, *, age_seconds: float = 
                 {
                     "record_version": RECORD_VERSION,
                     "created_at": time.time() - age_seconds,
-                    "job": {"job_id": "job-1", "workspace_id": ws_id, "state": "running"},
+                    "job": {
+                        "contract_version": CONTRACT_VERSION,
+                        "kind": "job",
+                        "job_id": "job-1",
+                        "workspace_id": ws_id,
+                        "state": "running",
+                    },
                 }
             ),
             encoding="utf-8",
@@ -250,8 +256,69 @@ def test_cleanup_preserves_uncertain_job_record_and_rejects_invalid_retention(tm
     assert server.main(["--store-root", str(store), "--cleanup-max-age-hours", "nan"]) == 2
 
 
+def test_cleanup_preserves_aged_unknown_state_and_invalid_identity_records(tmp_path: Path) -> None:
+    """Cleanup preserves aged workspaces whose job records have unknown states or invalid identity."""
+    store = tmp_path / "store"
+    store.mkdir()
+
+    unknown_ws_id = "ws-" + "1" * 32
+    unknown_ws = _make_owned_workspace(store, unknown_ws_id, age_seconds=7200)
+    (unknown_ws / JOBS_DIRECTORY).mkdir()
+    rec_unknown = unknown_ws / JOBS_DIRECTORY / "job-unknown.json"
+    rec_unknown.write_text(
+        json.dumps(
+            {
+                "record_version": RECORD_VERSION,
+                "created_at": time.time() - 7200,
+                "job": {
+                    "contract_version": CONTRACT_VERSION,
+                    "kind": "job",
+                    "job_id": "job-unknown",
+                    "workspace_id": unknown_ws_id,
+                    "state": "unexpected-state",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    old_time = time.time() - 7200
+    os.utime(rec_unknown, (old_time, old_time))
+    os.utime(unknown_ws / MARKER_NAME, (old_time, old_time))
+    os.utime(unknown_ws, (old_time, old_time))
+
+    mismatch_ws_id = "ws-" + "2" * 32
+    mismatch_ws = _make_owned_workspace(store, mismatch_ws_id, age_seconds=7200)
+    (mismatch_ws / JOBS_DIRECTORY).mkdir()
+    rec_mismatch = mismatch_ws / JOBS_DIRECTORY / "job-a.json"
+    rec_mismatch.write_text(
+        json.dumps(
+            {
+                "record_version": RECORD_VERSION,
+                "created_at": time.time() - 7200,
+                "job": {
+                    "contract_version": CONTRACT_VERSION,
+                    "kind": "job",
+                    "job_id": "job-different",
+                    "workspace_id": mismatch_ws_id,
+                    "state": "succeeded",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    os.utime(rec_mismatch, (old_time, old_time))
+    os.utime(mismatch_ws / MARKER_NAME, (old_time, old_time))
+    os.utime(mismatch_ws, (old_time, old_time))
+
+    report = cleanup_workspaces(store, max_age_seconds=3600)
+    assert unknown_ws_id in report.skipped_active
+    assert mismatch_ws_id in report.skipped_active
+    assert unknown_ws.exists()
+    assert mismatch_ws.exists()
+
+
 def test_wheel_packages_frontend_assets_and_runs_outside_checkout(tmp_path: Path) -> None:
-    """Building a wheel bundles frontend assets and serves the UI outside the checkout without Node."""
+    """Staging script + sdist-to-wheel bundles frontend assets and serves the UI outside the checkout."""
     root = Path(__file__).resolve().parents[1]
     frontend_dist = root / "frontend" / "dist"
     static_dir = root / "src" / "repodocs" / "web" / "static"
@@ -261,24 +328,50 @@ def test_wheel_packages_frontend_assets_and_runs_outside_checkout(tmp_path: Path
         pytest.skip("frontend/dist is not built")
 
     created_static = not static_dir.exists()
+    sdist_dir = tmp_path / "sdist"
     wheel_dir = tmp_path / "wheels"
     install_dir = tmp_path / "site"
     outside_dir = tmp_path / "outside"
+    sdist_dir.mkdir()
     wheel_dir.mkdir()
     install_dir.mkdir()
     outside_dir.mkdir()
 
     try:
-        if static_dir.exists():
-            shutil.rmtree(static_dir)
-        shutil.copytree(frontend_dist, static_dir)
+        # Exercise the documented frontend staging script
+        stage_proc = subprocess.run(
+            [sys.executable, str(root / "scripts" / "build_web_package.py"), "--skip-npm"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert stage_proc.returncode == 0, stage_proc.stderr
 
         import importlib.util
 
-        wheel_cmd = [sys.executable, "-m", "pip", "wheel", "--no-deps"]
+        # Build sdist first, then build wheel from sdist when setuptools is available
         if importlib.util.find_spec("setuptools") is not None:
-            wheel_cmd.append("--no-build-isolation")
-        wheel_cmd.extend(["-w", str(wheel_dir), str(root)])
+            sdist_proc = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    "import sys; from setuptools.build_meta import build_sdist; print(build_sdist(sys.argv[1]))",
+                    str(sdist_dir),
+                ],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            assert sdist_proc.returncode == 0, sdist_proc.stderr
+            sdists = list(sdist_dir.glob("repodocs-*.tar.gz"))
+            assert len(sdists) == 1
+            build_target = str(sdists[0])
+            wheel_cmd = [sys.executable, "-m", "pip", "wheel", "--no-deps", "--no-build-isolation", "-w", str(wheel_dir), build_target]
+        else:
+            wheel_cmd = [sys.executable, "-m", "pip", "wheel", "--no-deps", "-w", str(wheel_dir), str(root)]
+
         wheel_proc = subprocess.run(
             wheel_cmd,
             capture_output=True,
@@ -302,7 +395,7 @@ def test_wheel_packages_frontend_assets_and_runs_outside_checkout(tmp_path: Path
         )
         assert install_proc.returncode == 0, install_proc.stderr
 
-        # Run from outside the checkout with installed package first on sys.path
+        # Run from outside the checkout with installed package first on sys.path (without Node on PATH)
         verify_code = (
             "import sys; sys.path.insert(0, sys.argv[1]); "
             "from pathlib import Path; "
@@ -323,6 +416,7 @@ def test_wheel_packages_frontend_assets_and_runs_outside_checkout(tmp_path: Path
         run_proc = subprocess.run(
             [sys.executable, "-c", verify_code, str(install_dir), str(outside_dir / "store")],
             cwd=outside_dir,
+            env={**os.environ, "PATH": ""},
             capture_output=True,
             text=True,
             check=False,
@@ -340,6 +434,64 @@ def test_wheel_packages_frontend_assets_and_runs_outside_checkout(tmp_path: Path
             check=False,
         )
         assert cli_proc.returncode == 0, cli_proc.stderr
+
+        # When Chrome + tools/mermaid are available, also drive a live browser walkthrough against the installed wheel
+        from repodocs.architecture.render_check import find_browser, find_renderer
+        node = shutil.which("node")
+        if node is not None and find_renderer() is not None and find_browser() is not None:
+            import socket, threading
+            import uvicorn
+            from test_architecture_discovery import FIXTURE
+            shop = outside_dir / "approved" / "shop"
+            shop2 = outside_dir / "approved" / "shop2"
+            shutil.copytree(FIXTURE, shop)
+            shutil.copytree(FIXTURE, shop2)
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind(("127.0.0.1", 0))
+                port = int(s.getsockname()[1])
+            # Launch uvicorn from outside_dir using the installed wheel package (no frontend_dist override)
+            srv_code = (
+                "import sys; sys.path.insert(0, sys.argv[1]); "
+                "from pathlib import Path; import uvicorn; "
+                "from repodocs.web.app import WebSettings, create_app; "
+                "from repodocs.web.security import AccessConfig; "
+                "from repodocs.web.workspaces import WorkspaceSettings; "
+                "app = create_app(WebSettings(AccessConfig(bind_host='127.0.0.1', port=int(sys.argv[2])), "
+                "WorkspaceSettings(Path(sys.argv[3]), {'shop': Path(sys.argv[4]), 'shop2': Path(sys.argv[5])}))); "
+                "uvicorn.run(app, host='127.0.0.1', port=int(sys.argv[2]), log_level='warning')"
+            )
+            srv = subprocess.Popen(
+                [sys.executable, "-c", srv_code, str(install_dir), str(port), str(outside_dir / "srv_store"), str(shop), str(shop2)],
+                cwd=outside_dir,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            try:
+                import urllib.request
+                deadline = time.monotonic() + 15
+                while time.monotonic() < deadline:
+                    try:
+                        with urllib.request.urlopen(f"http://127.0.0.1:{port}/ready", timeout=1) as resp:
+                            if resp.status == 200:
+                                break
+                    except Exception:
+                        time.sleep(0.1)
+                flag = ["--no-sandbox"] if os.environ.get("REPODOCS_MERMAID_NO_SANDBOX") == "1" else []
+                browser_proc = subprocess.run(
+                    [node, "check-web-workflow.mjs", f"http://127.0.0.1:{port}", find_browser(), "deterministic-multi", *flag],
+                    cwd=root / "tools" / "mermaid",
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                    check=False,
+                )
+                assert browser_proc.returncode == 0, browser_proc.stderr[-800:]
+                report = json.loads(browser_proc.stdout.strip().splitlines()[-1])
+                assert report["pageErrors"] == []
+                assert report["consoleErrors"] == []
+            finally:
+                srv.terminate()
+                srv.wait(timeout=10)
     finally:
         if created_static and static_dir.exists():
             shutil.rmtree(static_dir, ignore_errors=True)

@@ -15,8 +15,12 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from .jobs import ACTIVE_STATES, JOBS_DIRECTORY, RECORD_VERSION
+from .jobs import CONTRACT_VERSION, JOBS_DIRECTORY, RECORD_VERSION
 from .workspaces import MARKER_NAME, WORKSPACE_ID, _owned_path
+
+TERMINAL_STATES = frozenset(
+    {"succeeded", "partial", "budget-exhausted", "cancelled", "failed", "interrupted", "stale"}
+)
 
 
 @dataclass(frozen=True)
@@ -69,8 +73,15 @@ def _inspect_jobs(workspace_path: Path) -> tuple[bool, float]:
         job = data.get("job")
         if not isinstance(job, dict):
             return True, latest_mtime
+        if (
+            job.get("contract_version") != CONTRACT_VERSION
+            or job.get("kind") != "job"
+            or job.get("workspace_id") != workspace_path.name
+            or job.get("job_id") != record_path.stem
+        ):
+            return True, latest_mtime
         state = job.get("state")
-        if not isinstance(state, str) or state in ACTIVE_STATES:
+        if not isinstance(state, str) or state not in TERMINAL_STATES:
             return True, latest_mtime
         created_at = data.get("created_at")
         if isinstance(created_at, (int, float)) and math.isfinite(created_at):
