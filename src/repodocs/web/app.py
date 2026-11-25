@@ -270,10 +270,18 @@ def create_app(
         async def spa_fallback(job_id: str = "") -> Response:  # noqa: ARG001
             return FileResponse(str(_frontend_index), media_type="text/html", headers=response_headers())
 
+        @app.get("/favicon.ico", include_in_schema=False)
+        async def favicon() -> Response:
+            return Response(status_code=204, headers=response_headers())
+
         @app.get("/{full_path:path}", include_in_schema=False)
         async def unknown_route(full_path: str) -> Response:  # noqa: ARG001
             return _error(404, "not-found", "Unknown route")
     else:
+        @app.get("/favicon.ico", include_in_schema=False)
+        async def favicon() -> Response:
+            return Response(status_code=204, headers=response_headers())
+
         @app.get("/{full_path:path}", include_in_schema=False)
         async def ui_not_built(full_path: str) -> Response:  # noqa: ARG001
             return _error(404, "not-found", "The browser UI has not been built. Run 'npm ci && npm run build' in frontend/.")
