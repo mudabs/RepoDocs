@@ -9,6 +9,7 @@ function ensureMermaidInitialized() {
       startOnLoad: false,
       securityLevel: 'strict',
       htmlLabels: false,
+      theme: 'default',
       flowchart: { htmlLabels: false },
     })
     mermaidInitialized = true
@@ -114,7 +115,7 @@ export function DiagramViewer({
   const draggingRef = useRef(false)
   const lastPosRef = useRef({ x: 0, y: 0 })
 
-  const fitToStage = useCallback(() => {
+  const computeFit = useCallback((readableFloor = false) => {
     const stage = stageRef.current
     const container = containerRef.current
     const svg = container?.querySelector('svg')
@@ -124,17 +125,28 @@ export function DiagramViewer({
       return
     }
     const vb = svg.viewBox?.baseVal
-    const svgW = (vb && vb.width > 0 ? vb.width : svg.getBoundingClientRect().width / scale) || 1
-    const svgH = (vb && vb.height > 0 ? vb.height : svg.getBoundingClientRect().height / scale) || 1
+    const attrW = Number(svg.getAttribute('width'))
+    const attrH = Number(svg.getAttribute('height'))
+    const svgW = (vb && vb.width > 0 ? vb.width : Number.isFinite(attrW) && attrW > 0 ? attrW : svg.getBoundingClientRect().width / scale) || 1
+    const svgH = (vb && vb.height > 0 ? vb.height : Number.isFinite(attrH) && attrH > 0 ? attrH : svg.getBoundingClientRect().height / scale) || 1
     const pad = 24
     const availW = Math.max(100, stage.clientWidth - pad)
     const availH = Math.max(100, stage.clientHeight - pad)
-    const nextScale = Math.max(0.25, Math.min(2, Number(Math.min(availW / svgW, availH / svgH, 1).toFixed(2))))
-    const dx = Math.max(0, Math.round((stage.clientWidth - svgW * nextScale) / 2))
-    const dy = Math.max(0, Math.round((stage.clientHeight - svgH * nextScale) / 2))
-    setScale(nextScale)
+    const fitScale = Math.max(0.15, Math.min(2, Number(Math.min(availW / svgW, availH / svgH, 1).toFixed(2))))
+    if (readableFloor && fitScale < 0.55) {
+      setScale(0.6)
+      setOffset({ x: 16, y: 16 })
+      return
+    }
+    const dx = Math.max(12, Math.round((stage.clientWidth - svgW * fitScale) / 2))
+    const dy = Math.max(12, Math.round((stage.clientHeight - svgH * fitScale) / 2))
+    setScale(fitScale)
     setOffset({ x: dx, y: dy })
   }, [scale])
+
+  const fitToStage = useCallback(() => {
+    computeFit(false)
+  }, [computeFit])
 
   useEffect(() => {
     let cancelled = false
@@ -163,6 +175,24 @@ export function DiagramViewer({
           const svgEl = doc.documentElement
           if (svgEl && svgEl.nodeName.toLowerCase() === 'svg') {
             const imported = document.importNode(svgEl, true)
+            // Normalize SVG dimensions to its viewBox coordinate space so CSS transform scaling never double-shrinks wide diagrams.
+            const vbAttr = imported.getAttribute('viewBox')
+            if (vbAttr) {
+              const parts = vbAttr.trim().split(/[\s,]+/).map(Number)
+              if (parts.length === 4 && parts[2] > 0 && parts[3] > 0) {
+                imported.setAttribute('width', String(parts[2]))
+                imported.setAttribute('height', String(parts[3]))
+              }
+            }
+            imported.style.maxWidth = 'none'
+            imported.style.width = ''
+            imported.style.height = ''
+            // Strip any external url(...) references from embedded SVG style tags.
+            imported.querySelectorAll('style').forEach(styleEl => {
+              if (styleEl.textContent && /url\s*\(/i.test(styleEl.textContent)) {
+                styleEl.textContent = styleEl.textContent.replace(/url\s*\([^)]*\)/gi, 'none')
+              }
+            })
 
             // Wire clickable + keyboard-accessible node selection
             imported.querySelectorAll('g.node').forEach(node => {
@@ -232,7 +262,7 @@ export function DiagramViewer({
 
             el.appendChild(imported)
             requestAnimationFrame(() => {
-              if (!cancelled) fitToStage()
+              if (!cancelled) computeFit(true)
             })
           } else {
             setError('Diagram rendered an unexpected non-SVG result.')
@@ -352,7 +382,8 @@ export function DiagramViewer({
           border: '1px solid #e5e7eb',
           borderRadius: '0.5rem',
           background: '#fafafa',
-          height: '420px',
+          height: 'min(70vh, 640px)',
+          minHeight: '420px',
           overflow: 'hidden',
           cursor: 'grab',
           position: 'relative',
