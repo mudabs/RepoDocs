@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { client } from '../api/client'
 import type {
   AnySource,
@@ -100,12 +100,23 @@ export function WorkflowPage({ onViewJob }: { onViewJob: (jobId: string) => void
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
-  // Source selection
+  // Session auth (transient, never stored in browser storage)
+  const [authToken, setAuthToken] = useState('')
+
+  // Source selection (supports single or multiple repositories)
+  const [workspaceName, setWorkspaceName] = useState('')
+  const [sources, setSources] = useState<AnySource[]>([])
   const [sourceKind, setSourceKind] = useState<'local' | 'github'>('local')
   const [localName, setLocalName] = useState('')
   const [ghOwner, setGhOwner] = useState('')
   const [ghRepo, setGhRepo] = useState('')
   const [ghRevision, setGhRevision] = useState('')
+
+  useEffect(() => {
+    return () => {
+      setAuthToken('')
+    }
+  }, [])
 
   // Workspace
   const [workspaceId, setWorkspaceId] = useState<string | null>(null)
@@ -124,7 +135,7 @@ export function WorkflowPage({ onViewJob }: { onViewJob: (jobId: string) => void
 
   // Limits
   const [maxRequests, setMaxRequests] = useState(3)
-  const [maxTokens, setMaxTokens] = useState<string>('')
+  const [maxTokens, setMaxTokens] = useState<string>('100000')
   const [maxCostDollars, setMaxCostDollars] = useState<string>('')
 
   // Consent
@@ -143,7 +154,9 @@ export function WorkflowPage({ onViewJob }: { onViewJob: (jobId: string) => void
     clearError()
     setBusy(true)
     try {
-      await client.openSession()
+      const token = authToken.trim() || undefined
+      await client.openSession(token)
+      setAuthToken('')
       setStep('workspace')
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err))
@@ -152,28 +165,60 @@ export function WorkflowPage({ onViewJob }: { onViewJob: (jobId: string) => void
     }
   }
 
+  function buildPendingSource(): AnySource | null {
+    if (sourceKind === 'local') {
+      if (!localName.trim()) return null
+      return { kind: 'local', name: localName.trim() }
+    }
+    if (!ghOwner.trim() || !ghRepo.trim() || !ghRevision.trim()) return null
+    if (!/^[0-9a-f]{40}$/i.test(ghRevision.trim())) {
+      setError('Enter owner, repository, and a full 40-character commit SHA')
+      return null
+    }
+    return {
+      kind: 'github',
+      owner: ghOwner.trim(),
+      repository: ghRepo.trim(),
+      revision: ghRevision.trim().toLowerCase(),
+    }
+  }
+
+  function handleAddSource() {
+    clearError()
+    const pending = buildPendingSource()
+    if (!pending) {
+      if (!error) setError('Enter a valid source before adding')
+      return
+    }
+    setSources(prev => [...prev, pending])
+    setLocalName('')
+    setGhOwner('')
+    setGhRepo('')
+    setGhRevision('')
+  }
+
+  function handleRemoveSource(index: number) {
+    setSources(prev => prev.filter((_, i) => i !== index))
+  }
+
   async function handleCreateWorkspace() {
     clearError()
     setBusy(true)
     try {
-      let source: AnySource
-      let wsName: string
-      if (sourceKind === 'local') {
-        if (!localName.trim()) {
-          setError('Enter a source name')
-          return
-        }
-        wsName = localName.trim()
-        source = { kind: 'local', name: wsName }
-      } else {
-        if (!ghOwner.trim() || !ghRepo.trim() || !/^[0-9a-f]{40}$/i.test(ghRevision.trim())) {
-          setError('Enter owner, repo, and a full 40-character commit SHA')
-          return
-        }
-        wsName = `${ghOwner.trim()}-${ghRepo.trim()}`
-        source = { kind: 'github', owner: ghOwner.trim(), repository: ghRepo.trim(), revision: ghRevision.trim().toLowerCase() }
+      let finalSources = [...sources]
+      const pending = buildPendingSource()
+      if (pending) {
+        finalSources.push(pending)
       }
-      const ws = await client.createWorkspace(wsName, [source])
+      if (finalSources.length === 0) {
+        setError('Add or enter at least one source repository')
+        return
+      }
+      const first = finalSources[0]
+      const defaultName = first.kind === 'local' ? first.name : `${first.owner}-${first.repository}`
+      const wsName = workspaceName.trim() || defaultName
+      const ws = await client.createWorkspace(wsName, finalSources)
+      setSources(finalSources)
       setWorkspaceId(ws.workspace_id)
       setStep('preview')
     } catch (err: unknown) {
@@ -265,7 +310,7 @@ export function WorkflowPage({ onViewJob }: { onViewJob: (jobId: string) => void
         ? { max_requests: 0, max_total_tokens: null, max_cost_microunits: 0, currency: 'USD' }
         : {
             max_requests: maxRequests,
-            max_total_tokens: maxTokens ? parseInt(maxTokens, 10) : null,
+            max_total_tokens: Math.max(1, parseInt(maxTokens, 10) || 100000),
             max_cost_microunits: maxCostDollars ? Math.round(parseFloat(maxCostDollars) * 1_000_000) : null,
             currency: maxCostDollars ? 'USD' : null,
           }
@@ -316,13 +361,26 @@ export function WorkflowPage({ onViewJob }: { onViewJob: (jobId: string) => void
         RepoDocs: Generate repository diagrams
       </h1>
 
-      {/* Step 1: Session (implicit, auto-open) */}
+      {/* Step 1: Open session (optional auth token for self-hosted / non-loopback) */}
       {step === 'source' && !workspaceId && (
         <Card>
           <StepHeader number={1} title="Open session" active={true} done={false} />
           <p style={{ fontSize: '0.9rem', color: '#374151', margin: 0 }}>
-            Click below to open a local session with the RepoDocs service.
+            Open a session with the RepoDocs service. Loopback servers need no token; self-hosted
+            non-loopback servers require the operator auth token.
           </p>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+            <span style={{ fontSize: '0.85rem', fontWeight: 500 }}>Auth token (optional for loopback)</span>
+            <input
+              type="password"
+              value={authToken}
+              onChange={e => setAuthToken(e.target.value)}
+              autoComplete="off"
+              placeholder="Required only for exposed self-hosted servers"
+              style={{ padding: '0.4rem 0.6rem', border: '1px solid #d1d5db', borderRadius: '0.3rem', fontSize: '0.9rem' }}
+              aria-label="Session auth token"
+            />
+          </label>
           {error && <div role="alert" style={{ color: '#dc2626', fontSize: '0.85rem' }}>{error}</div>}
           <button
             type="button"
@@ -344,10 +402,42 @@ export function WorkflowPage({ onViewJob }: { onViewJob: (jobId: string) => void
         </Card>
       )}
 
-      {/* After session opened, show source selection */}
+      {/* After session opened, show source selection (single or multiple repositories) */}
       {step === 'workspace' ? (
         <Card>
-          <StepHeader number={2} title="Select source repository" active={isActive('workspace')} done={isDone('workspace')} />
+          <StepHeader number={2} title="Select source repositories" active={isActive('workspace')} done={isDone('workspace')} />
+          <label style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+            <span style={{ fontSize: '0.85rem', fontWeight: 500 }}>Workspace name (optional)</span>
+            <input
+              type="text"
+              value={workspaceName}
+              onChange={e => setWorkspaceName(e.target.value)}
+              placeholder="Defaults to first source name"
+              style={{ padding: '0.4rem 0.6rem', border: '1px solid #d1d5db', borderRadius: '0.3rem', fontSize: '0.9rem' }}
+              aria-label="Workspace name"
+            />
+          </label>
+          {sources.length > 0 && (
+            <ul aria-label="Selected sources" style={{ margin: 0, padding: '0.5rem 0.75rem', background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: '0.35rem', listStyle: 'none', display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+              {sources.map((src, idx) => (
+                <li key={idx} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '0.85rem' }}>
+                  <span>
+                    {src.kind === 'local'
+                      ? `local: ${src.name}`
+                      : `github: ${src.owner}/${src.repository}@${src.revision.slice(0, 8)}`}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => handleRemoveSource(idx)}
+                    aria-label={`Remove source ${idx + 1}`}
+                    style={{ fontSize: '0.78rem', color: '#dc2626', background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline' }}
+                  >
+                    Remove
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
           <div role="group" aria-label="Source type" style={{ display: 'flex', gap: '1rem' }}>
             <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer' }}>
               <input type="radio" checked={sourceKind === 'local'} onChange={() => setSourceKind('local')} />
@@ -393,23 +483,40 @@ export function WorkflowPage({ onViewJob }: { onViewJob: (jobId: string) => void
             </div>
           )}
           {error && <div role="alert" style={{ color: '#dc2626', fontSize: '0.85rem' }}>{error}</div>}
-          <button
-            type="button"
-            onClick={handleCreateWorkspace}
-            disabled={busy}
-            style={{
-              padding: '0.5rem 1rem',
-              background: busy ? '#93c5fd' : '#2563eb',
-              color: '#fff',
-              border: 'none',
-              borderRadius: '0.4rem',
-              fontWeight: 600,
-              cursor: busy ? 'not-allowed' : 'pointer',
-              alignSelf: 'flex-start',
-            }}
-          >
-            {busy ? 'Creating workspace...' : 'Create workspace'}
-          </button>
+          <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+            <button
+              type="button"
+              onClick={handleAddSource}
+              disabled={busy}
+              style={{
+                padding: '0.5rem 1rem',
+                background: '#fff',
+                color: '#2563eb',
+                border: '1px solid #2563eb',
+                borderRadius: '0.4rem',
+                fontWeight: 600,
+                cursor: busy ? 'not-allowed' : 'pointer',
+              }}
+            >
+              Add source
+            </button>
+            <button
+              type="button"
+              onClick={handleCreateWorkspace}
+              disabled={busy}
+              style={{
+                padding: '0.5rem 1rem',
+                background: busy ? '#93c5fd' : '#2563eb',
+                color: '#fff',
+                border: 'none',
+                borderRadius: '0.4rem',
+                fontWeight: 600,
+                cursor: busy ? 'not-allowed' : 'pointer',
+              }}
+            >
+              {busy ? 'Creating workspace...' : 'Create workspace'}
+            </button>
+          </div>
         </Card>
       ) : null}
 
@@ -444,8 +551,25 @@ export function WorkflowPage({ onViewJob }: { onViewJob: (jobId: string) => void
           ) : (
             <div style={{ fontSize: '0.85rem', color: '#374151' }}>
               <p style={{ margin: '0 0 0.5rem' }}>
-                Context hash: <code>{preview.context_hash.slice(0, 16)}...</code> ({preview.documents} documents, {preview.context_bytes.toLocaleString()} bytes, {preview.redactions} redactions, {preview.omitted} omitted)
+                Context hash: <code>{preview.context_hash.slice(0, 16)}...</code> ({preview.documents} documents, {preview.context_bytes.toLocaleString()} bytes, {preview.redactions} redactions)
               </p>
+              <p style={{ margin: '0 0 0.5rem' }}>
+                Omitted:{' '}
+                {Object.keys(preview.omitted).length === 0
+                  ? 'none'
+                  : Object.entries(preview.omitted)
+                      .map(([reason, count]) => `${reason}: ${count}`)
+                      .join(', ')}
+              </p>
+              {preview.snapshots.length > 0 && (
+                <ul aria-label="Source snapshots" style={{ margin: '0 0 0.5rem 1.25rem', padding: 0 }}>
+                  {preview.snapshots.map((snap, idx) => (
+                    <li key={idx}>
+                      <strong>{snap.repository_id}</strong>: {snap.revision_kind} <code>{snap.revision.slice(0, 12)}</code> ({snap.working_tree_state})
+                    </li>
+                  ))}
+                </ul>
+              )}
               {preview.limitations > 0 && (
                 <p style={{ margin: '0 0 0.5rem', color: '#92400e' }}>
                   Scan limitations: {preview.limitations}
@@ -458,9 +582,12 @@ export function WorkflowPage({ onViewJob }: { onViewJob: (jobId: string) => void
               )}
               {preview.budget && (
                 <p style={{ margin: 0, color: '#6b7280' }}>
-                  Estimated cost: {preview.budget.max_estimated_cost_microunits != null
-                    ? `~$${(preview.budget.max_estimated_cost_microunits / 1_000_000).toFixed(4)}`
-                    : 'unknown'} (estimate only)
+                  Estimated max cost:{' '}
+                  {preview.budget.max_estimated_cost_usd !== null
+                    ? `~$${preview.budget.max_estimated_cost_usd} USD`
+                    : 'unknown'}{' '}
+                  (estimate only)
+                  {preview.budget.notes.length > 0 ? `: ${preview.budget.notes.join('; ')}` : ''}
                 </p>
               )}
             </div>
@@ -607,10 +734,11 @@ export function WorkflowPage({ onViewJob }: { onViewJob: (jobId: string) => void
                 />
               </label>
               <label style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
-                <span style={{ fontSize: '0.85rem', fontWeight: 500 }}>Max tokens (optional, leave blank for no token limit)</span>
+                <span style={{ fontSize: '0.85rem', fontWeight: 500 }}>Max tokens (required in architecture mode)</span>
                 <input
                   type="number"
                   min={1}
+                  required
                   value={maxTokens}
                   onChange={e => setMaxTokens(e.target.value)}
                   placeholder="e.g. 100000"
@@ -761,7 +889,7 @@ export function WorkflowPage({ onViewJob }: { onViewJob: (jobId: string) => void
                 color: '#92400e',
               }}
             >
-              This result is not a current complete success. It may be partial, stale, cancelled, or failed.
+              This result is not current (not a complete success). It may be partial, stale, cancelled, or failed.
               Inspect warnings before using any output.
             </div>
           )}
@@ -805,12 +933,6 @@ export function WorkflowPage({ onViewJob }: { onViewJob: (jobId: string) => void
         </Card>
       )}
 
-      <style>{`
-        @keyframes pulse {
-          0%, 100% { opacity: 1; }
-          50% { opacity: 0.3; }
-        }
-      `}</style>
     </main>
   )
 }

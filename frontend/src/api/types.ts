@@ -126,6 +126,25 @@ export interface PreviewExcerpt {
   text: string
 }
 
+export interface PreviewBudget {
+  limits: {
+    max_requests?: number
+    max_total_tokens?: number | null
+    max_cost_usd?: string | number | null
+    [key: string]: unknown
+  }
+  price_profile: Record<string, unknown> | null
+  max_estimated_cost_usd: string | null
+  notes: string[]
+}
+
+export interface PreviewSnapshot {
+  repository_id: string
+  revision: string
+  revision_kind: string
+  working_tree_state: string
+}
+
 export interface PreviewResponse {
   workspace_id: string
   context_hash: string
@@ -134,19 +153,15 @@ export interface PreviewResponse {
   documents: number
   context_bytes: number
   redactions: number
-  omitted: number
+  omitted: Record<string, number>
   view_status: string
-  snapshots: Array<Record<string, unknown>>
+  snapshots: PreviewSnapshot[]
   limitations: number
   candidate_states: Record<string, number>
   warnings: string[]
   provider: ProviderResponse | null
   provider_is_external: boolean | null
-  budget: {
-    max_estimated_cost_microunits?: number | null
-    max_total_tokens?: number | null
-    currency?: string | null
-  } | null
+  budget: PreviewBudget | null
   excerpts?: PreviewExcerpt[]
 }
 
