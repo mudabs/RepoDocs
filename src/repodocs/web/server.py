@@ -7,13 +7,18 @@ only when starting the HTTP server so the core CLI never depends on web packages
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import os
 import sys
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Sequence
 
+from ..ai.budgets import PriceProfile, RunLimits
+from ..errors import ConfigError
 from .cleanup import cleanup_workspaces
+from .jobs import JobSettings
 from .security import AccessConfig, AccessConfigError
 from .workspaces import WorkspaceSettings
 
@@ -78,6 +83,53 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Remove inactive marker-owned workspaces older than this many hours on startup.",
     )
+    parser.add_argument(
+        "--context-window-tokens",
+        type=int,
+        default=None,
+        help="Operator-configured per-request context window in tokens for architecture runs.",
+    )
+    parser.add_argument(
+        "--request-output-tokens",
+        type=int,
+        default=None,
+        help="Operator-configured per-request output token reserve/cap for architecture runs.",
+    )
+    parser.add_argument(
+        "--max-requests",
+        type=int,
+        default=None,
+        help="Maximum generation requests per architecture run (ceiling 6).",
+    )
+    parser.add_argument(
+        "--max-input-tokens",
+        type=int,
+        default=None,
+        help="Aggregate input token cap per architecture run.",
+    )
+    parser.add_argument(
+        "--max-output-tokens",
+        type=int,
+        default=None,
+        help="Aggregate output token cap per architecture run.",
+    )
+    parser.add_argument(
+        "--max-total-tokens",
+        type=int,
+        default=None,
+        help="Aggregate total (input + output) token cap per architecture run.",
+    )
+    parser.add_argument(
+        "--max-cost-usd",
+        default=None,
+        help="Aggregate USD cost cap per architecture run (requires a complete --prices-file).",
+    )
+    parser.add_argument(
+        "--prices-file",
+        type=Path,
+        default=None,
+        help="Path to a versioned JSON price profile matching ai.prices for one provider/model.",
+    )
     return parser
 
 
@@ -114,11 +166,56 @@ def build_settings(argv: Sequence[str] | None = None) -> tuple[AccessConfig, Wor
     return access, workspaces, frontend_dist, args.cleanup_max_age_hours
 
 
+def build_job_settings(argv: Sequence[str] | None = None) -> JobSettings:
+    """Parse and validate operator model limits and pricing settings for ``JobService``."""
+
+    args = build_parser().parse_args(list(argv) if argv is not None else None)
+    max_cost: Decimal | None = None
+    if args.max_cost_usd is not None:
+        try:
+            max_cost = Decimal(str(args.max_cost_usd))
+        except InvalidOperation as exc:
+            raise ValueError(f"--max-cost-usd must be a decimal number, got {args.max_cost_usd!r}") from exc
+    try:
+        run_limits = RunLimits(
+            context_window_tokens=args.context_window_tokens,
+            request_output_tokens=args.request_output_tokens,
+            max_requests=args.max_requests,
+            max_input_tokens=args.max_input_tokens,
+            max_output_tokens=args.max_output_tokens,
+            max_total_tokens=args.max_total_tokens,
+            max_cost_usd=max_cost,
+        )
+    except ConfigError as exc:
+        raise ValueError(str(exc)) from exc
+    if (
+        run_limits.context_window_tokens is not None
+        and run_limits.request_output_tokens is not None
+        and run_limits.request_output_tokens >= run_limits.context_window_tokens
+    ):
+        raise ValueError(
+            f"--request-output-tokens ({run_limits.request_output_tokens}) must be smaller than "
+            f"--context-window-tokens ({run_limits.context_window_tokens})"
+        )
+
+    prices: PriceProfile | None = None
+    if args.prices_file is not None:
+        prices_path = args.prices_file.expanduser().resolve()
+        try:
+            raw = json.loads(prices_path.read_text(encoding="utf-8"))
+            prices = PriceProfile.from_dict(raw)
+        except (OSError, ValueError, ConfigError) as exc:
+            raise ValueError(f"Invalid --prices-file: {exc}") from exc
+
+    return JobSettings(run_limits=run_limits, prices=prices)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """CLI entrypoint for ``repodocs-web``."""
 
     try:
         access, workspaces, frontend_dist, cleanup_hours = build_settings(argv)
+        job_settings = build_job_settings(argv)
     except (ValueError, AccessConfigError) as exc:
         print(f"repodocs-web: {exc}", file=sys.stderr)
         return 2
@@ -135,7 +232,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 2 if str(exc) else 2
 
-    serve(WebSettings(access=access, workspaces=workspaces, frontend_dist=frontend_dist))
+    serve(WebSettings(access=access, workspaces=workspaces, jobs=job_settings, frontend_dist=frontend_dist))
     return 0
 
 
