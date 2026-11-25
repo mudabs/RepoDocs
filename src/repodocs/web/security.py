@@ -284,9 +284,10 @@ def response_headers(*, artifact: bool = False) -> dict[str, str]:
         "X-Content-Type-Options": "nosniff",
         "Cross-Origin-Resource-Policy": "same-origin",
         "Cross-Origin-Opener-Policy": "same-origin",
+        # Allow inline styles only for Mermaid's strict SVG styling; scripts and objects remain locked down.
         "Content-Security-Policy": (
-            "default-src 'self'; script-src 'self'; object-src 'none'; base-uri 'none'; "
-            "form-action 'self'; frame-ancestors 'none'; img-src 'self' data:"
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; object-src 'none'; "
+            "base-uri 'none'; form-action 'self'; frame-ancestors 'none'; img-src 'self' data:"
         ),
     }
     if artifact:

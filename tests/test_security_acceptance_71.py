@@ -438,11 +438,7 @@ def test_browser_hostile_content_with_pinned_github_links_never_executes(tmp_pat
     assert report["pageErrors"] == []
     assert report["dialogs"] == []
     assert report["externalRequests"] == []
-    non_style_console = [
-        e for e in report["consoleErrors"]
-        if "Applying inline style violates the following Content Security Policy" not in e
-    ]
-    assert non_style_console == []
+    assert report["consoleErrors"] == []
 
     hrefs = [item["href"] for item in report["links"]]
     assert not any(h.startswith("javascript:") or h.startswith("data:") or "evil.example" in h for h in hrefs)
