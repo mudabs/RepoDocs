@@ -9,11 +9,14 @@
 import type {
   AnySource,
   ConsentResponse,
+  DraftData,
+  DraftRecord,
   Job,
   JobRequest,
   PreviewResponse,
   ProviderResponse,
   SessionResponse,
+  WorkspaceHistoryItem,
   WorkspaceResponse,
 } from './types'
 
@@ -75,11 +78,31 @@ async function request<T>(
 
 export class RepoDocsClient {
   private csrfToken: string | null = null
+  private pendingSession: Promise<void> | null = null
+
+  hasSession(): boolean {
+    return this.csrfToken !== null
+  }
 
   async openSession(authToken?: string): Promise<void> {
-    const body = authToken ? { auth_token: authToken } : {}
-    const data = await request<SessionResponse>('POST', '/api/v1/session', null, body)
-    this.csrfToken = data.csrf_token
+    if (this.pendingSession && !authToken) {
+      return this.pendingSession
+    }
+    const run = (async () => {
+      const body = authToken ? { auth_token: authToken } : {}
+      const data = await request<SessionResponse>('POST', '/api/v1/session', null, body)
+      this.csrfToken = data.csrf_token
+    })()
+    if (!authToken) {
+      this.pendingSession = run
+    }
+    try {
+      await run
+    } finally {
+      if (this.pendingSession === run) {
+        this.pendingSession = null
+      }
+    }
   }
 
   async endSession(): Promise<void> {
@@ -165,6 +188,41 @@ export class RepoDocsClient {
   /** Returns the artifact URL for direct download via an anchor tag. */
   artifactUrl(jobId: string, artifactId: string): string {
     return `/api/v1/jobs/${jobId}/artifacts/${artifactId}`
+  }
+
+  async listWorkspaces(): Promise<WorkspaceHistoryItem[]> {
+    const res = await request<{ workspaces: WorkspaceHistoryItem[] }>('GET', '/api/v1/workspaces', this.csrfToken)
+    return res.workspaces
+  }
+
+  async listWorkspaceJobs(workspaceId: string): Promise<Job[]> {
+    const res = await request<{ jobs: Job[] }>('GET', `/api/v1/workspaces/${workspaceId}/jobs`, this.csrfToken)
+    return res.jobs
+  }
+
+  async deleteWorkspace(workspaceId: string): Promise<void> {
+    return request<void>('DELETE', `/api/v1/workspaces/${workspaceId}`, this.csrfToken)
+  }
+
+  async listDrafts(): Promise<DraftRecord[]> {
+    const res = await request<{ drafts: DraftRecord[] }>('GET', '/api/v1/drafts', this.csrfToken)
+    return res.drafts
+  }
+
+  async getDraft(draftId: string): Promise<DraftRecord> {
+    return request<DraftRecord>('GET', `/api/v1/drafts/${draftId}`, this.csrfToken)
+  }
+
+  async saveDraft(draftId: string, data: DraftData, expectedVersion?: number): Promise<DraftRecord> {
+    const body: Record<string, unknown> = { data }
+    if (expectedVersion !== undefined) {
+      body['expected_version'] = expectedVersion
+    }
+    return request<DraftRecord>('PUT', `/api/v1/drafts/${draftId}`, this.csrfToken, body)
+  }
+
+  async deleteDraft(draftId: string): Promise<void> {
+    return request<void>('DELETE', `/api/v1/drafts/${draftId}`, this.csrfToken)
   }
 
   /** Fetches artifact content as text (for diagram rendering). */

@@ -216,6 +216,27 @@ def create_app(
     async def list_workspace_jobs(request: Request, workspace_id: str) -> Response:
         return await guarded(request, lambda access, _: _json(200, {"jobs": jobs.list_workspace_jobs(access, workspace_id)}))
 
+    # ------------------------------------------------------------------ drafts (#97)
+    @app.get("/api/v1/drafts")
+    async def list_drafts(request: Request) -> Response:
+        return await guarded(request, lambda access, _: _json(200, {"drafts": jobs.list_drafts(access)}))
+
+    @app.get("/api/v1/drafts/{draft_id}")
+    async def get_draft(request: Request, draft_id: str) -> Response:
+        return await guarded(request, lambda access, _: _json(200, jobs.get_draft(access, draft_id)))
+
+    @app.put("/api/v1/drafts/{draft_id}")
+    async def put_draft(request: Request, draft_id: str) -> Response:
+        return await guarded(request, lambda access, payload: _json(200, jobs.save_draft(access, draft_id, payload)), body=True)
+
+    @app.delete("/api/v1/drafts/{draft_id}")
+    async def delete_draft(request: Request, draft_id: str) -> Response:
+        def run(access: Access, _: Any) -> Response:
+            jobs.delete_draft(access, draft_id)
+            return Response(status_code=204)
+
+        return await guarded(request, run)
+
     # ------------------------------------------------------------------ workspaces
     @app.post("/api/v1/workspaces")
     async def create_workspace(request: Request) -> Response:
@@ -320,8 +341,10 @@ def create_app(
 
         @app.get("/", include_in_schema=False)
         @app.get("/workflow", include_in_schema=False)
+        @app.get("/workflow/{draft_id:path}", include_in_schema=False)
+        @app.get("/jobs/{job_id:path}", include_in_schema=False)
         @app.get("/viewer/{job_id:path}", include_in_schema=False)
-        async def spa_fallback(job_id: str = "") -> Response:  # noqa: ARG001
+        async def spa_fallback(job_id: str = "", draft_id: str = "") -> Response:  # noqa: ARG001
             return FileResponse(str(_frontend_index), media_type="text/html", headers=response_headers())
 
         @app.get("/favicon.ico", include_in_schema=False)

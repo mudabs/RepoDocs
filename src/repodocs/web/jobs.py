@@ -573,6 +573,59 @@ class JobService:
             if self._store is not None:
                 self._store.delete_workspace(workspace_id)
 
+    # ------------------------------------------------------------------ drafts (#97)
+    _FORBIDDEN_DRAFT_KEYS = frozenset({"api_key", "auth_token", "csrf_token", "consent_receipt_id", "secret", "password"})
+
+    @classmethod
+    def _validate_draft_data(cls, value: Any) -> None:
+        if isinstance(value, dict):
+            for k, v in value.items():
+                if not isinstance(k, str) or k.lower() in cls._FORBIDDEN_DRAFT_KEYS:
+                    raise _invalid(f"Drafts must not contain credential or consent fields ({k})")
+                cls._validate_draft_data(v)
+        elif isinstance(value, list):
+            for item in value:
+                cls._validate_draft_data(item)
+
+    def list_drafts(self, access: Access) -> list[dict[str, Any]]:
+        if self._store is None:
+            return []
+        return self._store.list_drafts(access.owner)
+
+    def get_draft(self, access: Access, draft_id: str) -> dict[str, Any]:
+        if self._store is None:
+            raise _not_found("draft")
+        draft = self._store.get_draft(draft_id, access.owner)
+        if draft is None:
+            raise _not_found("draft")
+        return draft
+
+    def save_draft(self, access: Access, draft_id: str, payload: Any) -> dict[str, Any]:
+        if not isinstance(draft_id, str) or not 1 <= len(draft_id) <= 64 or scrub(draft_id) != draft_id:
+            raise _invalid("Invalid draft_id")
+        if not isinstance(payload, dict) or set(payload) - {"data", "expected_version"} or "data" not in payload:
+            raise _invalid("Draft payload must hold data and optional expected_version")
+        if not isinstance(payload["data"], dict):
+            raise _invalid("Draft data must be a JSON object")
+        expected = payload.get("expected_version")
+        if expected is not None and (isinstance(expected, bool) or not isinstance(expected, int) or expected < 0):
+            raise _invalid("expected_version must be a non-negative integer")
+        self._validate_draft_data(payload["data"])
+        if self._store is None:
+            return {"draft_id": draft_id, "profile_id": access.owner, "version": 1, "data": payload["data"]}
+        from .store import StoreError
+
+        try:
+            return self._store.save_draft(
+                draft_id, access.owner, payload["data"], expected_version=expected, now=self._clock()
+            )
+        except StoreError as exc:
+            raise JobError("conflict", str(exc), 409) from None
+
+    def delete_draft(self, access: Access, draft_id: str) -> None:
+        if self._store is None or not self._store.delete_draft(draft_id, access.owner):
+            raise _not_found("draft")
+
     def _workspace(self, access: Access, workspace_id: Any) -> _Workspace:
         workspace = self._workspaces.get(workspace_id) if isinstance(workspace_id, str) else None
         if workspace is None or workspace.owner != access.owner or _owned_path(self._manager.settings.store_root, workspace_id) is None:
