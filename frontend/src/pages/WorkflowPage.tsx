@@ -748,7 +748,7 @@ export function WorkflowPage({ onViewJob }: { onViewJob: (jobId: string) => void
       {/* Limits */}
       {(step === 'limits' || isDone('limits')) && (
         <Card>
-          <StepHeader number={mode === 'architecture' ? 6 : 5} title={mode === 'architecture' ? 'Model capacity and budget limits' : 'Budget limits'} active={isActive('limits')} done={isDone('limits')} />
+          <StepHeader number={mode === 'architecture' ? 6 : 5} title="Budget limits" active={isActive('limits')} done={isDone('limits')} />
           {isActive('limits') && mode === 'architecture' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
               {preview?.budget?.initial_request && (
