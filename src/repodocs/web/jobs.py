@@ -56,7 +56,14 @@ from .security import (
     SecurityError,
     UnknownHandle,
 )
-from .workspaces import GitHubSource, LocalSource, WorkspaceError, WorkspaceManager, _owned_path
+from .workspaces import (
+    GitHubSource,
+    LocalSource,
+    WorkspaceError,
+    WorkspaceManager,
+    _owned_path,
+    resolve_github_source,
+)
 
 CONTRACT_VERSION = "1.0"
 RECORD_VERSION = "1.0"
@@ -478,6 +485,19 @@ class JobService:
             )
 
     # ------------------------------------------------------------------ workspaces and previews
+    def resolve_github_url(self, access: Access, payload: Any) -> dict[str, Any]:
+        """Resolve a public github.com URL to its default branch and exact commit SHA."""
+
+        if not isinstance(payload, dict) or set(payload) != {"url"} or not isinstance(payload["url"], str):
+            raise _invalid("A GitHub resolution request holds only {url}")
+        with self._cond:
+            if self._closed:
+                raise JobError("unavailable", "The service is shutting down", 503)
+        try:
+            return resolve_github_source(payload["url"], self._manager.settings.limits, self._manager._http_get)
+        except WorkspaceError as exc:
+            raise JobError("workspace-failure", self._safe(str(exc)), 422) from None
+
     def create_workspace(self, access: Access, payload: Any) -> dict[str, Any]:
         """Acquire a workspace for allowlisted local roots or pinned public GitHub sources."""
 

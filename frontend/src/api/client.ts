@@ -15,6 +15,7 @@ import type {
   JobRequest,
   PreviewResponse,
   ProviderResponse,
+  ResolvedGitHubSource,
   SessionResponse,
   WorkspaceHistoryItem,
   WorkspaceResponse,
@@ -108,6 +109,10 @@ export class RepoDocsClient {
   async endSession(): Promise<void> {
     await request<void>('POST', '/api/v1/session/end', this.csrfToken)
     this.csrfToken = null
+  }
+
+  async resolveGitHubUrl(url: string): Promise<ResolvedGitHubSource> {
+    return request<ResolvedGitHubSource>('POST', '/api/v1/sources/github/resolve', this.csrfToken, { url })
   }
 
   async createWorkspace(name: string, sources: AnySource[]): Promise<WorkspaceResponse> {
