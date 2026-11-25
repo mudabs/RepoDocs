@@ -265,7 +265,9 @@ def create_app(
         _frontend_index = _frontend / "index.html"
 
         @app.get("/{full_path:path}", include_in_schema=False)
-        async def spa_fallback(full_path: str) -> FileResponse:  # noqa: ARG001
+        async def spa_fallback(full_path: str) -> Response:
+            if full_path == "api" or full_path.startswith("api/"):
+                return _error(404, "not-found", "Unknown API route")
             return FileResponse(str(_frontend_index), media_type="text/html", headers=response_headers())
     else:
         @app.get("/{full_path:path}", include_in_schema=False)
