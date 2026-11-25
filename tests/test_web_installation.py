@@ -273,8 +273,14 @@ def test_wheel_packages_frontend_assets_and_runs_outside_checkout(tmp_path: Path
             shutil.rmtree(static_dir)
         shutil.copytree(frontend_dist, static_dir)
 
+        import importlib.util
+
+        wheel_cmd = [sys.executable, "-m", "pip", "wheel", "--no-deps"]
+        if importlib.util.find_spec("setuptools") is not None:
+            wheel_cmd.append("--no-build-isolation")
+        wheel_cmd.extend(["-w", str(wheel_dir), str(root)])
         wheel_proc = subprocess.run(
-            [sys.executable, "-m", "pip", "wheel", "--no-deps", "--no-build-isolation", "-w", str(wheel_dir), str(root)],
+            wheel_cmd,
             capture_output=True,
             text=True,
             check=False,
