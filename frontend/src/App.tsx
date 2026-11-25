@@ -32,6 +32,9 @@ export default function App() {
   const [authError, setAuthError] = useState<string | null>(null)
 
   const navigate = useCallback((next: RouteState, replace = false) => {
+    if (replace && next.name === 'workflow' && window.location.pathname.startsWith('/viewer/')) {
+      return
+    }
     const url =
       next.name === 'viewer'
         ? `/viewer/${encodeURIComponent(next.jobId)}`
