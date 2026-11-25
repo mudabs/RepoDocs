@@ -46,6 +46,7 @@ class DiagramEdge:
     label: str
     classification: str
     evidence: tuple[str, ...] = ()
+    connection_ids: tuple[str, ...] = ()
 
 
 @dataclass
@@ -122,7 +123,7 @@ def _component_diagram(name: str, view: dict[str, Any], components: list[dict[st
         if link["source"] in known and link["target"] in known and (link["source"] in chosen or link["target"] in chosen):
             unconfirmed = link["cross_repository"] and link["classification"] != "inferred"
             text = link["label"] + _suffix(link) + (" (unconfirmed)" if unconfirmed else "")
-            diagram.edges.append(DiagramEdge(node_key(link["source"]), node_key(link["target"]), text, _status(link), tuple(sorted(link["evidence"]))))
+            diagram.edges.append(DiagramEdge(node_key(link["source"]), node_key(link["target"]), text, _status(link), tuple(sorted(link["evidence"])), (link["id"],)))
     return diagram
 
 
@@ -236,7 +237,7 @@ def project(view: dict[str, Any]) -> list[Diagram]:
             inferred = all(_status(item) == "inferred" for item in links)
             unconfirmed = any(item["cross_repository"] and item["classification"] != "inferred" for item in links)
             text = f"{len(links)} connection{'s' if len(links) != 1 else ''}" + ("" if inferred else " (proposed)") + (" (unconfirmed)" if unconfirmed else "")
-            overview.edges.append(DiagramEdge(source, target, text, "inferred" if inferred else "proposed", tuple(sorted({key for item in links for key in item["evidence"]}))))
+            overview.edges.append(DiagramEdge(source, target, text, "inferred" if inferred else "proposed", tuple(sorted({key for item in links for key in item["evidence"]})), tuple(sorted(item["id"] for item in links))))
 
     diagrams = [overview]
     for (repository, kind), members in sorted(groups.items()):
@@ -331,6 +332,8 @@ def to_mermaid(diagram: Diagram, view: dict[str, Any]) -> str:
             lines.append(f"    %% evidence {node.key}: {', '.join(scrub(key) for key in node.evidence)}")
     for edge in diagram.edges:
         lines.append(f"    %% evidence {edge.source}->{edge.target}: {', '.join(scrub(key) for key in edge.evidence)}")
+        if edge.connection_ids:
+            lines.append(f"    %% connection {edge.source}->{edge.target}: {', '.join(scrub(cid) for cid in edge.connection_ids)}")
     return "\n".join(lines) + "\n"
 
 

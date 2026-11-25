@@ -49,6 +49,12 @@ jobs:
         run: |
           node --version
           npm ci --ignore-scripts
+      - name: Build frontend for browser E2E tests
+        shell: bash
+        working-directory: frontend
+        run: |
+          npm ci --ignore-scripts
+          npm run build
       - name: Run the complete test suite
         env:
           REPODOCS_REQUIRE_RENDERER: "1"
@@ -80,3 +86,24 @@ jobs:
         run: |
           echo "The evaluation step reported success although the evaluation failed."
           exit 1
+
+  frontend-build:
+    # Verifies that the React/TypeScript frontend compiles cleanly (#73).
+    name: frontend-build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: |
+          node --version
+          npm ci --ignore-scripts
+      - name: Type-check frontend
+        working-directory: frontend
+        run: npm run typecheck
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build

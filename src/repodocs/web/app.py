@@ -5,6 +5,9 @@ Install it with ``pip install "repodocs[web]"``. The CLI and the shared service 
 Every route except opening a session calls ``SessionGuard.authorize`` before it reads a body, reveals a job or starts
 anything. Bodies are read only up to ``max_body_bytes``. Every response carries ``response_headers``; artifacts are
 sandboxed attachments. No CORS header is ever sent, and the generated API documentation routes are disabled.
+
+The built frontend (``frontend/dist``) is served as static files from the same origin when present. The browser UI
+is added by #73; the backend routes work independently of whether the frontend is built.
 """
 
 from __future__ import annotations
@@ -13,11 +16,15 @@ import json
 import re
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, AsyncIterator, Callable
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
+
+_FRONTEND_DIST = Path(__file__).resolve().parents[3] / "frontend" / "dist"
 
 from .jobs import CONTRACT_VERSION, JobError, JobService, JobSettings, ProviderFactory, build_provider
 from .security import (
@@ -40,12 +47,18 @@ ARTIFACT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 
 @dataclass(frozen=True)
 class WebSettings:
-    """Everything the service needs from its operator. Browsers choose none of it."""
+    """Everything the service needs from its operator. Browsers choose none of it.
+
+    ``frontend_dist`` is the path to the built frontend assets directory. When ``None`` (the default),
+    ``create_app`` looks for ``frontend/dist`` relative to the package source. Pass an explicit path
+    or ``False`` (cast to ``Path | None``) to override in tests.
+    """
 
     access: AccessConfig
     workspaces: WorkspaceSettings
     jobs: JobSettings = JobSettings()
     max_body_bytes: int = 64 * 1024
+    frontend_dist: Path | None = None
 
 
 class _TooLarge(Exception):
@@ -67,8 +80,13 @@ def create_app(
     *,
     provider_factory: ProviderFactory = build_provider,
     workspace_manager: WorkspaceManager | None = None,
+    frontend_dist: Path | None = ...,  # type: ignore[assignment]
 ) -> FastAPI:
-    """The application for one local service. ``provider_factory`` and ``workspace_manager`` are test seams."""
+    """The application for one local service. ``provider_factory`` and ``workspace_manager`` are test seams.
+
+    ``frontend_dist`` overrides the built frontend path; pass an explicit ``Path`` or ``None`` to disable
+    static serving. The default (``...``) defers to ``settings.frontend_dist`` or the package-relative path.
+    """
 
     guard = SessionGuard(settings.access)
     providers = ProviderSessions(guard)
@@ -229,6 +247,44 @@ def create_app(
             return Response(item.content, media_type=item.media_type, headers=headers)
 
         return await guarded(request, run)
+
+    # ------------------------------------------------------------------ frontend
+    # Serve the built static frontend when it is present. The frontend is an
+    # optional build artifact (frontend/dist). It is never required by the API
+    # or the CLI. When the dist directory does not exist, the API still works;
+    # any non-API GET returns a 404 JSON error so the caller knows the UI is not
+    # built yet.
+    if frontend_dist is ...:  # type: ignore[comparison-overlap]
+        frontend_dist = settings.frontend_dist if settings.frontend_dist is not None else _FRONTEND_DIST
+    _frontend: Path | None = frontend_dist  # type: ignore[assignment]
+    if _frontend is not None and _frontend.is_dir():
+        assets_dir = _frontend / "assets"
+        if assets_dir.is_dir():
+            app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
+
+        _frontend_index = _frontend / "index.html"
+
+        @app.get("/", include_in_schema=False)
+        @app.get("/workflow", include_in_schema=False)
+        @app.get("/viewer/{job_id:path}", include_in_schema=False)
+        async def spa_fallback(job_id: str = "") -> Response:  # noqa: ARG001
+            return FileResponse(str(_frontend_index), media_type="text/html", headers=response_headers())
+
+        @app.get("/favicon.ico", include_in_schema=False)
+        async def favicon() -> Response:
+            return Response(status_code=204, headers=response_headers())
+
+        @app.get("/{full_path:path}", include_in_schema=False)
+        async def unknown_route(full_path: str) -> Response:  # noqa: ARG001
+            return _error(404, "not-found", "Unknown route")
+    else:
+        @app.get("/favicon.ico", include_in_schema=False)
+        async def favicon() -> Response:
+            return Response(status_code=204, headers=response_headers())
+
+        @app.get("/{full_path:path}", include_in_schema=False)
+        async def ui_not_built(full_path: str) -> Response:  # noqa: ARG001
+            return _error(404, "not-found", "The browser UI has not been built. Run 'npm ci && npm run build' in frontend/.")
 
     return app
 
