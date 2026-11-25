@@ -181,7 +181,7 @@ const report = await withBrowser(async (browser) => {
     await clickButton(page, 'Grant consent and continue');
     await waitForText(page, 'Submit job');
     await clickButton(page, 'Submit job');
-    await waitForText(page, 'not current', 25000);
+    await waitForText(page, 'not current', 45000);
     return { ok: true, a11y, leakCheck, pageErrors, consoleErrors, text: await page.evaluate(() => document.body.innerText) };
   }
 

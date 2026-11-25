@@ -264,11 +264,15 @@ def create_app(
 
         _frontend_index = _frontend / "index.html"
 
-        @app.get("/{full_path:path}", include_in_schema=False)
-        async def spa_fallback(full_path: str) -> Response:
-            if full_path == "api" or full_path.startswith("api/"):
-                return _error(404, "not-found", "Unknown API route")
+        @app.get("/", include_in_schema=False)
+        @app.get("/workflow", include_in_schema=False)
+        @app.get("/viewer/{job_id:path}", include_in_schema=False)
+        async def spa_fallback(job_id: str = "") -> Response:  # noqa: ARG001
             return FileResponse(str(_frontend_index), media_type="text/html", headers=response_headers())
+
+        @app.get("/{full_path:path}", include_in_schema=False)
+        async def unknown_route(full_path: str) -> Response:  # noqa: ARG001
+            return _error(404, "not-found", "Unknown route")
     else:
         @app.get("/{full_path:path}", include_in_schema=False)
         async def ui_not_built(full_path: str) -> Response:  # noqa: ARG001
