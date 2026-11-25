@@ -110,6 +110,11 @@ export interface GitHubSource {
   revision: string
 }
 
+export interface ResolvedGitHubSource extends GitHubSource {
+  default_branch: string
+  canonical_url: string
+}
+
 export type AnySource = WorkspaceSource | GitHubSource
 
 export interface WorkspaceResponse {
