@@ -21,6 +21,7 @@ export interface SelectedEdge {
   label: string
   occurrence: number
   evidenceIds: string[]
+  connectionIds: string[]
 }
 
 interface ParsedEdge {
@@ -29,32 +30,36 @@ interface ParsedEdge {
   label: string
   occurrence: number
   evidenceIds: string[]
+  connectionIds: string[]
+}
+
+function parseCommentList(line: string, prefix: string, map: Map<string, string[][]>): boolean {
+  if (!line.startsWith(prefix)) return false
+  const rest = line.slice(prefix.length)
+  const colonIdx = rest.indexOf(':')
+  if (colonIdx === -1) return true
+  const subject = rest.slice(0, colonIdx).trim()
+  if (!subject.includes('->')) return true
+  const ids = rest
+    .slice(colonIdx + 1)
+    .split(/[,\s]+/)
+    .map(s => s.trim())
+    .filter(Boolean)
+  const existing = map.get(subject) ?? []
+  existing.push(ids)
+  map.set(subject, existing)
+  return true
 }
 
 function parseDiagramEdges(mmdText: string): ParsedEdge[] {
   const edgeDeclarations: Array<{ source: string; target: string; label: string }> = []
   const evidenceByPair = new Map<string, string[][]>()
+  const connectionsByPair = new Map<string, string[][]>()
 
   for (const rawLine of mmdText.split(/\r?\n/)) {
     const line = rawLine.trim()
-    if (line.startsWith('%% evidence ')) {
-      const rest = line.slice('%% evidence '.length)
-      const colonIdx = rest.indexOf(':')
-      if (colonIdx !== -1) {
-        const subject = rest.slice(0, colonIdx).trim()
-        if (subject.includes('->')) {
-          const ids = rest
-            .slice(colonIdx + 1)
-            .split(/[,\s]+/)
-            .map(s => s.trim())
-            .filter(Boolean)
-          const existing = evidenceByPair.get(subject) ?? []
-          existing.push(ids)
-          evidenceByPair.set(subject, existing)
-        }
-      }
-      continue
-    }
+    if (parseCommentList(line, '%% evidence ', evidenceByPair)) continue
+    if (parseCommentList(line, '%% connection ', connectionsByPair)) continue
 
     const edgeMatch = /^([A-Za-z0-9_.-]+)\s+(?:-->|-.->|==>)\|"?([^"|]*)"?\|\s+([A-Za-z0-9_.-]+)$/.exec(line)
     if (edgeMatch) {
@@ -72,8 +77,10 @@ function parseDiagramEdges(mmdText: string): ParsedEdge[] {
     const occurrence = pairCounts.get(pairKey) ?? 0
     pairCounts.set(pairKey, occurrence + 1)
     const pairEvidenceLists = evidenceByPair.get(pairKey) ?? []
-    const evidenceIds = pairEvidenceLists[occurrence] ?? pairEvidenceLists[0] ?? []
-    return { ...edge, occurrence, evidenceIds }
+    const evidenceIds = pairEvidenceLists[occurrence] ?? []
+    const pairConnectionLists = connectionsByPair.get(pairKey) ?? []
+    const connectionIds = pairConnectionLists[occurrence] ?? []
+    return { ...edge, occurrence, evidenceIds, connectionIds }
   })
 }
 
@@ -197,6 +204,9 @@ export function DiagramViewer({
                 targetEl.setAttribute('data-edge-source', edge.source)
                 targetEl.setAttribute('data-edge-target', edge.target)
                 targetEl.setAttribute('data-edge-index', String(edge.occurrence))
+                if (edge.connectionIds.length > 0) {
+                  targetEl.setAttribute('data-edge-connections', edge.connectionIds.join(','))
+                }
                 const activate = (e: Event) => {
                   e.stopPropagation()
                   onSelectEdge(edge)

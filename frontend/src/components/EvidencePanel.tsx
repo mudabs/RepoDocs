@@ -169,26 +169,18 @@ export function EvidencePanel({ evidenceMap, diagramText, selectedKey, selectedE
     return null
   }, [evidenceMap, selectedKey, mermaidEntries, componentIds])
 
-  const resolvedConnection = useMemo(() => {
-    if (!evidenceMap) return null
+  const resolvedConnections = useMemo(() => {
+    if (!evidenceMap) return []
     if (selectedKey && evidenceMap.connections[selectedKey]) {
-      return { id: selectedKey, entry: evidenceMap.connections[selectedKey] }
+      return [{ id: selectedKey, entry: evidenceMap.connections[selectedKey] }]
     }
-    if (selectedEdge && selectedEdge.evidenceIds.length > 0) {
-      const targetIds = new Set(selectedEdge.evidenceIds)
-      let best: { id: string; entry: ConnectionEvidenceEntry; score: number } | null = null
-      for (const cid of connectionIds) {
-        const entry = evidenceMap.connections[cid]
-        const keys = entry.evidence.map(ev => ev.id ?? ev.key).filter((k): k is string => Boolean(k))
-        const overlap = keys.filter(k => targetIds.has(k)).length
-        if (overlap > 0 && (!best || overlap > best.score)) {
-          best = { id: cid, entry, score: overlap }
-        }
-      }
-      if (best) return { id: best.id, entry: best.entry }
+    if (selectedEdge && selectedEdge.connectionIds.length > 0) {
+      return selectedEdge.connectionIds
+        .filter(cid => Boolean(evidenceMap.connections[cid]))
+        .map(cid => ({ id: cid, entry: evidenceMap.connections[cid] }))
     }
-    return null
-  }, [evidenceMap, selectedKey, selectedEdge, connectionIds])
+    return []
+  }, [evidenceMap, selectedKey, selectedEdge])
 
   const selectedComment = useMemo(() => {
     if (!selectedKey) return null
@@ -263,26 +255,34 @@ export function EvidencePanel({ evidenceMap, diagramText, selectedKey, selectedE
         </div>
       )}
 
-      {resolvedConnection && (
+      {resolvedConnections.length > 0 && (
         <div
           role="region"
           aria-label="Selected connection evidence"
-          style={{ background: '#f8fafc', border: '1px solid #cbd5e1', borderRadius: '0.4rem', padding: '0.65rem' }}
+          style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}
         >
-          <div style={{ fontWeight: 600, fontSize: '0.88rem' }}>{resolvedConnection.id}</div>
-          <div style={{ fontSize: '0.78rem', color: '#475569', marginTop: '0.2rem' }}>
-            Support: <strong>{resolvedConnection.entry.support}</strong>
-            {resolvedConnection.entry.support_reasons.length > 0 &&
-              ` (${resolvedConnection.entry.support_reasons.join(', ')})`}
-          </div>
-          <div style={{ marginTop: '0.4rem', fontSize: '0.8rem' }}>
-            <strong>Evidence:</strong>
-            <CitationList citations={resolvedConnection.entry.evidence} />
-          </div>
+          {resolvedConnections.map(conn => (
+            <div
+              key={conn.id}
+              data-selected-connection-id={conn.id}
+              style={{ background: '#f8fafc', border: '1px solid #cbd5e1', borderRadius: '0.4rem', padding: '0.65rem' }}
+            >
+              <div style={{ fontWeight: 600, fontSize: '0.88rem' }}>{conn.id}</div>
+              <div style={{ fontSize: '0.78rem', color: '#475569', marginTop: '0.2rem' }}>
+                Support: <strong>{conn.entry.support}</strong>
+                {conn.entry.support_reasons.length > 0 &&
+                  ` (${conn.entry.support_reasons.join(', ')})`}
+              </div>
+              <div style={{ marginTop: '0.4rem', fontSize: '0.8rem' }}>
+                <strong>Evidence:</strong>
+                <CitationList citations={conn.entry.evidence} />
+              </div>
+            </div>
+          ))}
         </div>
       )}
 
-      {!resolvedComponent && !resolvedConnection && selectedEdge && (
+      {!resolvedComponent && resolvedConnections.length === 0 && selectedEdge && (
         <div
           role="region"
           aria-label="Selected edge evidence"
@@ -298,7 +298,7 @@ export function EvidencePanel({ evidenceMap, diagramText, selectedKey, selectedE
         </div>
       )}
 
-      {!resolvedComponent && !resolvedConnection && !selectedEdge && selectedComment && (
+      {!resolvedComponent && resolvedConnections.length === 0 && !selectedEdge && selectedComment && (
         <div
           role="region"
           aria-label="Selected diagram element evidence"

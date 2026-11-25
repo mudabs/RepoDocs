@@ -137,34 +137,46 @@ const report = await withBrowser(async (browser) => {
     () => document.querySelector('[aria-label="Selected component evidence"]').textContent || '',
   );
 
-  // 3. Click and keyboard-activate rendered diagram EDGE(s) directly in the SVG
+  // 3. Click and keyboard-activate every rendered diagram EDGE directly in the SVG
   const edgeCount = await page.evaluate(() => document.querySelectorAll('svg g.edgePaths path[role="button"]').length);
   if (edgeCount < 1) throw new Error('Expected at least 1 clickable edge path in SVG');
 
-  await page.evaluate(() => {
-    const edge = document.querySelector('svg g.edgePaths path[role="button"]');
-    edge.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-  });
-  await page.waitForFunction(
-    () => Boolean(
-      document.querySelector('[aria-label="Selected connection evidence"]') ||
-      document.querySelector('[aria-label="Selected edge evidence"]'),
-    ),
-    { timeout: 10000 },
-  );
+  const edgeSelections = [];
+  for (let idx = 0; idx < edgeCount; idx += 1) {
+    const mode = idx % 2 === 0 ? 'click' : 'keydown';
+    const expectedIds = await page.evaluate((edgeIdx, action) => {
+      const edges = document.querySelectorAll('svg g.edgePaths path[role="button"]');
+      const edge = edges[edgeIdx];
+      const connAttr = edge.getAttribute('data-edge-connections') || '';
+      if (action === 'click') {
+        edge.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+      } else {
+        edge.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+      }
+      return connAttr.split(',').filter(Boolean);
+    }, idx, mode);
 
-  // Also test keyboard Enter on an edge (last edge, to exercise parallel/multiple edges if present)
-  await page.evaluate(() => {
-    const edges = document.querySelectorAll('svg g.edgePaths path[role="button"]');
-    const target = edges[edges.length - 1];
-    target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
-  });
-  const edgePanelText = await page.evaluate(() => {
-    const el =
-      document.querySelector('[aria-label="Selected connection evidence"]') ||
-      document.querySelector('[aria-label="Selected edge evidence"]');
-    return el ? el.textContent || '' : '';
-  });
+    await page.waitForFunction(
+      () => Boolean(
+        document.querySelector('[aria-label="Selected connection evidence"]') ||
+        document.querySelector('[aria-label="Selected edge evidence"]'),
+      ),
+      { timeout: 10000 },
+    );
+
+    const observed = await page.evaluate(() => {
+      const cards = Array.from(document.querySelectorAll('[data-selected-connection-id]'));
+      return {
+        selectedIds: cards.map((c) => c.getAttribute('data-selected-connection-id')),
+        text: (
+          document.querySelector('[aria-label="Selected connection evidence"]') ||
+          document.querySelector('[aria-label="Selected edge evidence"]')
+        )?.textContent || '',
+      };
+    });
+    edgeSelections.push({ index: idx, mode, expectedIds, ...observed });
+  }
+  const edgePanelText = edgeSelections.map((s) => s.text).join('\n');
 
   // 4. Perform actual artifact download fetches from the rendered download anchors
   const downloaded = await page.evaluate(async () => {
@@ -199,6 +211,7 @@ const report = await withBrowser(async (browser) => {
   return {
     ok: true,
     edgeCount,
+    edgeSelections,
     nodePanelText,
     edgePanelText,
     downloaded,

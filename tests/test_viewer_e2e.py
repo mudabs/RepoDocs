@@ -132,18 +132,21 @@ def test_viewer_node_edge_selection_and_actual_downloads(tmp_path: Path) -> None
 
 
 def _cross_repo_hostile_answer(message: dict[str, Any]) -> dict[str, Any]:
-    """Scripted two-repo answer with parallel edges, cross-repo citations, and hostile label text."""
+    """Scripted two-repo answer with parallel edges + different endpoint pair sharing identical citations."""
     docs = message["excerpts"]
     shop_doc = next(d for d in docs if d["repository_id"] == "shop")
     shop2_doc = next(d for d in docs if d["repository_id"] == "shop2")
+    shared_citations = [shop_doc["id"], shop2_doc["id"]]
     c1 = component('Shop <script>alert(1)</script> API', "backend-service", [shop_doc["path"]], [shop_doc["id"]], repository="shop")
     c2 = component("Shop2 Worker", "frontend", [shop2_doc["path"]], [shop2_doc["id"]], repository="shop2")
+    c3 = component("Shop2 Cache", "storage", [shop2_doc["path"]], [shop2_doc["id"]], repository="shop2")
     return {
         "complete": True,
-        "components": [c1, c2],
+        "components": [c1, c2, c3],
         "connections": [
-            connection(c1["name"], c2["name"], "calls", "HTTP call", [shop_doc["id"], shop2_doc["id"]], source_repository="shop", target_repository="shop2"),
-            connection(c1["name"], c2["name"], "publishes", "Event push", [shop2_doc["id"]], source_repository="shop", target_repository="shop2"),
+            connection(c1["name"], c2["name"], "calls", "HTTP call", shared_citations, source_repository="shop", target_repository="shop2"),
+            connection(c1["name"], c2["name"], "publishes", "Event push", shared_citations, source_repository="shop", target_repository="shop2"),
+            connection(c1["name"], c3["name"], "writes", "Cache write", shared_citations, source_repository="shop", target_repository="shop2"),
         ],
         "alternatives": [],
         "requests": [],
@@ -151,7 +154,7 @@ def _cross_repo_hostile_answer(message: dict[str, Any]) -> dict[str, Any]:
 
 
 def test_viewer_cross_repo_parallel_edges_and_hostile_labels(tmp_path: Path) -> None:
-    """Real Chrome renders two-repo diagram with parallel edges and hostile label without XSS."""
+    """Real Chrome selects parallel edges + shared-citation endpoints and resolves distinct connection IDs."""
     _browser_or_skip()
     provider = Replay(_cross_repo_hostile_answer)
     factory = Factory(provider)
@@ -159,7 +162,17 @@ def test_viewer_cross_repo_parallel_edges_and_hostile_labels(tmp_path: Path) -> 
         report = _run_viewer(base_url, "cross-repo-viewer")
 
     _assert_clean_report(report)
-    assert report["edgeCount"] >= 2
+    assert report["edgeCount"] == 3
+    selections = report["edgeSelections"]
+    assert len(selections) == 3
+    # Every edge must resolve to its exact connection ID(s), never colliding despite identical citations.
+    distinct_selected: list[tuple[str, ...]] = []
+    for sel in selections:
+        assert sel["expectedIds"], f"Edge {sel['index']} missing expected connection IDs"
+        assert sel["selectedIds"] == sel["expectedIds"]
+        assert "Support:" in sel["text"]
+        assert "shop:" in sel["text"] and "shop2:" in sel["text"]
+        distinct_selected.append(tuple(sel["selectedIds"]))
+    assert len(set(distinct_selected)) == 3, f"Parallel/shared-citation edges collided: {distinct_selected}"
     assert "shop" in report["details"]["revisionText"] and "shop2" in report["details"]["revisionText"]
-    assert "shop2:" in report["edgePanelText"] or "Evidence" in report["edgePanelText"]
     assert len(factory.contexts) == 1
