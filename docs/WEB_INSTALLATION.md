@@ -107,15 +107,25 @@ Server-owned workspaces are created under `<store_root>/ws-<id>/`, containing:
 - `jobs/` (atomic job metadata without credentials)
 - `destination/` and `sources/` (fetched pinned checkouts)
 
-To remove old inactive workspaces on startup:
+Web-only metadata (local profiles, non-secret preferences, hashed session authenticators, and
+saved workspace/job history) is stored in `<store_root>/repodocs-web.sqlite3` (WAL mode, schema
+migrations). Provider API keys, raw session bearer tokens, and consent receipts are never
+stored in SQLite. Core `repodocs` CLI and GitHub Actions never read or require this database.
+
+To back up `<store_root>/repodocs-web.sqlite3`, stop `repodocs-web` (or use `WebStore.backup_to` /
+`sqlite3 .backup`) and copy `<store_root>/ws-*/` alongside it.
+
+To remove old unsaved/ephemeral inactive workspaces on startup:
 
 ```bash
 repodocs-web --store-root ./repodocs-store --cleanup-max-age-hours 24
 ```
 
 Cleanup inspects only direct children of `store_root` with a valid `.repodocs-workspace.json`
-marker, skips symlinks and non-workspace directories, and never deletes a workspace with a
-`queued`, `preflight`, or `running` job.
+marker, skips symlinks, non-workspace directories, active/uncertain jobs, and saved user
+workspaces recorded in SQLite. Logging out (`POST /api/v1/session/end`) revokes only the active
+browser session cookie and CSRF token while preserving saved workspaces; deleting a workspace
+(`DELETE /api/v1/workspaces/{workspace_id}`) removes both its directory and SQLite metadata.
 
 ## 8. Troubleshooting
 

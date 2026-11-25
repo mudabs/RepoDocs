@@ -124,7 +124,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
 
     if cleanup_hours is not None:
-        cleanup_workspaces(workspaces.store_root, max_age_seconds=cleanup_hours * 3600.0)
+        from .store import STORE_FILENAME, WebStore
+
+        store_path = workspaces.store_root / STORE_FILENAME
+        store = WebStore(store_path) if store_path.exists() else None
+        cleanup_workspaces(workspaces.store_root, max_age_seconds=cleanup_hours * 3600.0, store=store)
 
     try:
         from .app import WebSettings, serve

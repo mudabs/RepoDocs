@@ -31,6 +31,7 @@ _FRONTEND_DIST = _PACKAGED_FRONTEND if _PACKAGED_FRONTEND.is_dir() else _SOURCE_
 from .health import health_payload, readiness_status
 from .jobs import CONTRACT_VERSION, JobError, JobService, JobSettings, ProviderFactory, build_provider
 from .security import (
+    COOKIE_NAME,
     Access,
     AccessConfig,
     AccessDenied,
@@ -43,6 +44,7 @@ from .security import (
     UnknownHandle,
     response_headers,
 )
+from .store import STORE_FILENAME, StoreError, WebStore
 from .workspaces import WorkspaceManager, WorkspaceSettings
 
 ARTIFACT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
@@ -62,6 +64,7 @@ class WebSettings:
     jobs: JobSettings = JobSettings()
     max_body_bytes: int = 64 * 1024
     frontend_dist: Path | None = None
+    use_store: bool = True
 
 
 class _TooLarge(Exception):
@@ -91,11 +94,12 @@ def create_app(
     static serving. The default (``...``) defers to ``settings.frontend_dist`` or the package-relative path.
     """
 
-    guard = SessionGuard(settings.access)
+    store = WebStore(settings.workspaces.store_root / STORE_FILENAME) if settings.use_store else None
+    guard = SessionGuard(settings.access, store=store)
     providers = ProviderSessions(guard)
     consent = ConsentLedger(guard)
     jobs = JobService(workspace_manager or WorkspaceManager(settings.workspaces), providers, consent, settings.jobs,
-                      provider_factory=provider_factory)
+                      provider_factory=provider_factory, store=store)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -179,9 +183,38 @@ def create_app(
         def run(access: Access, _: Any) -> Response:
             jobs.end_session(access)
             guard.end_session(access)
+            secure = "; Secure" if settings.access.exposed else ""
+            return Response(
+                status_code=204,
+                headers={"Set-Cookie": f"{COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0{secure}"},
+            )
+
+        return await guarded(request, run)
+
+    # ------------------------------------------------------------------ profile & history (#95)
+    @app.get("/api/v1/profile")
+    async def get_profile(request: Request) -> Response:
+        return await guarded(request, lambda access, _: _json(200, jobs.get_profile(access)))
+
+    @app.patch("/api/v1/profile")
+    async def patch_profile(request: Request) -> Response:
+        return await guarded(request, lambda access, payload: _json(200, jobs.update_profile(access, payload)), body=True)
+
+    @app.get("/api/v1/workspaces")
+    async def list_workspaces(request: Request) -> Response:
+        return await guarded(request, lambda access, _: _json(200, {"workspaces": jobs.list_workspaces(access)}))
+
+    @app.delete("/api/v1/workspaces/{workspace_id}")
+    async def delete_workspace(request: Request, workspace_id: str) -> Response:
+        def run(access: Access, _: Any) -> Response:
+            jobs.delete_workspace(access, workspace_id)
             return Response(status_code=204)
 
         return await guarded(request, run)
+
+    @app.get("/api/v1/workspaces/{workspace_id}/jobs")
+    async def list_workspace_jobs(request: Request, workspace_id: str) -> Response:
+        return await guarded(request, lambda access, _: _json(200, {"jobs": jobs.list_workspace_jobs(access, workspace_id)}))
 
     # ------------------------------------------------------------------ workspaces
     @app.post("/api/v1/workspaces")
