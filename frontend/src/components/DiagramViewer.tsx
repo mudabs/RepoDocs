@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import mermaid from 'mermaid'
 
 let mermaidInitialized = false
@@ -8,6 +8,8 @@ function ensureMermaidInitialized() {
     mermaid.initialize({
       startOnLoad: false,
       securityLevel: 'strict',
+      htmlLabels: false,
+      flowchart: { htmlLabels: false },
     })
     mermaidInitialized = true
   }
@@ -18,13 +20,21 @@ interface Props {
   artifactId: string
   fetchArtifactText: (jobId: string, artifactId: string) => Promise<string>
   onDiagramTextLoaded?: (text: string) => void
+  onSelectNode?: (nodeKey: string) => void
 }
 
 /**
- * Renders a Mermaid .mmd artifact with securityLevel:'strict' and interactive pan/zoom.
- * Never uses dangerouslySetInnerHTML on untrusted text; invalid diagrams show plain-text errors.
+ * Renders a Mermaid .mmd artifact with securityLevel:'strict' and htmlLabels:false,
+ * interactive pan/zoom/fit, and clickable diagram node selection.
  */
-export function DiagramViewer({ jobId, artifactId, fetchArtifactText, onDiagramTextLoaded }: Props) {
+export function DiagramViewer({
+  jobId,
+  artifactId,
+  fetchArtifactText,
+  onDiagramTextLoaded,
+  onSelectNode,
+}: Props) {
+  const stageRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -32,6 +42,28 @@ export function DiagramViewer({ jobId, artifactId, fetchArtifactText, onDiagramT
   const [offset, setOffset] = useState({ x: 0, y: 0 })
   const draggingRef = useRef(false)
   const lastPosRef = useRef({ x: 0, y: 0 })
+
+  const fitToStage = useCallback(() => {
+    const stage = stageRef.current
+    const container = containerRef.current
+    const svg = container?.querySelector('svg')
+    if (!stage || !svg) {
+      setScale(1)
+      setOffset({ x: 0, y: 0 })
+      return
+    }
+    const vb = svg.viewBox?.baseVal
+    const svgW = (vb && vb.width > 0 ? vb.width : svg.getBoundingClientRect().width / scale) || 1
+    const svgH = (vb && vb.height > 0 ? vb.height : svg.getBoundingClientRect().height / scale) || 1
+    const pad = 24
+    const availW = Math.max(100, stage.clientWidth - pad)
+    const availH = Math.max(100, stage.clientHeight - pad)
+    const nextScale = Math.max(0.25, Math.min(2, Number(Math.min(availW / svgW, availH / svgH, 1).toFixed(2))))
+    const dx = Math.max(0, Math.round((stage.clientWidth - svgW * nextScale) / 2))
+    const dy = Math.max(0, Math.round((stage.clientHeight - svgH * nextScale) / 2))
+    setScale(nextScale)
+    setOffset({ x: dx, y: dy })
+  }, [scale])
 
   useEffect(() => {
     let cancelled = false
@@ -53,13 +85,38 @@ export function DiagramViewer({ jobId, artifactId, fetchArtifactText, onDiagramT
 
         const el = containerRef.current
         if (el) {
-          // Clear previous content and insert the strict-mode SVG from Mermaid.
           el.replaceChildren()
           const parser = new DOMParser()
           const doc = parser.parseFromString(svg, 'image/svg+xml')
           const svgEl = doc.documentElement
           if (svgEl && svgEl.nodeName.toLowerCase() === 'svg') {
-            el.appendChild(document.importNode(svgEl, true))
+            const imported = document.importNode(svgEl, true)
+            // Wire clickable node IDs (c_<hex> / g_<hex> or entity IDs)
+            imported.querySelectorAll('g.node').forEach(node => {
+              const idAttr = node.getAttribute('id') || ''
+              const match = /(?:^|-)((?:c|g)_[0-9a-f]{12,16})(?:-|$)/.exec(idAttr)
+              const fallbackMatch = /^flowchart-(.+?)-\d+$/.exec(idAttr)
+              const key = match ? match[1] : fallbackMatch ? fallbackMatch[1] : null
+              if (key && onSelectNode) {
+                ;(node as SVGElement).style.cursor = 'pointer'
+                node.setAttribute('tabindex', '0')
+                node.setAttribute('role', 'button')
+                node.addEventListener('click', e => {
+                  e.stopPropagation()
+                  onSelectNode(key)
+                })
+                node.addEventListener('keydown', e => {
+                  if ((e as KeyboardEvent).key === 'Enter' || (e as KeyboardEvent).key === ' ') {
+                    e.preventDefault()
+                    onSelectNode(key)
+                  }
+                })
+              }
+            })
+            el.appendChild(imported)
+            requestAnimationFrame(() => {
+              if (!cancelled) fitToStage()
+            })
           } else {
             setError('Diagram rendered an unexpected non-SVG result.')
           }
@@ -82,7 +139,7 @@ export function DiagramViewer({ jobId, artifactId, fetchArtifactText, onDiagramT
     return () => {
       cancelled = true
     }
-  }, [jobId, artifactId, fetchArtifactText, onDiagramTextLoaded])
+  }, [jobId, artifactId, fetchArtifactText, onDiagramTextLoaded, onSelectNode])
 
   function handleWheel(e: React.WheelEvent) {
     e.preventDefault()
@@ -105,11 +162,6 @@ export function DiagramViewer({ jobId, artifactId, fetchArtifactText, onDiagramT
 
   function handleMouseUp() {
     draggingRef.current = false
-  }
-
-  function handleReset() {
-    setScale(1)
-    setOffset({ x: 0, y: 0 })
   }
 
   return (
@@ -137,11 +189,11 @@ export function DiagramViewer({ jobId, artifactId, fetchArtifactText, onDiagramT
         </button>
         <button
           type="button"
-          onClick={handleReset}
-          aria-label="Fit and reset view"
+          onClick={fitToStage}
+          aria-label="Fit diagram to view"
           style={toolbarBtnStyle}
         >
-          Reset view
+          Fit
         </button>
         <span style={{ fontSize: '0.8rem', color: '#6b7280' }}>
           {Math.round(scale * 100)}% (drag to pan, scroll to zoom)
@@ -172,6 +224,7 @@ export function DiagramViewer({ jobId, artifactId, fetchArtifactText, onDiagramT
       )}
 
       <div
+        ref={stageRef}
         onWheel={handleWheel}
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
@@ -182,7 +235,7 @@ export function DiagramViewer({ jobId, artifactId, fetchArtifactText, onDiagramT
           border: '1px solid #e5e7eb',
           borderRadius: '0.5rem',
           background: '#fafafa',
-          minHeight: '380px',
+          height: '420px',
           overflow: 'hidden',
           cursor: 'grab',
           position: 'relative',
@@ -194,7 +247,7 @@ export function DiagramViewer({ jobId, artifactId, fetchArtifactText, onDiagramT
           style={{
             transform: `translate(${offset.x}px, ${offset.y}px) scale(${scale})`,
             transformOrigin: 'top left',
-            padding: '1rem',
+            padding: '0.5rem',
             display: 'inline-block',
           }}
         />

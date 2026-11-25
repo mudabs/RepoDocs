@@ -1,31 +1,66 @@
-import { useEffect, useState } from 'react'
+import { useMemo, useState } from 'react'
+import type { RepositoryRevision } from './RevisionBadge'
 
-export interface EvidenceEntry {
-  name: string
-  kind: string
+export interface EvidenceCitation {
+  key?: string
+  repository_id: string
+  path: string
+  line_start: number
+  line_end: number
+  content_hash?: string
+  link?: string | null
+}
+
+export interface FileRef {
+  path: string
+  link: string | null
+}
+
+export interface ComponentEvidenceEntry {
+  files: FileRef[]
+  evidence: EvidenceCitation[]
+  support: string
+  support_reasons: string[]
+}
+
+export interface ConnectionEvidenceEntry {
+  evidence: EvidenceCitation[]
+  support: string
+  support_reasons: string[]
+}
+
+export interface AlternativeEvidenceEntry {
+  about: string[]
+  evidence: EvidenceCitation[]
+  statement?: string
+}
+
+export interface EvidenceMapData {
+  map_version: string
+  context_hash: string
+  source_ir_hash: string
+  repositories: RepositoryRevision[]
+  components: Record<string, ComponentEvidenceEntry>
+  connections: Record<string, ConnectionEvidenceEntry>
+  alternatives: AlternativeEvidenceEntry[]
+}
+
+// Mirrors repodocs.architecture.navigation.SOURCE_LINK and viewer_script.py SOURCE_LINK.
+export const SOURCE_LINK_RE =
+  /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/blob\/[0-9a-f]{40}\/[A-Za-z0-9._~%\/+@!$&'()*,;=:-]+(?:#L[0-9]+(?:-L[0-9]+)?)?$/
+
+export function isAllowedSourceLink(url: string | null | undefined): url is string {
+  return typeof url === 'string' && SOURCE_LINK_RE.test(url)
+}
+
+export interface MermaidCommentEntry {
+  subject: string
+  kind: 'entity' | 'relationship'
   evidenceIds: string[]
-  fileRefs: string[]
 }
 
-const GITHUB_BLOB_RE = /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/blob\/[0-9a-f]{40}\/[^\s#?]+$/
-const LOCAL_SOURCE_RE = /^<source:[a-z0-9][a-z0-9_-]*>(?:\/[^\s<>]*)?$/
-
-/**
- * Validates source references so raw server filesystem paths are never displayed as links.
- */
-export function isSafeSourceRef(ref: string): boolean {
-  return GITHUB_BLOB_RE.test(ref) || LOCAL_SOURCE_RE.test(ref)
-}
-
-export function isGitHubBlobUrl(ref: string): boolean {
-  return GITHUB_BLOB_RE.test(ref)
-}
-
-/**
- * Extracts evidence annotations from Mermaid `%% evidence <subject>: <ids>` comments.
- */
-export function parseMermaidEvidenceComments(mmdText: string): EvidenceEntry[] {
-  const entries: EvidenceEntry[] = []
+export function parseMermaidEvidenceComments(mmdText: string): MermaidCommentEntry[] {
+  const entries: MermaidCommentEntry[] = []
   for (const rawLine of mmdText.split(/\r?\n/)) {
     const line = rawLine.trim()
     if (!line.startsWith('%% evidence ')) continue
@@ -40,84 +75,112 @@ export function parseMermaidEvidenceComments(mmdText: string): EvidenceEntry[] {
       .filter(Boolean)
     if (subject && ids.length > 0) {
       entries.push({
-        name: subject,
+        subject,
         kind: subject.includes('->') ? 'relationship' : 'entity',
         evidenceIds: ids,
-        fileRefs: [],
       })
     }
   }
   return entries
 }
 
-interface Props {
-  jobId: string
-  artifactIds: string[]
-  diagramText: string
-  fetchArtifactText: (jobId: string, artifactId: string) => Promise<string>
+function formatCitationLabel(c: EvidenceCitation): string {
+  const span = c.line_start
+    ? `:${c.line_start}${c.line_end && c.line_end > c.line_start ? `-${c.line_end}` : ''}`
+    : ''
+  return `${c.repository_id}:${c.path}${span}`
 }
 
-export function EvidencePanel({ jobId, artifactIds, diagramText, fetchArtifactText }: Props) {
-  const [entries, setEntries] = useState<EvidenceEntry[]>([])
-  const [loading, setLoading] = useState(false)
+function CitationList({ citations }: { citations: EvidenceCitation[] }) {
+  if (citations.length === 0) return null
+  return (
+    <ul style={{ margin: '0.25rem 0 0 1.1rem', padding: 0, display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+      {citations.map((c, idx) => {
+        const label = formatCitationLabel(c)
+        return (
+          <li key={`${label}-${idx}`} style={{ fontSize: '0.8rem' }}>
+            {isAllowedSourceLink(c.link) ? (
+              <a href={c.link} target="_blank" rel="noopener noreferrer" style={{ color: '#2563eb' }}>
+                {label}
+              </a>
+            ) : (
+              <span>{label}</span>
+            )}
+            {c.content_hash && (
+              <code title={c.content_hash} style={{ marginLeft: '0.4rem', fontSize: '0.72rem', color: '#6b7280' }}>
+                {c.content_hash.slice(0, 10)}
+              </code>
+            )}
+          </li>
+        )
+      })}
+    </ul>
+  )
+}
 
-  useEffect(() => {
-    let cancelled = false
+interface Props {
+  evidenceMap: EvidenceMapData | null
+  diagramText: string
+  selectedKey: string | null
+  onSelectKey: (key: string) => void
+}
 
-    async function load() {
-      setLoading(true)
-      const collected: EvidenceEntry[] = []
+export function EvidencePanel({ evidenceMap, diagramText, selectedKey, onSelectKey }: Props) {
+  const [selectedAlternativeIdx, setSelectedAlternativeIdx] = useState<number | null>(null)
+  const mermaidEntries = useMemo(() => parseMermaidEvidenceComments(diagramText), [diagramText])
 
-      // 1. Look for architecture-view or evidence JSON artifacts
-      const jsonArtifact = artifactIds.find(
-        id => (id.includes('architecture-view') || id.includes('evidence') || id.includes('diagram-index')) && id.endsWith('.json'),
-      )
-      if (jsonArtifact) {
-        try {
-          const raw = await fetchArtifactText(jobId, jsonArtifact)
-          if (!cancelled) {
-            const parsed = JSON.parse(raw) as Record<string, unknown>
-            const items = Array.isArray(parsed['components'])
-              ? parsed['components']
-              : Array.isArray(parsed['entries'])
-                ? parsed['entries']
-                : []
-            for (const item of items) {
-              if (item && typeof item === 'object') {
-                const rec = item as Record<string, unknown>
-                const name = String(rec['name'] ?? rec['id'] ?? 'unknown')
-                const kind = String(rec['kind'] ?? rec['role'] ?? 'component')
-                const ev = Array.isArray(rec['evidence']) ? rec['evidence'].map(String) : []
-                const refs = Array.isArray(rec['files'])
-                  ? rec['files'].map(String).filter(isSafeSourceRef)
-                  : []
-                collected.push({ name, kind, evidenceIds: ev, fileRefs: refs })
-              }
-            }
-          }
-        } catch {
-          // Ignore malformed optional JSON artifact; fall back to diagram comments
+  // Map Mermaid node keys (c_<hex> / subject) to component/connection/comment details.
+  const componentIds = useMemo(
+    () => (evidenceMap ? Object.keys(evidenceMap.components) : []),
+    [evidenceMap],
+  )
+  const connectionIds = useMemo(
+    () => (evidenceMap ? Object.keys(evidenceMap.connections) : []),
+    [evidenceMap],
+  )
+
+  // Match selectedKey against exact component/connection ID, or a diagram comment subject's evidence IDs.
+  const resolvedComponent = useMemo(() => {
+    if (!evidenceMap || !selectedKey) return null
+    if (evidenceMap.components[selectedKey]) {
+      return { id: selectedKey, entry: evidenceMap.components[selectedKey] }
+    }
+    const comment = mermaidEntries.find(e => e.subject === selectedKey)
+    if (comment) {
+      for (const cid of componentIds) {
+        const entry = evidenceMap.components[cid]
+        if (entry.evidence.some(ev => ev.key && comment.evidenceIds.includes(ev.key))) {
+          return { id: cid, entry }
         }
       }
-
-      // 2. Also include evidence comments embedded in the active Mermaid diagram
-      if (diagramText) {
-        for (const entry of parseMermaidEvidenceComments(diagramText)) {
-          collected.push(entry)
-        }
-      }
-
-      if (!cancelled) {
-        setEntries(collected)
-        setLoading(false)
-      }
     }
-
-    load()
-    return () => {
-      cancelled = true
+    // Fallback: prefix/substring match for projected node keys (c_<12-hex>)
+    const hexMatch = /([0-9a-f]{12,16})$/.exec(selectedKey)
+    if (hexMatch) {
+      const matchedId = componentIds.find(cid => cid.includes(hexMatch[1]))
+      if (matchedId) return { id: matchedId, entry: evidenceMap.components[matchedId] }
     }
-  }, [jobId, artifactIds, diagramText, fetchArtifactText])
+    return null
+  }, [evidenceMap, selectedKey, mermaidEntries, componentIds])
+
+  const resolvedConnection = useMemo(() => {
+    if (!evidenceMap || !selectedKey) return null
+    if (evidenceMap.connections[selectedKey]) {
+      return { id: selectedKey, entry: evidenceMap.connections[selectedKey] }
+    }
+    return null
+  }, [evidenceMap, selectedKey])
+
+  const selectedComment = useMemo(() => {
+    if (!selectedKey) return null
+    return mermaidEntries.find(e => e.subject === selectedKey) ?? null
+  }, [selectedKey, mermaidEntries])
+
+  const hasAnyData =
+    componentIds.length > 0 ||
+    connectionIds.length > 0 ||
+    (evidenceMap?.alternatives.length ?? 0) > 0 ||
+    mermaidEntries.length > 0
 
   return (
     <aside
@@ -130,56 +193,239 @@ export function EvidencePanel({ jobId, artifactIds, diagramText, fetchArtifactTe
         padding: '1rem',
         display: 'flex',
         flexDirection: 'column',
-        gap: '0.6rem',
-        maxHeight: '460px',
+        gap: '0.75rem',
+        maxHeight: '560px',
         overflowY: 'auto',
       }}
     >
-      <h2 style={{ fontSize: '1rem', fontWeight: 600, margin: 0 }}>Evidence</h2>
+      <h2 style={{ fontSize: '1rem', fontWeight: 600, margin: 0 }}>Evidence &amp; Claims</h2>
 
-      {loading && <span style={{ fontSize: '0.85rem', color: '#6b7280' }}>Loading evidence...</span>}
-
-      {!loading && entries.length === 0 && (
+      {!hasAnyData && (
         <p style={{ fontSize: '0.85rem', color: '#6b7280', margin: 0 }}>
           No evidence data available
         </p>
       )}
 
-      {entries.map((entry, idx) => (
+      {/* Selected item details */}
+      {resolvedComponent && (
         <div
-          key={`${entry.name}-${idx}`}
-          style={{
-            borderTop: idx > 0 ? '1px solid #f3f4f6' : 'none',
-            paddingTop: idx > 0 ? '0.5rem' : 0,
-            fontSize: '0.82rem',
-          }}
+          role="region"
+          aria-label="Selected component evidence"
+          style={{ background: '#f8fafc', border: '1px solid #cbd5e1', borderRadius: '0.4rem', padding: '0.65rem' }}
         >
-          <div style={{ fontWeight: 600, color: '#111827' }}>
-            {entry.name}{' '}
-            <span style={{ fontWeight: 400, color: '#6b7280' }}>({entry.kind})</span>
+          <div style={{ fontWeight: 600, fontSize: '0.88rem' }}>{resolvedComponent.id}</div>
+          <div style={{ fontSize: '0.78rem', color: '#475569', marginTop: '0.2rem' }}>
+            Support: <strong>{resolvedComponent.entry.support}</strong>
+            {resolvedComponent.entry.support_reasons.length > 0 &&
+              ` (${resolvedComponent.entry.support_reasons.join(', ')})`}
           </div>
-          {entry.evidenceIds.length > 0 && (
-            <div style={{ color: '#4b5563', fontFamily: 'monospace', fontSize: '0.76rem', marginTop: '0.15rem' }}>
-              {entry.evidenceIds.join(', ')}
+          {resolvedComponent.entry.files.length > 0 && (
+            <div style={{ marginTop: '0.4rem', fontSize: '0.8rem' }}>
+              <strong>Files:</strong>
+              <ul style={{ margin: '0.2rem 0 0 1.1rem', padding: 0 }}>
+                {resolvedComponent.entry.files.map((f, i) => (
+                  <li key={i}>
+                    {isAllowedSourceLink(f.link) ? (
+                      <a href={f.link} target="_blank" rel="noopener noreferrer" style={{ color: '#2563eb' }}>
+                        {f.path}
+                      </a>
+                    ) : (
+                      <code>{f.path}</code>
+                    )}
+                  </li>
+                ))}
+              </ul>
             </div>
           )}
-          {entry.fileRefs.length > 0 && (
-            <ul style={{ margin: '0.25rem 0 0 1rem', padding: 0 }}>
-              {entry.fileRefs.map((ref, rIdx) => (
-                <li key={rIdx}>
-                  {isGitHubBlobUrl(ref) ? (
-                    <a href={ref} target="_blank" rel="noreferrer" style={{ color: '#2563eb' }}>
-                      {ref}
-                    </a>
-                  ) : (
-                    <code>{ref}</code>
-                  )}
-                </li>
-              ))}
-            </ul>
-          )}
+          <div style={{ marginTop: '0.4rem', fontSize: '0.8rem' }}>
+            <strong>Evidence:</strong>
+            <CitationList citations={resolvedComponent.entry.evidence} />
+          </div>
         </div>
-      ))}
+      )}
+
+      {resolvedConnection && (
+        <div
+          role="region"
+          aria-label="Selected connection evidence"
+          style={{ background: '#f8fafc', border: '1px solid #cbd5e1', borderRadius: '0.4rem', padding: '0.65rem' }}
+        >
+          <div style={{ fontWeight: 600, fontSize: '0.88rem' }}>{resolvedConnection.id}</div>
+          <div style={{ fontSize: '0.78rem', color: '#475569', marginTop: '0.2rem' }}>
+            Support: <strong>{resolvedConnection.entry.support}</strong>
+            {resolvedConnection.entry.support_reasons.length > 0 &&
+              ` (${resolvedConnection.entry.support_reasons.join(', ')})`}
+          </div>
+          <div style={{ marginTop: '0.4rem', fontSize: '0.8rem' }}>
+            <strong>Evidence:</strong>
+            <CitationList citations={resolvedConnection.entry.evidence} />
+          </div>
+        </div>
+      )}
+
+      {!resolvedComponent && !resolvedConnection && selectedComment && (
+        <div
+          role="region"
+          aria-label="Selected diagram element evidence"
+          style={{ background: '#f8fafc', border: '1px solid #cbd5e1', borderRadius: '0.4rem', padding: '0.65rem' }}
+        >
+          <div style={{ fontWeight: 600, fontSize: '0.88rem' }}>
+            {selectedComment.subject} ({selectedComment.kind})
+          </div>
+          <div style={{ fontSize: '0.78rem', fontFamily: 'monospace', color: '#475569', marginTop: '0.25rem' }}>
+            Evidence IDs: {selectedComment.evidenceIds.join(', ')}
+          </div>
+        </div>
+      )}
+
+      {selectedAlternativeIdx !== null && evidenceMap?.alternatives[selectedAlternativeIdx] && (
+        <div
+          role="region"
+          aria-label="Alternative interpretation"
+          style={{ background: '#fffbeb', border: '1px solid #fcd34d', borderRadius: '0.4rem', padding: '0.65rem' }}
+        >
+          <div style={{ fontWeight: 600, fontSize: '0.86rem' }}>Alternative reading</div>
+          {evidenceMap.alternatives[selectedAlternativeIdx].statement && (
+            <p style={{ margin: '0.25rem 0', fontSize: '0.8rem' }}>
+              {evidenceMap.alternatives[selectedAlternativeIdx].statement}
+            </p>
+          )}
+          <div style={{ fontSize: '0.78rem', color: '#475569' }}>
+            About: {evidenceMap.alternatives[selectedAlternativeIdx].about.join(', ') || 'the whole view'}
+          </div>
+          <CitationList citations={evidenceMap.alternatives[selectedAlternativeIdx].evidence} />
+        </div>
+      )}
+
+      {/* Component selector list */}
+      {componentIds.length > 0 && (
+        <div>
+          <h3 style={subHeadingStyle}>Components ({componentIds.length})</h3>
+          <ul style={listStyle}>
+            {componentIds.map(id => {
+              const item = evidenceMap!.components[id]
+              const active = selectedKey === id || resolvedComponent?.id === id
+              return (
+                <li key={id}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedAlternativeIdx(null)
+                      onSelectKey(id)
+                    }}
+                    style={itemBtnStyle(active)}
+                  >
+                    <span>{id}</span>
+                    <span style={{ color: '#6b7280', fontSize: '0.74rem' }}> ({item.support})</span>
+                  </button>
+                </li>
+              )
+            })}
+          </ul>
+        </div>
+      )}
+
+      {/* Connection selector list */}
+      {connectionIds.length > 0 && (
+        <div>
+          <h3 style={subHeadingStyle}>Connections ({connectionIds.length})</h3>
+          <ul style={listStyle}>
+            {connectionIds.map(id => {
+              const item = evidenceMap!.connections[id]
+              const active = selectedKey === id
+              return (
+                <li key={id}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedAlternativeIdx(null)
+                      onSelectKey(id)
+                    }}
+                    style={itemBtnStyle(active)}
+                  >
+                    <span>{id}</span>
+                    <span style={{ color: '#6b7280', fontSize: '0.74rem' }}> ({item.support})</span>
+                  </button>
+                </li>
+              )
+            })}
+          </ul>
+        </div>
+      )}
+
+      {/* Alternatives */}
+      {evidenceMap && evidenceMap.alternatives.length > 0 && (
+        <div>
+          <h3 style={subHeadingStyle}>Alternatives ({evidenceMap.alternatives.length})</h3>
+          <ul style={listStyle}>
+            {evidenceMap.alternatives.map((alt, idx) => (
+              <li key={idx}>
+                <button
+                  type="button"
+                  onClick={() => setSelectedAlternativeIdx(idx)}
+                  style={itemBtnStyle(selectedAlternativeIdx === idx)}
+                >
+                  Alternative {idx + 1}: {alt.about.join(', ') || 'view'}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* Diagram-embedded evidence comments (for ERD / deterministic diagrams) */}
+      {mermaidEntries.length > 0 && (
+        <div>
+          <h3 style={subHeadingStyle}>Diagram Evidence ({mermaidEntries.length})</h3>
+          <ul style={listStyle}>
+            {mermaidEntries.map((entry, idx) => (
+              <li key={`${entry.subject}-${idx}`}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedAlternativeIdx(null)
+                    onSelectKey(entry.subject)
+                  }}
+                  style={itemBtnStyle(selectedKey === entry.subject)}
+                >
+                  <span>{entry.subject}</span>
+                  <span style={{ color: '#6b7280', fontSize: '0.74rem' }}> ({entry.evidenceIds.join(', ')})</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </aside>
   )
+}
+
+const subHeadingStyle: React.CSSProperties = {
+  fontSize: '0.84rem',
+  fontWeight: 600,
+  color: '#374151',
+  margin: '0 0 0.35rem',
+}
+
+const listStyle: React.CSSProperties = {
+  listStyle: 'none',
+  margin: 0,
+  padding: 0,
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '0.25rem',
+}
+
+function itemBtnStyle(active: boolean): React.CSSProperties {
+  return {
+    width: '100%',
+    textAlign: 'left',
+    padding: '0.3rem 0.5rem',
+    borderRadius: '0.3rem',
+    border: active ? '1px solid #2563eb' : '1px solid #e5e7eb',
+    background: active ? '#eff6ff' : '#fff',
+    color: '#111827',
+    fontSize: '0.8rem',
+    cursor: 'pointer',
+  }
 }

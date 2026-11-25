@@ -3,7 +3,7 @@ import { client } from '../api/client'
 import type { Job } from '../api/types'
 import { ArtifactDownloads } from '../components/ArtifactDownloads'
 import { DiagramViewer } from '../components/DiagramViewer'
-import { EvidencePanel } from '../components/EvidencePanel'
+import { type EvidenceMapData, EvidencePanel } from '../components/EvidencePanel'
 import { RevisionBadge } from '../components/RevisionBadge'
 import { ScopeSelector } from '../components/ScopeSelector'
 import { StatusBadge } from '../components/StatusBadge'
@@ -18,17 +18,40 @@ export function ViewerPage({ jobId, onBack }: Props) {
   const [error, setError] = useState<string | null>(null)
   const [selectedArtifact, setSelectedArtifact] = useState<string | null>(null)
   const [diagramText, setDiagramText] = useState<string>('')
+  const [evidenceMap, setEvidenceMap] = useState<EvidenceMapData | null>(null)
+  const [selectedKey, setSelectedKey] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
     setError(null)
+    setEvidenceMap(null)
+    setSelectedKey(null)
+
     client
       .getJob(jobId)
-      .then(loaded => {
+      .then(async loaded => {
         if (cancelled) return
         setJob(loaded)
-        const firstMmd = loaded.result?.artifact_ids.find(id => id.endsWith('.mmd')) ?? null
+        const ids = loaded.result?.artifact_ids ?? []
+        const firstMmd =
+          ids.find(id => id === 'architecture-view.mmd') ??
+          ids.find(id => id.endsWith('.mmd')) ??
+          null
         setSelectedArtifact(firstMmd)
+
+        const evidenceJsonId = ids.find(
+          id => (id === 'architecture-view-evidence.json' || id.includes('evidence')) && id.endsWith('.json'),
+        )
+        if (evidenceJsonId) {
+          try {
+            const raw = await client.fetchArtifactText(jobId, evidenceJsonId)
+            if (!cancelled) {
+              setEvidenceMap(JSON.parse(raw) as EvidenceMapData)
+            }
+          } catch {
+            // Optional evidence map failed to load; fall back to diagram comments.
+          }
+        }
       })
       .catch(err => {
         if (!cancelled) {
@@ -82,7 +105,12 @@ export function ViewerPage({ jobId, onBack }: Props) {
         {job && (
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
             <StatusBadge state={job.state} stage={job.stage} />
-            {job.result && <RevisionBadge sourceIrHash={job.result.source_ir_hash} />}
+            {job.result && (
+              <RevisionBadge
+                sourceIrHash={job.result.source_ir_hash}
+                repositories={evidenceMap?.repositories}
+              />
+            )}
           </div>
         )}
       </div>
@@ -152,6 +180,7 @@ export function ViewerPage({ jobId, onBack }: Props) {
             selectedArtifactId={selectedArtifact}
             onSelect={id => {
               setDiagramText('')
+              setSelectedKey(null)
               setSelectedArtifact(id)
             }}
           />
@@ -159,7 +188,7 @@ export function ViewerPage({ jobId, onBack }: Props) {
           <div
             style={{
               display: 'grid',
-              gridTemplateColumns: 'minmax(0, 2fr) minmax(260px, 1fr)',
+              gridTemplateColumns: 'minmax(0, 2fr) minmax(280px, 1fr)',
               gap: '1rem',
               alignItems: 'start',
             }}
@@ -171,6 +200,7 @@ export function ViewerPage({ jobId, onBack }: Props) {
                   artifactId={selectedArtifact}
                   fetchArtifactText={fetchArtifactText}
                   onDiagramTextLoaded={setDiagramText}
+                  onSelectNode={setSelectedKey}
                 />
               ) : (
                 <div
@@ -189,10 +219,10 @@ export function ViewerPage({ jobId, onBack }: Props) {
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
               <EvidencePanel
-                jobId={job.job_id}
-                artifactIds={job.result.artifact_ids}
+                evidenceMap={evidenceMap}
                 diagramText={diagramText}
-                fetchArtifactText={fetchArtifactText}
+                selectedKey={selectedKey}
+                onSelectKey={setSelectedKey}
               />
               <ArtifactDownloads
                 jobId={job.job_id}

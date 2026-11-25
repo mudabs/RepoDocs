@@ -172,3 +172,36 @@ def test_unsafe_artifact_id_is_rejected(tmp_path: Path) -> None:
         for bad_id in ("..%2Frepodocs.json", "not-an-artifact.mmd", "a/b.mmd"):
             resp = api.download(job["job_id"], bad_id)
             assert resp.status_code == 404
+
+
+def test_generated_architecture_evidence_json_uses_dictionary_contract(tmp_path: Path) -> None:
+    """architecture-view-evidence.json stores dict-keyed components/connections and repository metadata."""
+    provider = Replay(full_answer)
+    with running(tmp_path, Factory(provider)) as (api, _app, factory):
+        workspace_id = api.workspace()
+        prov_id = api.provider()
+        preview = api.preview(workspace_id, prov_id)
+        r = api.submit(
+            request(
+                workspace_id,
+                key="evidence-contract-1",
+                provider=prov_id,
+                context=preview["context_hash"],
+                views=("overview", "components"),
+            )
+        )
+        assert r.status_code == 202
+        job = api.wait(r.json()["job_id"])
+        assert job["state"] == "succeeded"
+        assert "architecture-view-evidence.json" in job["result"]["artifact_ids"]
+
+        ev_resp = api.download(job["job_id"], "architecture-view-evidence.json")
+        assert ev_resp.status_code == 200
+        ev = json.loads(ev_resp.content.decode("utf-8"))
+        assert isinstance(ev["components"], dict) and len(ev["components"]) > 0
+        assert isinstance(ev["connections"], dict)
+        assert isinstance(ev["repositories"], list) and len(ev["repositories"]) > 0
+        assert "content_fingerprint" in ev["repositories"][0]
+        assert "revision_kind" in ev["repositories"][0]
+        # Downloading evidence did not trigger another provider call.
+        assert len(factory.contexts) == 1
