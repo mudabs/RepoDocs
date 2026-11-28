@@ -118,6 +118,8 @@ class JobSettings:
     max_download_bytes: int = 16 * 1024 * 1024
     run_limits: RunLimits = RunLimits()
     prices: PriceProfile | None = None
+    # (provider, model) pairs the operator offers in provider setup (``--model``); browsers may still type others.
+    models: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
         for name in ("max_active_jobs", "max_queued_jobs", "max_jobs_per_workspace", "max_download_bytes"):
@@ -720,7 +722,7 @@ class JobService:
                 "candidate_states": scan.data["candidate_states"], "warnings": [self._safe(item) for item in scan.warnings],
                 "provider": None if context is None else self._providers.public_view(access, handle),  # type: ignore[arg-type]
                 "provider_is_external": None if context is None else is_external(context),
-                "budget": data["budget"],
+                "budget": data["budget"], "context_fit": data["context_fit"],
             }
             if include:
                 bundle = json.loads((ProjectConfig.load(workspace.root).internal_path / "architecture-context.json").read_text(encoding="utf-8"))
@@ -858,7 +860,9 @@ class JobService:
         except ConfigError as exc:
             raise _invalid(self._safe(str(exc))) from None
         if not service.can_reuse_view(service.DiscoverRequest(workspace.root, refresh=request.refresh, limits=request.run_limits())):
-            fit = service.initial_request_fit(_identity(context), config, service.load_scanned_ir(config), ledger.limits)  # type: ignore[arg-type]
+            ir = service.load_scanned_ir(config)
+            fitted = service.fitted_context_bytes(config, ir, context.provider)
+            fit = service.initial_request_fit(_identity(context), config, ir, ledger.limits, fitted)  # type: ignore[arg-type]
             if fit["error"] is not None:
                 raise JobError("invalid-request", fit["error"]["message"], 422)
         # The worst case this job may use, reported before it starts. Unknown cost is null, never zero.
@@ -1041,7 +1045,10 @@ class JobService:
                 discovered: service.WorkflowResult | None = None
                 if request.mode == "architecture":
                     self._transition(job, "preflight", "context")
-                    preview = service.preview_context(service.ContextRequest(workspace.root), hooks)
+                    # Rebuilt with the same provider identity as the reviewed preview, so a context fitted to the model's
+                    # window hashes the same. An expired provider session fails here exactly as it does at the gate.
+                    identity = _identity(self._providers.context(access, request.provider_session_id or ""))
+                    preview = service.preview_context(service.ContextRequest(workspace.root, provider=identity), hooks)
                     if preview.data["context_hash"] != request.context_hash:
                         self._finish(job, "failed", "context", _error(
                             "stale-source", "The source context changed after it was previewed; nothing was sent. Preview again and give consent"

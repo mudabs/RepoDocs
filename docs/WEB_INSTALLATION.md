@@ -104,6 +104,11 @@ Neither endpoint exposes credentials, filesystem paths, or job records.
   `--max-cost-usd`, and `--prices-file <path-to-prices.json>`. Unconfigured models use
   conservative fallback limits (`4096` tokens) which are never claimed as the served model's
   verified capacity.
+- **Offered models**: provider setup lists models to choose from: those passed with
+  `--model PROVIDER:NAME` (repeatable, for example `--model openai:gpt-5-mini --model ollama:qwen2.5-coder:7b`),
+  the model of `--prices-file`, and models installed in the local Ollama (asked at `localhost:11434`, no credential,
+  no source sent). Users can still type any other model name; the list is not an allowlist. Model limits are the
+  operator's flags above, not inferred from a model's name.
 
 ## 7. Data locations, retention, and cleanup
 

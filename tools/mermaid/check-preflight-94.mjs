@@ -72,7 +72,7 @@ async function setupToLimits(page, { providerKind, model, host, maxTokens }) {
   }
   await page.evaluate(nextModel => {
     const inputs = Array.from(document.querySelectorAll('input'))
-    const modelInput = inputs.find(i => i.placeholder?.includes('llama') || i.placeholder?.includes('qwen') || i.placeholder?.includes('gpt'))
+    const modelInput = inputs.find(i => i.getAttribute('aria-label') === 'Model name' || i.placeholder?.includes('qwen') || i.placeholder?.includes('gpt'))
     if (!modelInput) throw new Error('Model input not found')
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set
     setter.call(modelInput, nextModel)

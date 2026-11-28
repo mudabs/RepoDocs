@@ -248,6 +248,22 @@ try {
       assert(pageErrors.length === 0, `Page errors: ${pageErrors.join('; ')}`);
       console.log(JSON.stringify({ ok: true }));
     }
+  } else if (scenario === 'model-picker') {
+    await page.type('#repo-url', 'shop');
+    await clickButton(page, 'Generate architecture');
+    await waitForText(page, 'Connect an AI provider');
+    const options = () => page.$$eval('select[aria-label="Available models"] option', (items) => items.slice(1).map((o) => o.textContent.trim()));
+    await page.waitForSelector('select[aria-label="Available models"]', { timeout: 10000 });
+    const ollamaOptions = await options();
+    await page.evaluate(() => {
+      Array.from(document.querySelectorAll('input[type="radio"]')).find((r) => r.closest('label') && r.closest('label').textContent.includes('OpenAI')).click();
+    });
+    await page.waitForFunction(() => Array.from(document.querySelectorAll('select[aria-label="Available models"] option')).some((o) => o.value === 'gpt-6-sol'));
+    const openaiOptions = await options();
+    await page.select('select[aria-label="Available models"]', 'gpt-6-sol');
+    const chosen = await page.$eval('input[aria-label="Model name"]', (el) => el.value);
+    assert(pageErrors.length === 0, `Page errors: ${pageErrors.join('; ')}`);
+    console.log(JSON.stringify({ ok: true, ollamaOptions, openaiOptions, chosen }));
   } else {
     throw new Error(`Unknown scenario ${scenario}`);
   }

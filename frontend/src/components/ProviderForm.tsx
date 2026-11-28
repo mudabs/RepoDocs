@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import type { ProviderKind } from '../api/types'
+import { client } from '../api/client'
+import type { ModelCatalog, ProviderKind } from '../api/types'
 
 interface Props {
   onConnect: (opts: {
@@ -24,6 +25,16 @@ export function ProviderForm({ onConnect, onDisconnect, connected, error }: Prop
   const [apiKey, setApiKey] = useState('')
   const [busy, setBusy] = useState(false)
   const apiKeyRef = useRef<HTMLInputElement>(null)
+  const [catalog, setCatalog] = useState<ModelCatalog | null>(null)
+
+  useEffect(() => {
+    let live = true
+    client.listModels().then(result => { if (live) setCatalog(result) }).catch(() => { if (live) setCatalog(null) })
+    return () => { live = false }
+  }, [])
+
+  const offered = (catalog?.models ?? []).filter(item => item.provider === kind)
+  const sourceLabel = { operator: 'offered by the operator', 'price-profile': 'has a price profile', installed: 'installed locally' }
 
   // Clear the api_key from state on unmount to avoid lingering in memory.
   useEffect(() => {
@@ -36,7 +47,7 @@ export function ProviderForm({ onConnect, onDisconnect, connected, error }: Prop
     setKind(next)
     setApiKey('')
     setHost(next === 'ollama' ? 'http://127.0.0.1:11434' : 'https://api.openai.com/v1')
-    setModel(next === 'ollama' ? '' : 'gpt-4o-mini')
+    setModel('')
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -140,6 +151,28 @@ export function ProviderForm({ onConnect, onDisconnect, connected, error }: Prop
         />
       </label>
 
+      {offered.length > 0 && (
+        <label style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+          <span style={{ fontSize: '0.85rem', fontWeight: 500 }}>Available models</span>
+          <select
+            value={offered.some(item => item.model === model) ? model : ''}
+            onChange={e => setModel(e.target.value)}
+            aria-label="Available models"
+            style={{ padding: '0.4rem 0.6rem', borderRadius: '0.3rem', border: '1px solid #6b7280', fontSize: '0.9rem' }}
+          >
+            <option value="">Choose a model, or type one below</option>
+            {offered.map(item => (
+              <option key={item.model} value={item.model}>{item.model} ({sourceLabel[item.source]})</option>
+            ))}
+          </select>
+        </label>
+      )}
+      {kind === 'ollama' && catalog && !catalog.ollama_reachable && (
+        <span role="note" style={{ fontSize: '0.82rem', color: '#78350f' }}>
+          The local Ollama did not answer, so installed models cannot be listed. Start Ollama or type a model name.
+        </span>
+      )}
+
       <label style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
         <span style={{ fontSize: '0.85rem', fontWeight: 500 }}>Model</span>
         <input
@@ -147,7 +180,7 @@ export function ProviderForm({ onConnect, onDisconnect, connected, error }: Prop
           value={model}
           onChange={e => setModel(e.target.value)}
           required
-          placeholder={kind === 'ollama' ? 'e.g. llama3.2' : 'gpt-4o-mini'}
+          placeholder={kind === 'ollama' ? 'e.g. qwen2.5-coder:7b' : "the provider's model ID"}
           style={{ padding: '0.4rem 0.6rem', borderRadius: '0.3rem', border: '1px solid #d1d5db', fontSize: '0.9rem' }}
           aria-label="Model name"
         />
