@@ -185,7 +185,17 @@ export interface PreviewResponse {
   provider: ProviderResponse | null
   provider_is_external: boolean | null
   budget: PreviewBudget | null
+  context_fit?: ContextFit
   excerpts?: PreviewExcerpt[]
+}
+
+/** How much of the source the preview covers, and whether it was reduced to fit the model's input allowance. */
+export interface ContextFit {
+  fitted: boolean
+  max_context_bytes: number
+  opened_files: number
+  candidate_files: number
+  missing_layers: string[]
 }
 
 export interface ProviderResponse {

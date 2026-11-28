@@ -357,7 +357,56 @@ def scan(request: ScanRequest, hooks: RunHooks = NO_HOOKS) -> WorkflowResult:
     return WorkflowResult("scan", STATUS_COMPLETE, data, tuple(warnings))
 
 
-def initial_request_fit(provider: Provider, config: ProjectConfig, ir: dict[str, Any], limits: RunLimits) -> dict[str, Any]:
+# The smallest context budget still worth sending: room for the inventory share and a few short excerpts. Below it the
+# preview is not fitted further, so preflight refuses instead of sending a context too small to describe anything.
+MIN_USEFUL_CONTEXT_BYTES = 12 * 1024
+_FIT_ATTEMPTS = 8
+# Headroom for what a provider's own request body adds to the portable envelope (model, options, format fields).
+FIT_MARGIN_TOKENS = 512
+
+
+def fitted_context_bytes(config: ProjectConfig, ir: dict[str, Any], provider_name: str) -> int | None:
+    """A context budget that lets the first discovery request fit the model's input allowance, or None if it already fits.
+
+    The allowance is the context window minus the reserved output, both resolved from the project's ``ai.limits`` for
+    this provider, so every path (CLI and web preview, job admission, discovery) computes the same value and the
+    reviewed context hash stays the one that is sent. It is measured with the same byte bound as preflight on the
+    portable request envelope; the run ledger still admits each real request. A budget is never fitted below
+    ``MIN_USEFUL_CONTEXT_BYTES``; if that still does not fit, preflight refuses as before.
+    """
+
+    from types import SimpleNamespace
+
+    from .ai.budgets import estimate_tokens, serialized_request
+    from .architecture.discovery import initial_prompt_inputs
+    from .config import ARCHITECTURE_BUDGET_DEFAULTS
+
+    limits = config.ai.limits.resolved(provider_name)
+    allowance = int(limits.context_window_tokens or 0) - int(limits.request_output_tokens or 0) - FIT_MARGIN_TOKENS
+    envelope = SimpleNamespace()  # no request_body: the portable system, user and schema envelope
+
+    def needed(budget: int | None) -> int:
+        return estimate_tokens(serialized_request(envelope, *initial_prompt_inputs(config, ir, budget)))
+
+    first = needed(None)
+    if first <= allowance:
+        return None
+    budget = int({**ARCHITECTURE_BUDGET_DEFAULTS, **config.architecture.budgets}["max_context_bytes"])
+    need = first
+    for _ in range(_FIT_ATTEMPTS):
+        if budget <= MIN_USEFUL_CONTEXT_BYTES:
+            return MIN_USEFUL_CONTEXT_BYTES
+        # The request is not proportional to the budget (fixed prompt and schema), so step down and measure again.
+        budget = max(MIN_USEFUL_CONTEXT_BYTES, int(budget * allowance / need * 0.95))
+        need = needed(budget)
+        if need <= allowance:
+            return budget
+    return budget
+
+
+def initial_request_fit(
+    provider: Provider, config: ProjectConfig, ir: dict[str, Any], limits: RunLimits, max_context_bytes: int | None = None,
+) -> dict[str, Any]:
     """Whether the first discovery request fits one request's context window, estimated locally.
 
     The estimate is the byte bound of the serialized round-0 request, so it never contacts the provider and is an upper
@@ -367,7 +416,7 @@ def initial_request_fit(provider: Provider, config: ProjectConfig, ir: dict[str,
 
     from .architecture.discovery import initial_prompt_inputs
 
-    system, user, schema = initial_prompt_inputs(config, ir)
+    system, user, schema = initial_prompt_inputs(config, ir, max_context_bytes)
     input_tokens = estimate_tokens(serialized_request(provider, system, user, schema))
     window = int(limits.context_window_tokens or 0)
     reserved = int(limits.request_output_tokens or 0)
@@ -384,8 +433,10 @@ def initial_request_fit(provider: Provider, config: ProjectConfig, ir: dict[str,
             "message": (
                 f"Initial request needs up to {input_tokens} input tokens ({METHOD_BYTE_BOUND}) plus {reserved} reserved "
                 f"output tokens ({input_tokens + reserved} total), exceeding the configured {window}-token context window "
-                f"({source}); nothing was sent. Narrow repository scope or configure a larger context window via "
-                "--context-window-tokens."
+                f"({source}); nothing was sent."
+                + (" The source context was already reduced to its smallest useful size."
+                   if max_context_bytes is not None and max_context_bytes <= MIN_USEFUL_CONTEXT_BYTES else "")
+                + " Narrow repository scope or configure a larger context window via --context-window-tokens."
             ),
         }
     return {
@@ -410,7 +461,8 @@ def preview_context(request: ContextRequest, hooks: RunHooks = NO_HOOKS) -> Work
     config = ProjectConfig.load(request.root)
     ir = load_scanned_ir(config)
     _checkpoint(hooks, "context", "building-context")
-    bundle, _ = build_context(config, ir)
+    fitted = fitted_context_bytes(config, ir, request.provider.name) if request.provider is not None else None
+    bundle, _ = build_context(config, ir, fitted)
     path = config.internal_path / CONTEXT_FILENAME
     write_json(path, bundle)
     reasons: dict[str, int] = {}
@@ -421,7 +473,7 @@ def preview_context(request: ContextRequest, hooks: RunHooks = NO_HOOKS) -> Work
         # The limits, initial local estimate, and worst-case cost a run would start with. Nothing is counted or sent.
         ledger = ledger_for(request.provider, config.ai)
         snapshot = ledger.snapshot()
-        fit = initial_request_fit(request.provider, config, ir, ledger.limits)
+        fit = initial_request_fit(request.provider, config, ir, ledger.limits, fitted)
         budget = {
             "limits": snapshot["limits"],
             "price_profile": snapshot["price_profile"],
@@ -445,6 +497,14 @@ def preview_context(request: ContextRequest, hooks: RunHooks = NO_HOOKS) -> Work
         "provider_is_external": None if request.provider is None else bool(request.provider.external),
         "source_consent": config.ai.source_consent_current,
         "budget": budget,
+        # Shown before consent: whether the context was reduced to fit the model, and how much of the source it covers.
+        "context_fit": {
+            "fitted": fitted is not None,
+            "max_context_bytes": bundle["policy"]["budgets"]["max_context_bytes"],
+            "opened_files": sum(item["opened_files"] for item in bundle["coverage"]),
+            "candidate_files": sum(item["candidate_files"] for item in bundle["coverage"]),
+            "missing_layers": sorted({layer for item in bundle["coverage"] for layer in item["missing_layers"]}),
+        },
     }
     return WorkflowResult("context", STATUS_COMPLETE, data, view_status=_view_status(config, ir))
 
@@ -518,10 +578,11 @@ def discover(request: DiscoverRequest, hooks: RunHooks = NO_HOOKS) -> WorkflowRe
 
     # Every request, count, retry and repair of this run is reserved in one ledger, created only after consent.
     budget = budgeted(provider, settings, request.limits, before_send=before_send)
-    preview, _ = build_context(config, ir)
+    fitted = fitted_context_bytes(config, ir, provider.name)
+    preview, _ = build_context(config, ir, fitted)
     write_json(config.internal_path / CONTEXT_FILENAME, preview)
     try:
-        new_view, context = run_discovery(config, ir, _CancellableProvider(budget, hooks))
+        new_view, context = run_discovery(config, ir, _CancellableProvider(budget, hooks), max_context_bytes=fitted)
         _checkpoint(hooks, "discover", "storing-view")
     except BaseException as exc:
         if isinstance(exc, Cancelled):
