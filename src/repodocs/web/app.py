@@ -227,6 +227,10 @@ def create_app(
         return await guarded(request, lambda access, _: _json(200, {"jobs": jobs.list_workspace_jobs(access, workspace_id)}))
 
     # ------------------------------------------------------------------ workspaces
+    @app.post("/api/v1/sources/github/resolve")
+    async def resolve_github_url(request: Request) -> Response:
+        return await guarded(request, lambda access, payload: _json(200, jobs.resolve_github_url(access, payload)), body=True)
+
     @app.post("/api/v1/workspaces")
     async def create_workspace(request: Request) -> Response:
         return await guarded(request, lambda access, payload: _json(201, jobs.create_workspace(access, payload)), body=True)

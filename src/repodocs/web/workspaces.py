@@ -30,6 +30,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Sequence
+from urllib.parse import quote, urlsplit
 
 from ..common import scrub, slugify, write_json_atomic
 from ..config import FULL_REVISION_PATTERN, ProjectConfig, RepositorySpec, ROLE_DESTINATION, ROLE_SOURCE, create_project
@@ -223,6 +224,79 @@ def fetch_bounded(url: str, timeout: float, max_bytes: int) -> bytes:
 # ---------------------------------------------------------------------------------------------
 
 
+def parse_github_url(raw_url: str) -> tuple[str, str]:
+    """Normalize a public https://github.com/<owner>/<repo>[.git][/] URL into (owner, repository).
+
+    Rejects credentials, non-https schemes, non-github.com hosts, ports, queries, fragments, and subpaths.
+    """
+
+    if not isinstance(raw_url, str) or not raw_url.strip() or len(raw_url) > 512:
+        raise WorkspaceError("Enter a public https://github.com/owner/repository URL")
+    candidate = raw_url.strip()
+    try:
+        parts = urlsplit(candidate)
+    except ValueError as exc:
+        raise WorkspaceError("The GitHub URL is not a valid URL") from exc
+    if parts.scheme.lower() != "https":
+        raise WorkspaceError("Only https://github.com repository URLs are supported")
+    if parts.username is not None or parts.password is not None or "@" in parts.netloc:
+        raise WorkspaceError("Credential-bearing URLs are not allowed")
+    host = (parts.hostname or "").lower()
+    if host not in ("github.com", "www.github.com") or parts.port is not None:
+        raise WorkspaceError("Only public github.com repository URLs are allowed")
+    if parts.query or parts.fragment:
+        raise WorkspaceError("GitHub repository URLs must not include query strings or fragments")
+    segments = [seg for seg in parts.path.split("/") if seg]
+    if len(segments) != 2:
+        raise WorkspaceError("Enter a repository URL of the form https://github.com/<owner>/<repository>")
+    owner, repo = segments
+    if repo.lower().endswith(".git"):
+        repo = repo[:-4]
+    if not GITHUB_OWNER.fullmatch(owner) or not GITHUB_REPOSITORY.fullmatch(repo) or repo in (".", ".."):
+        raise WorkspaceError("GitHub URL contains an invalid owner or repository name")
+    return owner, repo
+
+
+def resolve_github_source(
+    raw_url: str,
+    limits: SourceLimits,
+    http_get: HttpGet = fetch_bounded,
+) -> dict[str, Any]:
+    """Resolve a public github.com URL's default branch to one exact 40-char commit SHA without calling AI."""
+
+    owner, repository = parse_github_url(raw_url)
+
+    def fetch_json(url: str) -> Any:
+        body = http_get(url, limits.network_timeout_seconds, limits.max_response_bytes)
+        if len(body) > limits.max_response_bytes:
+            raise WorkspaceError(f"The response exceeded {limits.max_response_bytes} bytes")
+        try:
+            return json.loads(body)
+        except (ValueError, RecursionError):
+            raise WorkspaceError("GitHub returned a response that is not valid JSON") from None
+
+    repo_doc = fetch_json(f"https://api.github.com/repos/{owner}/{repository}")
+    if not isinstance(repo_doc, dict) or not isinstance(repo_doc.get("default_branch"), str) or not repo_doc["default_branch"].strip():
+        raise WorkspaceError("GitHub did not report a valid default branch for this repository")
+    default_branch = repo_doc["default_branch"].strip()
+    if any(ord(ch) < 32 or ch == "\x7f" for ch in default_branch) or ".." in default_branch:
+        raise WorkspaceError("GitHub returned an unsafe default branch name")
+
+    commit_doc = fetch_json(f"https://api.github.com/repos/{owner}/{repository}/commits/{quote(default_branch, safe='')}")
+    sha = commit_doc.get("sha") if isinstance(commit_doc, dict) else None
+    if not isinstance(sha, str) or not FULL_REVISION_PATTERN.fullmatch(sha):
+        raise WorkspaceError("GitHub did not return an exact 40-character commit SHA for the default branch")
+
+    return {
+        "kind": "github",
+        "owner": owner,
+        "repository": repository,
+        "default_branch": default_branch,
+        "revision": sha,
+        "canonical_url": f"https://github.com/{owner}/{repository}",
+    }
+
+
 def validate_github_source(source: GitHubSource) -> None:
     owner, repository, revision = source.owner, source.repository, source.revision
     if not isinstance(owner, str) or not GITHUB_OWNER.fullmatch(owner):
@@ -362,6 +436,8 @@ GIT_OPTIONS = (
     "-c", "core.protectNTFS=true",
     "-c", "core.protectHFS=true",
     "-c", "core.autocrlf=false",
+    # Git for Windows otherwise skips paths over 260 characters, so a deep checkout looks dirty. No-op elsewhere.
+    "-c", "core.longpaths=true",
     "-c", "credential.helper=",
     "-c", "protocol.allow=never",
     "-c", "protocol.https.allow=always",

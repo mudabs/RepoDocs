@@ -108,9 +108,11 @@ export function WorkflowPage({ onViewJob }: { onViewJob: (jobId: string) => void
   const [sources, setSources] = useState<AnySource[]>([])
   const [sourceKind, setSourceKind] = useState<'local' | 'github'>('local')
   const [localName, setLocalName] = useState('')
+  const [ghUrl, setGhUrl] = useState('')
   const [ghOwner, setGhOwner] = useState('')
   const [ghRepo, setGhRepo] = useState('')
   const [ghRevision, setGhRevision] = useState('')
+  const [resolvedBranch, setResolvedBranch] = useState<string | null>(null)
 
   useEffect(() => {
     return () => {
@@ -192,9 +194,33 @@ export function WorkflowPage({ onViewJob }: { onViewJob: (jobId: string) => void
     }
     setSources(prev => [...prev, pending])
     setLocalName('')
+    setGhUrl('')
     setGhOwner('')
     setGhRepo('')
     setGhRevision('')
+    setResolvedBranch(null)
+  }
+
+  async function handleResolveGitHubUrl(): Promise<AnySource | null> {
+    clearError()
+    if (!ghUrl.trim()) {
+      setError('Enter a public https://github.com/owner/repository URL')
+      return null
+    }
+    setBusy(true)
+    try {
+      const resolved = await client.resolveGitHubUrl(ghUrl.trim())
+      setGhOwner(resolved.owner)
+      setGhRepo(resolved.repository)
+      setGhRevision(resolved.revision)
+      setResolvedBranch(resolved.default_branch)
+      return { kind: 'github', owner: resolved.owner, repository: resolved.repository, revision: resolved.revision }
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err))
+      return null
+    } finally {
+      setBusy(false)
+    }
   }
 
   function handleRemoveSource(index: number) {
@@ -206,7 +232,15 @@ export function WorkflowPage({ onViewJob }: { onViewJob: (jobId: string) => void
     setBusy(true)
     try {
       let finalSources = [...sources]
-      const pending = buildPendingSource()
+      let pending = buildPendingSource()
+      if (!pending && sourceKind === 'github' && ghUrl.trim() && !ghRevision.trim()) {
+        const resolved = await client.resolveGitHubUrl(ghUrl.trim())
+        setGhOwner(resolved.owner)
+        setGhRepo(resolved.repository)
+        setGhRevision(resolved.revision)
+        setResolvedBranch(resolved.default_branch)
+        pending = { kind: 'github', owner: resolved.owner, repository: resolved.repository, revision: resolved.revision }
+      }
       if (pending) {
         finalSources.push(pending)
       }
@@ -498,22 +532,71 @@ export function WorkflowPage({ onViewJob }: { onViewJob: (jobId: string) => void
               </span>
             </label>
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
               <label style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
-                <span style={{ fontSize: '0.85rem', fontWeight: 500 }}>Owner</span>
-                <input type="text" value={ghOwner} onChange={e => setGhOwner(e.target.value)}
-                  placeholder="github-owner" style={{ padding: '0.4rem 0.6rem', border: '1px solid #d1d5db', borderRadius: '0.3rem', fontSize: '0.9rem' }} />
+                <span style={{ fontSize: '0.85rem', fontWeight: 500 }}>GitHub repository URL</span>
+                <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                  <input
+                    type="url"
+                    value={ghUrl}
+                    onChange={e => {
+                      // A new URL invalidates the previous pin, so an older repository or SHA is never used for it.
+                      setGhUrl(e.target.value)
+                      setResolvedBranch(null)
+                      setGhOwner('')
+                      setGhRepo('')
+                      setGhRevision('')
+                    }}
+                    placeholder="https://github.com/mudabs/EventShare"
+                    aria-label="GitHub repository URL"
+                    style={{ flex: 1, minWidth: '220px', padding: '0.4rem 0.6rem', border: '1px solid #d1d5db', borderRadius: '0.3rem', fontSize: '0.9rem' }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => { void handleResolveGitHubUrl() }}
+                    disabled={busy}
+                    style={{
+                      padding: '0.4rem 0.8rem',
+                      background: '#f3f4f6',
+                      color: '#1f2937',
+                      border: '1px solid #d1d5db',
+                      borderRadius: '0.3rem',
+                      fontWeight: 600,
+                      cursor: busy ? 'not-allowed' : 'pointer',
+                    }}
+                  >
+                    Resolve URL
+                  </button>
+                </div>
               </label>
-              <label style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
-                <span style={{ fontSize: '0.85rem', fontWeight: 500 }}>Repository</span>
-                <input type="text" value={ghRepo} onChange={e => setGhRepo(e.target.value)}
-                  placeholder="repo-name" style={{ padding: '0.4rem 0.6rem', border: '1px solid #d1d5db', borderRadius: '0.3rem', fontSize: '0.9rem' }} />
-              </label>
-              <label style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
-                <span style={{ fontSize: '0.85rem', fontWeight: 500 }}>Commit SHA (40 hex characters)</span>
-                <input type="text" value={ghRevision} onChange={e => setGhRevision(e.target.value)}
-                  placeholder="e.g. a1b2c3d4..." maxLength={40} style={{ padding: '0.4rem 0.6rem', border: '1px solid #d1d5db', borderRadius: '0.3rem', fontSize: '0.9rem', fontFamily: 'monospace' }} />
-              </label>
+              {resolvedBranch && ghOwner && ghRepo && ghRevision && (
+                <div role="status" style={{ fontSize: '0.82rem', color: '#166534', background: '#f0fdf4', border: '1px solid #86efac', borderRadius: '0.35rem', padding: '0.4rem 0.6rem' }}>
+                  Pinned <strong>{ghOwner}/{ghRepo}</strong> default branch <code>{resolvedBranch}</code> to commit{' '}
+                  <code>{ghRevision.slice(0, 12)}</code>
+                </div>
+              )}
+              <details>
+                <summary style={{ fontSize: '0.82rem', color: '#4b5563', cursor: 'pointer' }}>
+                  Advanced: explicit owner, repository, and commit SHA
+                </summary>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '0.5rem' }}>
+                  <label style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                    <span style={{ fontSize: '0.85rem', fontWeight: 500 }}>Owner</span>
+                    <input type="text" value={ghOwner} onChange={e => setGhOwner(e.target.value)}
+                      placeholder="github-owner" style={{ padding: '0.4rem 0.6rem', border: '1px solid #d1d5db', borderRadius: '0.3rem', fontSize: '0.9rem' }} />
+                  </label>
+                  <label style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                    <span style={{ fontSize: '0.85rem', fontWeight: 500 }}>Repository</span>
+                    <input type="text" value={ghRepo} onChange={e => setGhRepo(e.target.value)}
+                      placeholder="repo-name" style={{ padding: '0.4rem 0.6rem', border: '1px solid #d1d5db', borderRadius: '0.3rem', fontSize: '0.9rem' }} />
+                  </label>
+                  <label style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                    <span style={{ fontSize: '0.85rem', fontWeight: 500 }}>Commit SHA (40 hex characters)</span>
+                    <input type="text" value={ghRevision} onChange={e => setGhRevision(e.target.value)}
+                      placeholder="e.g. a1b2c3d4..." maxLength={40} style={{ padding: '0.4rem 0.6rem', border: '1px solid #d1d5db', borderRadius: '0.3rem', fontSize: '0.9rem', fontFamily: 'monospace' }} />
+                  </label>
+                </div>
+              </details>
             </div>
           )}
           {error && <div role="alert" style={{ color: '#dc2626', fontSize: '0.85rem' }}>{error}</div>}
