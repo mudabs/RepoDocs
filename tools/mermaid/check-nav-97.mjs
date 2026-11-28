@@ -1,4 +1,7 @@
 import puppeteer from 'puppeteer'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 const [baseUrl, browserPath, sourceName] = process.argv.slice(2)
 if (!baseUrl || !browserPath || !sourceName) {
@@ -23,11 +26,15 @@ async function clickButton(page, text) {
   }, text)
 }
 
-const browser = await puppeteer.launch({
+// A persistent profile, so a browser restart keeps the session cookie the way a real browser does.
+const profile = await mkdtemp(join(tmpdir(), 'repodocs-nav-97-'))
+const launch = () => puppeteer.launch({
   executablePath: browserPath,
   headless: true,
+  userDataDir: profile,
   args: ['--no-sandbox', '--disable-setuid-sandbox'],
 })
+let browser = await launch()
 
 const pageErrors = []
 
@@ -87,7 +94,17 @@ try {
   assert(storage.localLen === 0 && storage.sessionLen === 0, `Unexpected browser storage: ${JSON.stringify(storage)}`)
   assert(pageErrors.length === 0, `Uncaught page errors: ${pageErrors.join('; ')}`)
 
+  // 5. Browser restart: a new browser process with the same profile reopens the bookmarked result.
+  await browser.close()
+  browser = await launch()
+  const restarted = await browser.newPage()
+  restarted.on('pageerror', err => pageErrors.push(err.message))
+  await restarted.goto(viewerUrl, { waitUntil: 'networkidle0' })
+  await restarted.waitForSelector('[aria-label^="Diagram canvas for"] svg', { timeout: 20000 })
+  assert(pageErrors.length === 0, `Uncaught page errors after browser restart: ${pageErrors.join('; ')}`)
+
   console.log(JSON.stringify({ ok: true, viewerUrl, backUrl }))
 } finally {
-  await browser.close()
+  await browser.close().catch(() => {})
+  await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
 }
