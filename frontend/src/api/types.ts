@@ -241,3 +241,9 @@ export interface WorkspaceHistoryItem {
   updated_at?: number
   latest_job: Job | null
 }
+
+/** Models offered in provider setup: the operator's list, the price profile's model and installed local models. */
+export interface ModelCatalog {
+  models: Array<{ provider: ProviderKind; model: string; source: 'operator' | 'price-profile' | 'installed' }>
+  ollama_reachable: boolean
+}

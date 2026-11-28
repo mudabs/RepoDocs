@@ -118,6 +118,8 @@ class JobSettings:
     max_download_bytes: int = 16 * 1024 * 1024
     run_limits: RunLimits = RunLimits()
     prices: PriceProfile | None = None
+    # (provider, model) pairs the operator offers in provider setup (``--model``); browsers may still type others.
+    models: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
         for name in ("max_active_jobs", "max_queued_jobs", "max_jobs_per_workspace", "max_download_bytes"):

@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Sequence
 
 from ..ai.budgets import PriceProfile, RunLimits
+from .models import parse_model_option
 from ..errors import ConfigError
 from .cleanup import cleanup_workspaces
 from .jobs import JobSettings
@@ -125,6 +126,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Aggregate USD cost cap per architecture run (requires a complete --prices-file).",
     )
     parser.add_argument(
+        "--model",
+        action="append",
+        default=[],
+        metavar="PROVIDER:NAME",
+        help="A model to offer in provider setup, such as openai:gpt-5-mini or ollama:qwen2.5-coder:7b (repeatable). "
+        "Installed local Ollama models are listed automatically.",
+    )
+    parser.add_argument(
         "--prices-file",
         type=Path,
         default=None,
@@ -207,7 +216,12 @@ def build_job_settings(argv: Sequence[str] | None = None) -> JobSettings:
         except (OSError, ValueError, ConfigError) as exc:
             raise ValueError(f"Invalid --prices-file: {exc}") from exc
 
-    return JobSettings(run_limits=run_limits, prices=prices)
+    try:
+        models = tuple(parse_model_option(item) for item in args.model)
+    except ValueError as exc:
+        raise ValueError(str(exc)) from exc
+
+    return JobSettings(run_limits=run_limits, prices=prices, models=models)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
