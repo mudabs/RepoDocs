@@ -46,3 +46,19 @@ evidence navigation, revision badges, and artifact downloads.
 - Client-side Mermaid rendering uses the same `mermaid` ^11 package already pinned in
   `frontend/package.json`.
 - Artifact downloads remain gated by session cookies and backend manifest verification.
+
+## Amendment (#93): Mermaid styling under the page CSP and wide-diagram sizing
+
+- Mermaid writes its theme as a `<style>` element inside the SVG and sets inline `style` attributes on nodes and
+  edges. The page CSP had no `style-src`, so `default-src 'self'` blocked both, node boxes rendered black and labels
+  were unreadable. A nonce cannot cover style attributes, and hashing every generated attribute is impractical.
+- The page CSP therefore adds `style-src 'self' 'unsafe-inline'`. Nothing else is widened: `script-src 'self'`,
+  `object-src 'none'`, `base-uri 'none'`, `frame-ancestors 'none'` and `img-src 'self' data:` stay as they were,
+  so injected CSS cannot run script or load anything from another origin. Downloaded artifacts keep
+  `sandbox; default-src 'none'`.
+- As defense in depth, the viewer replaces `url(...)` in embedded SVG styles with `none`.
+- Browser tests no longer filter CSP console errors; any style violation now fails them.
+- The imported SVG's `width`/`height` are set from its `viewBox` before CSS scaling, so wide diagrams are not
+  shrunk twice. The first view of a very wide diagram starts at a readable scale (0.6) instead of a fit that would
+  make labels illegible; Fit, zoom and pan are unchanged.
+

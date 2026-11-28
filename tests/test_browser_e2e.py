@@ -166,3 +166,24 @@ def test_browser_auth_token_session_clears_input(tmp_path: Path) -> None:
         "inBody": False,
         "inHref": False,
     }
+
+
+def test_browser_poller_survives_a_dropped_job_read(tmp_path: Path) -> None:
+    """Regression: one failed job poll must not stop progress updates; the view keeps polling and shows the result."""
+    _browser_or_skip()
+    with _live_server(tmp_path) as base_url:
+        report = _run_browser(base_url, "poll-transient-error")
+    assert report["dropped"] == 1
+    assert report["pageErrors"] == []
+    assert "Succeeded" in report["text"]
+
+
+def test_browser_slow_provider_preview_still_requires_consent_before_submit(tmp_path: Path) -> None:
+    """Regression: the provider shows as connected only with its own preview, so a quick user reaches consent first."""
+    _browser_or_skip()
+    provider = Replay(asks, name="openai", external=True)
+    with _live_server(tmp_path, Factory(provider)) as base_url:
+        report = _run_browser(base_url, "consent-order-slow-preview")
+    assert report["pageErrors"] == []
+    assert report["submitBeforeConsent"] is False
+    assert "not current" in report["text"]

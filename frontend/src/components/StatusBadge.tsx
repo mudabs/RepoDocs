@@ -129,12 +129,16 @@ export function BudgetPreview({ budget, mode }: BudgetProps) {
         gap: '0.15rem 0.75rem',
       }}
     >
-      <span style={{ color: '#6b7280' }}>Requests:</span>
-      <span>{budget.count_requests} / {budget.requests}</span>
+      <span style={{ color: '#6b7280' }}>Generation requests:</span>
+      <span>{budget.requests} (remaining: {budget.remaining_requests})</span>
+      <span style={{ color: '#6b7280' }}>Token-count requests:</span>
+      <span>{budget.count_requests}</span>
       <span style={{ color: '#6b7280' }}>Tokens remaining:</span>
       <span>{fmt(budget.remaining_total_tokens)}</span>
       <span style={{ color: '#6b7280' }}>Cost remaining:</span>
       <span>{fmtCost(budget.remaining_cost_microunits)}</span>
+      <span style={{ color: '#6b7280' }}>Usage accounting:</span>
+      <span>{budget.usage_complete ? 'complete' : 'includes reserved/unknown bounds'}</span>
       {budget.stop_reason && (
         <>
           <span style={{ color: '#6b7280' }}>Stop reason:</span>

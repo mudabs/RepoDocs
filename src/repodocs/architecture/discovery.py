@@ -469,6 +469,15 @@ def _user_message(resolver: ContextResolver, context: dict[str, Any], *, round_n
     return canonical_json(message)
 
 
+def initial_prompt_inputs(config: ProjectConfig, ir: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
+    """Build the initial round-0 discovery prompt inputs without contacting any provider."""
+
+    resolver = ContextResolver(config, ir)
+    resolver.select_initial()
+    context = resolver.bundle()
+    return SYSTEM_PROMPT, _user_message(resolver, context, round_number=0, repair=False), RESPONSE_SCHEMA
+
+
 def discover(config: ProjectConfig, ir: dict[str, Any], provider: Provider) -> tuple[dict[str, Any], dict[str, Any]]:
     """Run the bounded exploration and return the view and the context it was given.
 
