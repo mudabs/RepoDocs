@@ -94,11 +94,19 @@ async function checkBoxByAria(page, ariaFragment) {
 }
 
 async function waitForText(page, text, timeout = 20000) {
-  await page.waitForFunction(
-    (t) => document.body && document.body.innerText.includes(t),
-    { timeout },
-    text,
-  );
+  try {
+    await page.waitForFunction(
+      (t) => document.body && document.body.innerText.includes(t),
+      { timeout },
+      text,
+    );
+  } catch (err) {
+    // Say what the page showed instead, so a timeout in CI explains itself.
+    const shown = await page.evaluate(() => (document.body ? document.body.innerText : '')).catch(() => '<unreadable>');
+    throw new Error(`Timed out after ${timeout}ms waiting for "${text}". Page text:
+${shown.slice(-1500)}
+${err}`);
+  }
 }
 
 const report = await withBrowser(async (browser) => {
@@ -146,6 +154,74 @@ const report = await withBrowser(async (browser) => {
       bodyLen: document.body.innerText.trim().length,
     }));
     return { ok: true, a11y, storageCheck, pageErrors, consoleErrors, text: await page.evaluate(() => document.body.innerText) };
+  }
+
+  if (scenario === 'poll-transient-error') {
+    // The first read of the submitted job is dropped at the network level; the view must keep polling and finish.
+    let dropped = 0;
+    await page.setRequestInterception(true);
+    page.on('request', (request) => {
+      if (dropped === 0 && request.method() === 'GET' && /\/api\/v1\/jobs\/[^/]+$/.test(new URL(request.url()).pathname)) {
+        dropped += 1;
+        request.abort('connectionfailed');
+        return;
+      }
+      request.continue();
+    });
+    await clickButton(page, 'Open session');
+    await waitForText(page, 'Select source repositories');
+    await typeIntoLabel(page, 'Source name', 'shop');
+    await clickButton(page, 'Create workspace');
+    await waitForText(page, 'Scan and preview');
+    await clickButton(page, 'Scan and preview');
+    await waitForText(page, 'Select mode');
+    await clickButton(page, 'Continue');
+    await waitForText(page, 'Budget limits');
+    await clickButton(page, 'Continue');
+    await waitForText(page, 'Submit job');
+    await clickButton(page, 'Submit job');
+    await waitForText(page, 'View diagrams', 30000);
+    return { ok: true, dropped, pageErrors, text: await page.evaluate(() => document.body.innerText) };
+  }
+
+  if (scenario === 'consent-order-slow-preview') {
+    // The preview bound to the new provider session answers slowly. Moving on quickly must still lead to the consent
+    // review, and Submit must stay unavailable until consent is granted.
+    await page.setRequestInterception(true);
+    page.on('request', (request) => {
+      if (request.method() === 'POST' && request.url().endsWith('/preview') && (request.postData() || '').includes('provider_session_id')) {
+        setTimeout(() => request.continue(), 1500);
+        return;
+      }
+      request.continue();
+    });
+    await clickButton(page, 'Open session');
+    await waitForText(page, 'Select source repositories');
+    await typeIntoLabel(page, 'Source name', 'shop');
+    await clickButton(page, 'Create workspace');
+    await clickButton(page, 'Scan and preview');
+    await waitForText(page, 'Select mode');
+    await clickRadioByLabel(page, 'Architecture');
+    await clickButton(page, 'Continue');
+    await waitForText(page, 'Connect provider');
+    await clickRadioByLabel(page, 'OpenAI');
+    await typeIntoLabel(page, 'Model', 'gpt-4o-mini');
+    await typeIntoLabel(page, 'API Key', CANARY);
+    await clickButton(page, 'Connect provider');
+    await waitForText(page, 'Provider connected');
+    await clickButton(page, 'Continue');
+    await waitForText(page, 'Budget limits');
+    await typeIntoLabel(page, 'Max AI requests', '1');
+    await clickButton(page, 'Continue');
+    await waitForText(page, 'Review and consent');
+    const submitBeforeConsent = await page.evaluate(() =>
+      Array.from(document.querySelectorAll('button')).some((b) => !b.disabled && b.textContent.trim() === 'Submit job'));
+    await checkBoxByAria(page, 'external provider');
+    await checkBoxByAria(page, 'source excerpts');
+    await clickButton(page, 'Grant consent and continue');
+    await clickButton(page, 'Submit job');
+    await waitForText(page, 'not current', 45000);
+    return { ok: true, submitBeforeConsent, pageErrors, text: await page.evaluate(() => document.body.innerText) };
   }
 
   if (scenario === 'architecture-canary-partial') {
