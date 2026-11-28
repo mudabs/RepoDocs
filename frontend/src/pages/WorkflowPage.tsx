@@ -127,6 +127,10 @@ export function WorkflowPage({ draftId, onSessionReady, onDraftRoute, onViewJob 
   const [ghRepo, setGhRepo] = useState('')
   const [ghRevision, setGhRevision] = useState('')
   const [resolvedBranch, setResolvedBranch] = useState<string | null>(null)
+  const [quickUrl, setQuickUrl] = useState('')
+  const [quickMode, setQuickMode] = useState<JobMode>('architecture')
+  const [quickStage, setQuickStage] = useState<string | null>(null)
+  const [showQuickProvider, setShowQuickProvider] = useState(false)
 
   useEffect(() => {
     return () => {
@@ -410,6 +414,108 @@ export function WorkflowPage({ draftId, onSessionReady, onDraftRoute, onViewJob 
     }
   }
 
+  async function handleGenerateArchitecture(overrideProvider?: ProviderResponse) {
+    clearError()
+    const targetProvider = overrideProvider ?? providerSession
+    if (quickMode === 'architecture' && !targetProvider) {
+      setShowQuickProvider(true)
+      return
+    }
+    setBusy(true)
+    try {
+      let finalSources: AnySource[] = [...sources]
+      if (quickUrl.trim()) {
+        setQuickStage('Resolving GitHub repository...')
+        const resolved = await client.resolveGitHubUrl(quickUrl.trim())
+        setGhOwner(resolved.owner)
+        setGhRepo(resolved.repository)
+        setGhRevision(resolved.revision)
+        setResolvedBranch(resolved.default_branch)
+        finalSources = [{ kind: 'github', owner: resolved.owner, repository: resolved.repository, revision: resolved.revision }]
+      } else if (finalSources.length === 0 && localName.trim()) {
+        finalSources = [{ kind: 'local', name: localName.trim() }]
+      }
+      if (finalSources.length === 0) {
+        setError('Enter a GitHub repository URL or select a source repository')
+        return
+      }
+      const first = finalSources[0]
+      const defaultName = first.kind === 'local' ? first.name : `${first.owner}-${first.repository}`
+      const wsName = workspaceName.trim() || defaultName
+
+      setQuickStage('Creating workspace and acquiring pinned source...')
+      const ws = await client.createWorkspace(wsName, finalSources)
+      setSources(finalSources)
+      setWorkspaceId(ws.workspace_id)
+
+      setQuickStage('Scanning repository and preparing context...')
+      const p = await client.preview(ws.workspace_id, quickMode === 'architecture' ? targetProvider?.provider_session_id : undefined)
+      setPreview(p)
+      setMode(quickMode)
+      const defaultViews: JobView[] = quickMode === 'architecture' ? ['overview', 'components', 'erd'] : ['overview', 'erd']
+      setSelectedViews(defaultViews)
+
+      if (quickMode === 'architecture' && p.budget?.preflight_ok === false) {
+        setStep('limits')
+        await persistDraft({ workspace_id: ws.workspace_id, workspace_name: wsName, sources: finalSources, mode: quickMode, views: defaultViews, step: 'limits' })
+        return
+      }
+      if (quickMode === 'architecture' && p.provider_is_external) {
+        setStep('consent')
+        await persistDraft({ workspace_id: ws.workspace_id, workspace_name: wsName, sources: finalSources, mode: quickMode, views: defaultViews, step: 'consent' })
+        return
+      }
+
+      setQuickStage('Submitting generation job...')
+      const limits: JobLimits = quickMode === 'deterministic'
+        ? { max_requests: 0, max_total_tokens: null, max_cost_microunits: 0, currency: 'USD' }
+        : {
+            max_requests: maxRequests,
+            max_total_tokens: Math.max(1, parseInt(maxTokens, 10) || 100000),
+            max_cost_microunits: maxCostDollars ? Math.round(parseFloat(maxCostDollars) * 1_000_000) : null,
+            currency: maxCostDollars ? 'USD' : null,
+          }
+      await persistDraft({
+        workspace_id: ws.workspace_id,
+        workspace_name: wsName,
+        sources: finalSources,
+        mode: quickMode,
+        views: defaultViews,
+        step: 'submit',
+        pending_idempotency_key: idempotencyKey,
+      })
+      const { job } = await client.submitJob({
+        contract_version: '1.0',
+        kind: 'request',
+        workspace_id: ws.workspace_id,
+        idempotency_key: idempotencyKey,
+        mode: quickMode,
+        provider_session_id: quickMode === 'architecture' ? (targetProvider?.provider_session_id ?? null) : null,
+        context_hash: quickMode === 'architecture' ? p.context_hash : null,
+        consent_receipt_id: null,
+        views: defaultViews,
+        limits,
+      })
+      setSubmittedJob(job)
+      setStep('poll')
+      await persistDraft({
+        workspace_id: ws.workspace_id,
+        workspace_name: wsName,
+        sources: finalSources,
+        mode: quickMode,
+        views: defaultViews,
+        step: 'poll',
+        active_job_id: job.job_id,
+        pending_idempotency_key: null,
+      })
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setQuickStage(null)
+      setBusy(false)
+    }
+  }
+
   async function handlePreview() {
     if (!workspaceId) return
     clearError()
@@ -632,6 +738,72 @@ export function WorkflowPage({ draftId, onSessionReady, onDraftRoute, onViewJob 
             }}
           >
             {busy ? 'Opening...' : 'Open session'}
+          </button>
+        </Card>
+      )}
+
+      {step === 'workspace' && (
+        <Card>
+          <strong style={{ fontSize: '1rem' }}>Generate architecture from repository URL</strong>
+          <p style={{ fontSize: '0.85rem', color: '#374151', margin: 0 }}>
+            Paste a public GitHub URL (or enter a local source below) and generate diagrams in one action.
+          </p>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+            <span style={{ fontSize: '0.85rem', fontWeight: 500 }}>Repository URL</span>
+            <input
+              type="url"
+              value={quickUrl}
+              onChange={e => setQuickUrl(e.target.value)}
+              placeholder="https://github.com/mudabs/EventShare"
+              aria-label="Quick GitHub repository URL"
+              style={{ padding: '0.45rem 0.65rem', border: '1px solid #d1d5db', borderRadius: '0.35rem', fontSize: '0.92rem' }}
+            />
+          </label>
+          <div role="group" aria-label="Quick generation mode" style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', fontSize: '0.85rem' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', cursor: 'pointer' }}>
+              <input type="radio" checked={quickMode === 'architecture'} onChange={() => setQuickMode('architecture')} />
+              <span>Architecture (AI)</span>
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', cursor: 'pointer' }}>
+              <input type="radio" checked={quickMode === 'deterministic'} onChange={() => { setQuickMode('deterministic'); setShowQuickProvider(false) }} />
+              <span>Deterministic (local-only, static facts only)</span>
+            </label>
+          </div>
+          {quickMode === 'architecture' && !providerSession && showQuickProvider && (
+            <div style={{ padding: '0.75rem', background: '#f8fafc', border: '1px solid #cbd5e1', borderRadius: '0.4rem' }}>
+              <strong style={{ fontSize: '0.88rem', display: 'block', marginBottom: '0.4rem' }}>
+                Connect an AI provider first
+              </strong>
+              <ProviderForm
+                onConnect={async opts => {
+                  const sess = await client.connectProvider(opts)
+                  setProviderSession(sess)
+                  setShowQuickProvider(false)
+                  await handleGenerateArchitecture(sess)
+                }}
+                connected={false}
+                error={error}
+              />
+            </div>
+          )}
+          {quickStage && <div role="status" style={{ fontSize: '0.85rem', color: '#1d4ed8' }}>{quickStage}</div>}
+          {error && <div role="alert" style={{ color: '#dc2626', fontSize: '0.85rem' }}>{error}</div>}
+          <button
+            type="button"
+            onClick={() => { void handleGenerateArchitecture() }}
+            disabled={busy}
+            style={{
+              padding: '0.55rem 1.15rem',
+              background: busy ? '#93c5fd' : '#2563eb',
+              color: '#fff',
+              border: 'none',
+              borderRadius: '0.4rem',
+              fontWeight: 600,
+              cursor: busy ? 'not-allowed' : 'pointer',
+              alignSelf: 'flex-start',
+            }}
+          >
+            {busy ? 'Working...' : quickMode === 'architecture' ? 'Generate architecture' : 'Generate deterministic diagrams'}
           </button>
         </Card>
       )}
