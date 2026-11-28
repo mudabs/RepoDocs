@@ -14,7 +14,7 @@ import type {
 import { ProviderForm } from '../components/ProviderForm'
 import { ConsentPanel } from '../components/ConsentPanel'
 import { JobPoller } from '../components/JobPoller'
-import { StatusBadge } from '../components/StatusBadge'
+import { BudgetPreview, StatusBadge } from '../components/StatusBadge'
 
 type Step =
   | 'source'
@@ -407,9 +407,11 @@ export function WorkflowPage({ draftId, onSessionReady, onDraftRoute, onViewJob 
       model: opts.model,
       ...(opts.api_key ? { api_key: opts.api_key } : {}),
     })
-    setProviderSession(sess)
+    // Show the provider as connected only together with the preview bound to it. A step taken on the older
+    // preview would not know the provider is external and could skip the consent review.
     const updatedPreview = await client.preview(workspaceId, sess.provider_session_id)
     setPreview(updatedPreview)
+    setProviderSession(sess)
   }
 
   async function handleProviderDisconnect() {
@@ -450,8 +452,10 @@ export function WorkflowPage({ draftId, onSessionReady, onDraftRoute, onViewJob 
     }
   }
 
+  const consentMissing = mode === 'architecture' && Boolean(preview?.provider_is_external) && !consentReceiptId
+
   async function handleSubmit() {
-    if (!workspaceId || !preview) return
+    if (!workspaceId || !preview || consentMissing) return
     clearError()
     setBusy(true)
     try {
@@ -492,6 +496,36 @@ export function WorkflowPage({ draftId, onSessionReady, onDraftRoute, onViewJob 
     setCompletedJob(job)
     setStep('done')
     void persistDraft({ step: 'done', active_job_id: job.job_id, pending_idempotency_key: null })
+  }
+
+  async function handleRetryWithSources() {
+    if (!workspaceId) return
+    clearError()
+    setBusy(true)
+    try {
+      const updated = await client.preview(workspaceId, providerSession?.provider_session_id)
+      setPreview(updated)
+      setConsentReceiptId(null)
+      setSubmittedJob(null)
+      setCompletedJob(null)
+      setIdempotencyKey(generateIdempotencyKey())
+      setStep('limits')
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  function handleNarrowScope() {
+    clearError()
+    setWorkspaceId(null)
+    setPreview(null)
+    setConsentReceiptId(null)
+    setSubmittedJob(null)
+    setCompletedJob(null)
+    setIdempotencyKey(generateIdempotencyKey())
+    setStep('workspace')
   }
 
   const doneSteps: Step[] = []
@@ -924,48 +958,91 @@ export function WorkflowPage({ draftId, onSessionReady, onDraftRoute, onViewJob 
         <Card>
           <StepHeader number={mode === 'architecture' ? 6 : 5} title="Budget limits" active={isActive('limits')} done={isDone('limits')} />
           {isActive('limits') && mode === 'architecture' && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-              <label style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
-                <span style={{ fontSize: '0.85rem', fontWeight: 500 }}>Max AI requests (1-6)</span>
-                <input
-                  type="number"
-                  min={1}
-                  max={6}
-                  value={maxRequests}
-                  onChange={e => setMaxRequests(Math.max(1, Math.min(6, parseInt(e.target.value, 10) || 1)))}
-                  style={{ width: '5rem', padding: '0.4rem 0.6rem', border: '1px solid #d1d5db', borderRadius: '0.3rem', fontSize: '0.9rem' }}
-                  aria-label="Maximum number of AI requests"
-                />
-              </label>
-              <label style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
-                <span style={{ fontSize: '0.85rem', fontWeight: 500 }}>Max tokens (required in architecture mode)</span>
-                <input
-                  type="number"
-                  min={1}
-                  required
-                  value={maxTokens}
-                  onChange={e => setMaxTokens(e.target.value)}
-                  placeholder="e.g. 100000"
-                  style={{ width: '10rem', padding: '0.4rem 0.6rem', border: '1px solid #d1d5db', borderRadius: '0.3rem', fontSize: '0.9rem' }}
-                  aria-label="Maximum total tokens"
-                />
-              </label>
-              <label style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
-                <span style={{ fontSize: '0.85rem', fontWeight: 500 }}>Max cost in USD (optional, leave blank for no cost limit)</span>
-                <input
-                  type="number"
-                  min={0}
-                  step={0.01}
-                  value={maxCostDollars}
-                  onChange={e => setMaxCostDollars(e.target.value)}
-                  placeholder="e.g. 0.50"
-                  style={{ width: '10rem', padding: '0.4rem 0.6rem', border: '1px solid #d1d5db', borderRadius: '0.3rem', fontSize: '0.9rem' }}
-                  aria-label="Maximum cost in USD"
-                />
-                <span style={{ fontSize: '0.78rem', color: '#6b7280' }}>
-                  Estimates are estimates only. Unknown costs are shown as "unknown", not zero.
-                </span>
-              </label>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+              {preview?.budget?.initial_request && (
+                <div
+                  aria-label="Per-request model capacity and preflight"
+                  style={{
+                    background: preview.budget.preflight_ok === false ? '#fef2f2' : '#f8fafc',
+                    border: `1px solid ${preview.budget.preflight_ok === false ? '#fca5a5' : '#cbd5e1'}`,
+                    borderRadius: '0.4rem',
+                    padding: '0.75rem',
+                    fontSize: '0.84rem',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '0.3rem',
+                  }}
+                >
+                  <strong>Per-request model capacity</strong>
+                  <span>
+                    Effective context window: <strong>{preview.budget.initial_request.context_window_tokens.toLocaleString()}</strong> tokens{' '}
+                    ({preview.budget.context_window_source === 'operator'
+                      ? 'configured by operator'
+                      : preview.budget.context_window_source === 'provider-default'
+                        ? 'provider default, not verified for served model'
+                        : 'fallback default (4,096), unverified for served model'})
+                  </span>
+                  <span>
+                    Reserved output per request: <strong>{preview.budget.initial_request.reserved_output_tokens.toLocaleString()}</strong> tokens
+                  </span>
+                  <span>
+                    Initial request estimate: <strong>{preview.budget.initial_request.input_tokens.toLocaleString()}</strong> input (
+                    {preview.budget.initial_request.estimate_method}) +{' '}
+                    <strong>{preview.budget.initial_request.reserved_output_tokens.toLocaleString()}</strong> output ={' '}
+                    <strong>{preview.budget.initial_request.total_tokens.toLocaleString()}</strong> tokens
+                  </span>
+                  {preview.budget.preflight_error && (
+                    <div role="alert" style={{ color: '#b91c1c', marginTop: '0.25rem' }}>
+                      {preview.budget.preflight_error.message}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                <strong style={{ fontSize: '0.88rem' }}>Aggregate job allowance</strong>
+                <label style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                  <span style={{ fontSize: '0.85rem', fontWeight: 500 }}>Max AI requests (1-6)</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={6}
+                    value={maxRequests}
+                    onChange={e => setMaxRequests(Math.max(1, Math.min(6, parseInt(e.target.value, 10) || 1)))}
+                    style={{ width: '5rem', padding: '0.4rem 0.6rem', border: '1px solid #d1d5db', borderRadius: '0.3rem', fontSize: '0.9rem' }}
+                    aria-label="Maximum number of AI requests"
+                  />
+                </label>
+                <label style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                  <span style={{ fontSize: '0.85rem', fontWeight: 500 }}>Aggregate total token cap across all requests</span>
+                  <input
+                    type="number"
+                    min={1}
+                    required
+                    value={maxTokens}
+                    onChange={e => setMaxTokens(e.target.value)}
+                    placeholder="e.g. 100000"
+                    style={{ width: '10rem', padding: '0.4rem 0.6rem', border: '1px solid #d1d5db', borderRadius: '0.3rem', fontSize: '0.9rem' }}
+                    aria-label="Maximum total tokens"
+                  />
+                </label>
+                <label style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                  <span style={{ fontSize: '0.85rem', fontWeight: 500 }}>Max cost in USD (optional, requires matching operator price profile)</span>
+                  <input
+                    type="number"
+                    min={0}
+                    step={0.01}
+                    value={maxCostDollars}
+                    onChange={e => setMaxCostDollars(e.target.value)}
+                    placeholder="e.g. 0.50"
+                    style={{ width: '10rem', padding: '0.4rem 0.6rem', border: '1px solid #d1d5db', borderRadius: '0.3rem', fontSize: '0.9rem' }}
+                    aria-label="Maximum cost in USD"
+                  />
+                  <span style={{ fontSize: '0.78rem', color: '#6b7280' }}>
+                    Estimates are upper bounds only. Missing pricing is shown as &quot;unknown&quot;, not zero.
+                  </span>
+                </label>
+              </div>
             </div>
           )}
           {isActive('limits') && mode === 'deterministic' && (
@@ -974,22 +1051,41 @@ export function WorkflowPage({ draftId, onSessionReady, onDraftRoute, onViewJob 
             </p>
           )}
           {isActive('limits') && (
-            <button
-              type="button"
-              onClick={handleLimitsNext}
-              style={{
-                padding: '0.5rem 1rem',
-                background: '#2563eb',
-                color: '#fff',
-                border: 'none',
-                borderRadius: '0.4rem',
-                fontWeight: 600,
-                cursor: 'pointer',
-                alignSelf: 'flex-start',
-              }}
-            >
-              Continue
-            </button>
+            <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                onClick={handleLimitsNext}
+                disabled={mode === 'architecture' && preview?.budget?.preflight_ok === false}
+                style={{
+                  padding: '0.5rem 1rem',
+                  background: mode === 'architecture' && preview?.budget?.preflight_ok === false ? '#93c5fd' : '#2563eb',
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: '0.4rem',
+                  fontWeight: 600,
+                  cursor: mode === 'architecture' && preview?.budget?.preflight_ok === false ? 'not-allowed' : 'pointer',
+                }}
+              >
+                Continue
+              </button>
+              {mode === 'architecture' && preview?.budget?.preflight_ok === false && (
+                <button
+                  type="button"
+                  onClick={handleNarrowScope}
+                  style={{
+                    padding: '0.5rem 1rem',
+                    background: '#fff',
+                    color: '#374151',
+                    border: '1px solid #d1d5db',
+                    borderRadius: '0.4rem',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                  }}
+                >
+                  Change sources
+                </button>
+              )}
+            </div>
           )}
           {isDone('limits') && mode === 'architecture' && (
             <span style={{ fontSize: '0.85rem', color: '#374151' }}>
@@ -1037,7 +1133,7 @@ export function WorkflowPage({ draftId, onSessionReady, onDraftRoute, onViewJob 
               <button
                 type="button"
                 onClick={handleSubmit}
-                disabled={busy}
+                disabled={busy || consentMissing}
                 style={{
                   padding: '0.5rem 1rem',
                   background: busy ? '#93c5fd' : '#2563eb',
@@ -1086,17 +1182,31 @@ export function WorkflowPage({ draftId, onSessionReady, onDraftRoute, onViewJob 
               role="alert"
               style={{
                 fontSize: '0.85rem',
-                background: '#fef3c7',
-                border: '1px solid #f59e0b',
+                background: completedJob.state === 'failed' ? '#fef2f2' : '#fef3c7',
+                border: `1px solid ${completedJob.state === 'failed' ? '#fca5a5' : '#f59e0b'}`,
                 borderRadius: '0.4rem',
-                padding: '0.5rem 0.75rem',
-                color: '#92400e',
+                padding: '0.6rem 0.75rem',
+                color: completedJob.state === 'failed' ? '#b91c1c' : '#92400e',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '0.35rem',
               }}
             >
-              This result is not current (not a complete success). It may be partial, stale, cancelled, or failed.
-              Inspect warnings before using any output.
+              <span>
+                This result is not current (not a complete success). It may be partial, stale, cancelled, or failed.
+                Inspect details before using any output.
+              </span>
+              {completedJob.error && (
+                <span>
+                  <strong>{completedJob.error.code}:</strong> {completedJob.error.message}
+                </span>
+              )}
             </div>
           )}
+
+          <BudgetPreview budget={completedJob.budget} mode={mode} />
+
+          {error && <div role="alert" style={{ color: '#dc2626', fontSize: '0.85rem' }}>{error}</div>}
 
           {completedJob.result && (
             <div style={{ fontSize: '0.85rem', color: '#374151' }}>
@@ -1116,24 +1226,43 @@ export function WorkflowPage({ draftId, onSessionReady, onDraftRoute, onViewJob 
             </div>
           )}
 
-          {completedJob.result && completedJob.result.artifact_ids.length > 0 && (
-            <button
-              type="button"
-              onClick={() => onViewJob(completedJob.job_id, activeDraftId)}
-              style={{
-                padding: '0.5rem 1rem',
-                background: '#2563eb',
-                color: '#fff',
-                border: 'none',
-                borderRadius: '0.4rem',
-                fontWeight: 600,
-                cursor: 'pointer',
-                alignSelf: 'flex-start',
-              }}
-            >
-              View diagrams
-            </button>
-          )}
+          <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+            {completedJob.result && completedJob.result.artifact_ids.length > 0 && (
+              <button
+                type="button"
+                onClick={() => onViewJob(completedJob.job_id, activeDraftId)}
+                style={{
+                  padding: '0.5rem 1rem',
+                  background: '#2563eb',
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: '0.4rem',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                }}
+              >
+                View diagrams
+              </button>
+            )}
+            {completedJob.state !== 'succeeded' && (
+              <button
+                type="button"
+                onClick={handleRetryWithSources}
+                disabled={busy}
+                style={{
+                  padding: '0.5rem 1rem',
+                  background: '#fff',
+                  color: '#1d4ed8',
+                  border: '1px solid #93c5fd',
+                  borderRadius: '0.4rem',
+                  fontWeight: 600,
+                  cursor: busy ? 'not-allowed' : 'pointer',
+                }}
+              >
+                {busy ? 'Revalidating...' : 'Retry with current sources'}
+              </button>
+            )}
+          </div>
         </Card>
       )}
 

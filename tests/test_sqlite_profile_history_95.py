@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
+import shutil
 import sqlite3
+import time
 from pathlib import Path
 
 import pytest
@@ -198,3 +201,192 @@ def test_corrupt_or_newer_schema_db_fails_closed_and_cleanup_preserves_saved_wor
     report = cleanup_workspaces(tmp_path / "store", max_age_seconds=0.0, now=9e12, store=store)
     assert ws_id not in report.deleted
     assert (tmp_path / "store" / ws_id).is_dir()
+
+
+def _open(client: TestClient) -> str:
+    response = client.post("/api/v1/session", headers={"Origin": ORIGIN})
+    assert response.status_code == 201, response.text
+    return response.json()["csrf_token"]
+
+
+def _workspace(client: TestClient, csrf: str, name: str = "Shop") -> str:
+    response = client.post(
+        "/api/v1/workspaces",
+        json={"name": name, "sources": [{"kind": "local", "name": "shop"}]},
+        headers={"Origin": ORIGIN, "x-csrf-token": csrf},
+    )
+    assert response.status_code == 201, response.text
+    return response.json()["workspace_id"]
+
+
+def _submit(client: TestClient, csrf: str, workspace_id: str) -> str:
+    response = client.post(
+        "/api/v1/jobs", json=request(workspace_id, mode="deterministic"), headers={"Origin": ORIGIN, "x-csrf-token": csrf}
+    )
+    assert response.status_code == 202, response.text
+    return response.json()["job_id"]
+
+
+def _finished(client: TestClient, job_id: str) -> dict:
+    for _ in range(400):
+        job = client.get(f"/api/v1/jobs/{job_id}", headers={"Origin": ORIGIN}).json()
+        if job["state"] not in ("queued", "preflight", "running"):
+            return job
+        time.sleep(0.05)
+    raise AssertionError("job did not finish")
+
+
+def _make_running(store_root: Path, workspace_id: str, job_id: str) -> None:
+    """Rewrite a job file as if the server had stopped during discovery."""
+
+    path = store_root / workspace_id / "jobs" / f"{job_id}.json"
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record["job"].update(state="running", stage="discover", result=None)
+    path.write_text(json.dumps(record), encoding="utf-8")
+
+
+def test_locked_store_times_out_with_store_error(tmp_path: Path) -> None:
+    store = WebStore(tmp_path / STORE_FILENAME, busy_timeout_ms=100)
+    holder = sqlite3.connect(str(tmp_path / STORE_FILENAME), isolation_level=None)
+    holder.execute("BEGIN EXCLUSIVE")
+    try:
+        started = time.monotonic()
+        with pytest.raises(StoreError):
+            store.create_profile("prof_locked")
+        assert time.monotonic() - started < 5
+    finally:
+        holder.execute("ROLLBACK")
+        holder.close()
+    assert store.create_profile("prof_locked")["profile_id"] == "prof_locked"
+
+
+def test_failing_metadata_writes_never_strand_a_job_and_reads_report_503(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    app = create_app(_settings(tmp_path))
+    with TestClient(app, base_url=ORIGIN) as c:
+        csrf = _open(c)
+        ws_id = _workspace(c, csrf)
+
+        def locked(*_: object, **__: object) -> None:
+            raise StoreError("Metadata store error: database is locked")
+
+        monkeypatch.setattr(WebStore, "save_job", locked)
+        assert _finished(c, _submit(c, csrf, ws_id))["state"] == "succeeded"
+
+        monkeypatch.setattr(WebStore, "list_workspaces", locked)
+        listed = c.get("/api/v1/workspaces", headers={"Origin": ORIGIN})
+        assert listed.status_code == 503
+        assert listed.json()["error"]["code"] == "store-unavailable"
+        assert listed.json()["error"]["retryable"] is True
+        assert "locked" not in listed.text and str(tmp_path) not in listed.text
+
+
+def test_interrupted_workspace_write_leaves_no_unowned_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    app = create_app(_settings(tmp_path))
+    with TestClient(app, base_url=ORIGIN) as c:
+        csrf = _open(c)
+
+        def fail(*_: object, **__: object) -> None:
+            raise StoreError("Metadata store error: disk I/O error")
+
+        monkeypatch.setattr(WebStore, "save_workspace", fail)
+        response = c.post(
+            "/api/v1/workspaces",
+            json={"name": "Lost", "sources": [{"kind": "local", "name": "shop"}]},
+            headers={"Origin": ORIGIN, "x-csrf-token": csrf},
+        )
+        assert response.status_code == 503
+        assert response.json()["error"]["code"] == "store-unavailable"
+    assert not list((tmp_path / "store").glob("ws-*"))
+
+
+def test_restart_marks_running_job_interrupted_and_never_calls_a_provider(tmp_path: Path) -> None:
+    with TestClient(create_app(_settings(tmp_path)), base_url=ORIGIN) as c1:
+        csrf = _open(c1)
+        cookie = c1.cookies.get(COOKIE_NAME)
+        ws_id = _workspace(c1, csrf)
+        job_id = _submit(c1, csrf, ws_id)
+        _finished(c1, job_id)
+    _make_running(tmp_path / "store", ws_id, job_id)
+
+    factory = Factory()  # building any provider fails the test
+    with TestClient(create_app(_settings(tmp_path), provider_factory=factory), base_url=ORIGIN) as c2:
+        c2.cookies.set(COOKIE_NAME, cookie, domain="127.0.0.1")
+        _open(c2)
+        assert c2.get(f"/api/v1/jobs/{job_id}", headers={"Origin": ORIGIN}).json()["state"] == "interrupted"
+        history = c2.get("/api/v1/workspaces", headers={"Origin": ORIGIN}).json()["workspaces"]
+        assert history[0]["latest_job"]["state"] == "interrupted"
+        time.sleep(0.3)
+    assert factory.contexts == []
+    stored = WebStore(tmp_path / "store" / STORE_FILENAME).list_jobs(history[0]["profile_id"], ws_id)
+    assert stored[0]["state"] == "interrupted"
+
+
+def test_legacy_workspaces_are_not_adopted_by_a_new_profile(tmp_path: Path) -> None:
+    legacy = WebSettings(
+        AccessConfig(),
+        WorkspaceSettings(tmp_path / "store", {"shop": shop(tmp_path)}),
+        JobSettings(run_limits=RunLimits(context_window_tokens=131072)),
+        use_store=False,
+    )
+    with TestClient(create_app(legacy), base_url=ORIGIN) as c1:
+        csrf = _open(c1)
+        ws_id = _workspace(c1, csrf)
+        job_id = _submit(c1, csrf, ws_id)
+        _finished(c1, job_id)
+    _make_running(tmp_path / "store", ws_id, job_id)
+
+    # Starting with the store over a pre-store layout must neither fail nor hand the old work to anyone new.
+    with TestClient(create_app(_settings(tmp_path), provider_factory=Factory()), base_url=ORIGIN) as c2:
+        _open(c2)
+        assert c2.get("/api/v1/workspaces", headers={"Origin": ORIGIN}).json()["workspaces"] == []
+        assert c2.get(f"/api/v1/jobs/{job_id}", headers={"Origin": ORIGIN}).status_code == 404
+        assert c2.get(f"/api/v1/workspaces/{ws_id}/jobs", headers={"Origin": ORIGIN}).status_code == 404
+    assert (tmp_path / "store" / ws_id).is_dir()
+
+
+def test_file_and_metadata_owner_mismatch_is_shown_to_nobody(tmp_path: Path) -> None:
+    with TestClient(create_app(_settings(tmp_path)), base_url=ORIGIN) as c1:
+        csrf = _open(c1)
+        cookie = c1.cookies.get(COOKIE_NAME)
+        ws_id = _workspace(c1, csrf)
+        gone_id = _workspace(c1, csrf, "Gone")
+        job_id = _submit(c1, csrf, ws_id)
+        _finished(c1, job_id)
+
+    db = tmp_path / "store" / STORE_FILENAME
+    WebStore(db).create_profile("prof_other")
+    conn = sqlite3.connect(str(db))
+    conn.execute("UPDATE workspaces SET profile_id = 'prof_other' WHERE workspace_id = ?", (ws_id,))
+    conn.commit()
+    conn.close()
+    shutil.rmtree(tmp_path / "store" / gone_id)  # metadata without files
+
+    with TestClient(create_app(_settings(tmp_path)), base_url=ORIGIN) as c2:
+        c2.cookies.set(COOKIE_NAME, cookie, domain="127.0.0.1")
+        _open(c2)
+        assert c2.get("/api/v1/workspaces", headers={"Origin": ORIGIN}).json()["workspaces"] == []
+        assert c2.get(f"/api/v1/jobs/{job_id}", headers={"Origin": ORIGIN}).status_code == 404
+
+
+def test_loopback_saved_session_lasts_30_days_and_exposed_keeps_8_hours(tmp_path: Path) -> None:
+    with TestClient(create_app(_settings(tmp_path)), base_url=ORIGIN) as c:
+        header = c.post("/api/v1/session", headers={"Origin": ORIGIN}).headers["set-cookie"]
+        assert f"Max-Age={30 * 24 * 3600}" in header
+
+    origin = "https://repodocs.example"
+    access = AccessConfig(bind_host="0.0.0.0", port=8000, public_origin=origin, auth_token="t" * 40)
+    with TestClient(create_app(_settings(tmp_path / "exposed", access=access)), base_url=origin) as c:
+        header = c.post("/api/v1/session", json={"auth_token": "t" * 40}, headers={"Origin": origin}).headers["set-cookie"]
+        assert f"Max-Age={8 * 3600}" in header
+
+
+def test_server_refuses_to_start_or_clean_up_over_a_corrupt_store(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    from repodocs.web import server
+
+    store = tmp_path / "store"
+    store.mkdir()
+    (store / STORE_FILENAME).write_bytes(b"not a sqlite database")
+    assert server.main(["--store-root", str(store)]) == 2
+    assert server.main(["--store-root", str(store), "--cleanup-max-age-hours", "1"]) == 2
+    assert "Restore" in capsys.readouterr().err
+    assert (store / STORE_FILENAME).read_bytes() == b"not a sqlite database"

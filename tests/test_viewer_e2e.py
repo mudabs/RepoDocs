@@ -99,11 +99,7 @@ def _assert_clean_report(report: dict[str, Any]) -> None:
     assert report["pageErrors"] == []
     assert report["dialogs"] == []
     assert report["badLinks"] == []
-    non_style_console = [
-        err for err in report["consoleErrors"]
-        if "Applying inline style violates the following Content Security Policy" not in err
-    ]
-    assert non_style_console == []
+    assert report["consoleErrors"] == []
     assert report["details"]["svgCount"] >= 1
     assert "Verified architecture" not in report["details"]["bodyText"]
     assert len(report["downloaded"]) >= 2

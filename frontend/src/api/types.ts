@@ -126,9 +126,22 @@ export interface PreviewExcerpt {
   text: string
 }
 
+export interface PreviewInitialRequest {
+  input_tokens: number
+  estimate_method: string
+  reserved_output_tokens: number
+  total_tokens: number
+  context_window_tokens: number
+  fits_context_window: boolean
+}
+
 export interface PreviewBudget {
   limits: {
+    context_window_tokens?: number
+    request_output_tokens?: number
     max_requests?: number
+    max_input_tokens?: number
+    max_output_tokens?: number
     max_total_tokens?: number | null
     max_cost_usd?: string | number | null
     [key: string]: unknown
@@ -136,6 +149,10 @@ export interface PreviewBudget {
   price_profile: Record<string, unknown> | null
   max_estimated_cost_usd: string | null
   notes: string[]
+  context_window_source?: 'operator' | 'provider-default' | 'fallback'
+  initial_request?: PreviewInitialRequest
+  preflight_ok?: boolean
+  preflight_error?: { code: string; message: string } | null
 }
 
 export interface PreviewSnapshot {

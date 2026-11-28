@@ -41,3 +41,7 @@ The CLI already performs scanning, bounded discovery, deterministic rendering an
 - Default production model and any funded allowances, provider retention terms and public hosting policy.
 - Changes to ADR-026's maximum context/disclosure limits and O13's additional human review requirement. Existing ceilings and uncertainty rules apply until separately approved.
 - University endpoint access and the bounded live-evaluation spend approval. No credential or paid experiment is required to implement fixtures and adapters.
+
+## Amendment (2026-11-27, #95)
+
+ADR-040 adds an optional web-only SQLite store for local profiles, hashed session authenticators and saved workspace/job history, so a legitimate owner keeps their work across browser and server restarts. Provider credentials and consent receipts remain in memory only, job files remain authoritative, and nothing resumes inference after a restart.
