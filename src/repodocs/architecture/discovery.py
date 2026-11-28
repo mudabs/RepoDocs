@@ -469,16 +469,20 @@ def _user_message(resolver: ContextResolver, context: dict[str, Any], *, round_n
     return canonical_json(message)
 
 
-def initial_prompt_inputs(config: ProjectConfig, ir: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
+def initial_prompt_inputs(
+    config: ProjectConfig, ir: dict[str, Any], max_context_bytes: int | None = None,
+) -> tuple[str, str, dict[str, Any]]:
     """Build the initial round-0 discovery prompt inputs without contacting any provider."""
 
-    resolver = ContextResolver(config, ir)
+    resolver = ContextResolver(config, ir, max_context_bytes=max_context_bytes)
     resolver.select_initial()
     context = resolver.bundle()
     return SYSTEM_PROMPT, _user_message(resolver, context, round_number=0, repair=False), RESPONSE_SCHEMA
 
 
-def discover(config: ProjectConfig, ir: dict[str, Any], provider: Provider) -> tuple[dict[str, Any], dict[str, Any]]:
+def discover(
+    config: ProjectConfig, ir: dict[str, Any], provider: Provider, max_context_bytes: int | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
     """Run the bounded exploration and return the view and the context it was given.
 
     Raises ``ProviderError`` when no response produced a single valid component. The view is
@@ -487,7 +491,7 @@ def discover(config: ProjectConfig, ir: dict[str, Any], provider: Provider) -> t
     exhausted budget keeps the best earlier proposal and marks the view partial with its reason.
     """
 
-    resolver = ContextResolver(config, ir)
+    resolver = ContextResolver(config, ir, max_context_bytes=max_context_bytes)
     resolver.select_initial()
     # The best proposal, its served model, and the exact context of the request that produced it.
     best: tuple[Validation, str, dict[str, Any]] | None = None
@@ -508,7 +512,7 @@ def discover(config: ProjectConfig, ir: dict[str, Any], provider: Provider) -> t
         payload = build_request(SYSTEM_PROMPT, user_message, RESPONSE_SCHEMA) if build_request else {
             "model": provider.model, "system": SYSTEM_PROMPT, "user": user_message, "schema": RESPONSE_SCHEMA,
         }
-        if len(canonical_json(payload).encode("utf-8")) > resolver.budgets["max_context_bytes"]:
+        if len(canonical_json(payload).encode("utf-8")) > resolver.payload_limit:
             partial = "context-budget"
             break
         resolver.count_request()

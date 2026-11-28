@@ -67,3 +67,28 @@ Consent (`ai.source_excerpts_consent`, `SOURCE_POLICY_VERSION`), disclosure ceil
 - Layers and rankings are heuristics from names; a repository with unusual layout may rank poorly. `coverage` shows what was and was not opened instead of hiding it.
 - Real usefulness against the pinned DigitalBoneBox and Flaskr sources is not claimed here. #54 and #77 remain the gate, and fixtures only show selection shape.
 - Out of scope: provider, configuration, CLI and service changes, and token-based budgets (#67). The discovery loop changes only in what it sends and in the final size check above.
+
+## Amendment (#77 verification): context fitted to the model's input allowance
+
+- Found during live #77 verification: EventShare at `93970207` produced 8 excerpts (43,773 context bytes) whose first
+  request measured 92,643 byte-bound tokens, against a 32,768-token window with 16,000 tokens reserved for output.
+  Preflight refused correctly, but the context budget (`max_context_bytes`, 200 KiB) did not depend on the model.
+- When a provider is known, `service.fitted_context_bytes` measures the first request with the same byte bound as
+  preflight, on the portable request envelope. If it does not fit the allowance (window minus reserved output minus
+  a 512-token margin for provider-specific fields), the total is stepped down and measured again. A context that
+  already fits gets no override, so its hash, consent and stored views are unchanged.
+- A fitted total shares excerpts across at least 14 files (each at least 768 bytes) and gives the path inventory a
+  tenth of the budget instead of a fifth, so the first round still spans repositories and layers. It bounds the
+  source context only; the whole request keeps the configured cap, and the run ledger still admits every request
+  against the real window.
+- The total is never fitted below 12 KiB (`MIN_USEFUL_CONTEXT_BYTES`). If that still does not fit, preflight refuses
+  as before and says the context was already at its smallest useful size; nothing is sent.
+- The budget depends only on the project's resolved `ai.limits` for the provider name, so CLI and web previews, job
+  admission, the job's own re-preview and discovery compute the same context and hash.
+- The preview reports `context_fit` before consent: whether the context was fitted, the fitted total, opened versus
+  candidate files, and layers with candidates but no excerpt. The home page shows it in the disclosure review and,
+  for a local model without a review step, beside progress and the result.
+- EventShare with these limits: 15,371 byte-bound input tokens (15,479 with the Ollama request body) plus 16,000
+  reserved output fits 32,768. 4 of 230 candidate files are included (README, `pom.xml`, one backend service, one
+  frontend component); the storage layer is not covered. A smaller output reserve (`--request-output-tokens`) leaves
+  more room for source; the default reserve is unchanged here.

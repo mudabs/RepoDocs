@@ -92,6 +92,17 @@ function usageSummary(job: Job): string {
   return `Model requests: ${requests}${counts ? `, token-count requests: ${counts}` : ''}; ${tokens}; ${cost}.`
 }
 
+function coverageNote(preview: PreviewResponse): string | null {
+  const fit = preview.context_fit
+  if (!fit) return null
+  const omitted = Object.entries(preview.omitted ?? {}).map(([reason, count]) => `${count} ${reason}`).join(', ')
+  const parts = [`${fit.opened_files} of ${fit.candidate_files} candidate source files are included.`]
+  if (fit.fitted) parts.push(`The context was reduced to ${fit.max_context_bytes.toLocaleString()} bytes to fit the model's input allowance.`)
+  if (fit.missing_layers.length > 0) parts.push(`Not covered: ${fit.missing_layers.join(', ')} files.`)
+  if (omitted) parts.push(`Left out: ${omitted}.`)
+  return parts.join(' ')
+}
+
 function plainOutcome(job: Job): string {
   switch (job.state) {
     case 'succeeded':
@@ -127,6 +138,7 @@ export function HomePage({ onViewJob, onAdvanced }: Props) {
   const [history, setHistory] = useState<WorkspaceHistoryItem[] | null>(null)
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
   const [announce, setAnnounce] = useState('')
+  const [coverage, setCoverage] = useState<string | null>(null)
   const keyRef = useRef<string>(newKey())
   const headingRef = useRef<HTMLHeadingElement>(null)
 
@@ -201,6 +213,7 @@ export function HomePage({ onViewJob, onAdvanced }: Props) {
       setPhase({ name: 'working', stage: 2 })
       setAnnounce(PREP_STAGES[2])
       const preview = await client.preview(workspace.workspace_id, active?.provider_session_id)
+      setCoverage(mode === 'architecture' ? coverageNote(preview) : null)
       void refreshHistory()
       if (mode === 'architecture' && active) {
         const budget = preview.budget
@@ -499,6 +512,12 @@ export function HomePage({ onViewJob, onAdvanced }: Props) {
                 })()}
               </dd>
             </dl>
+            {coverage && (
+              <div className={`rd-alert ${phase.preview.context_fit?.fitted ? 'rd-alert-warn' : 'rd-alert-info'}`}>
+                <strong>Coverage</strong>
+                <p>{coverage}</p>
+              </div>
+            )}
             {phase.preview.warnings.length > 0 && (
               <div className="rd-alert rd-alert-warn">
                 <strong>Context warnings</strong>
@@ -592,6 +611,7 @@ export function HomePage({ onViewJob, onAdvanced }: Props) {
                 {phase.job.error && <p>{phase.job.error.message}</p>}
               </div>
             )}
+            {coverage && <p className="rd-muted">Source coverage: {coverage}</p>}
             <p className="rd-muted">{usageSummary(phase.job)}</p>
             {error && <div role="alert" className="rd-alert rd-alert-error">{error}</div>}
             <div className="rd-row">

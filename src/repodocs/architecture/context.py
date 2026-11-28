@@ -56,6 +56,10 @@ README_MAX_LINES = 40
 MANIFEST_MAX_LINES = 80
 MIN_SUBSTANTIVE_BYTES = 350  # about ten lines; smaller files rank after every substantive file
 INVENTORY_FILES_PER_DIRECTORY = 12
+# A fitted total is shared by at least this many excerpts, each at least this large.
+FITTED_EXCERPTS = 14
+FITTED_INVENTORY_DIVISOR = 10
+MIN_FITTED_EXCERPT_BYTES = 768
 INSTRUCTION_RESERVE_BYTES = 6 * 1024  # the system prompt, the response schema and the message envelope of discovery
 MAX_OMITTED = 100
 MAX_UNOPENED = 5
@@ -88,9 +92,19 @@ def well_formed_path(path: str) -> bool:
 class ContextResolver:
     """Selects and serves bounded, redacted excerpts of one scan's snapshot."""
 
-    def __init__(self, config: ProjectConfig, ir: dict[str, Any]) -> None:
+    def __init__(self, config: ProjectConfig, ir: dict[str, Any], *, max_context_bytes: int | None = None) -> None:
         settings = config.architecture
         self.budgets = {**ARCHITECTURE_BUDGET_DEFAULTS, **settings.budgets}
+        # The whole request is still bounded by the configured total; a fitted total bounds only the source context,
+        # and the run ledger checks every request against the model's window before it is sent.
+        self.payload_limit = self.budgets["max_context_bytes"]
+        self.fitted = max_context_bytes is not None and max_context_bytes < self.budgets["max_context_bytes"]
+        if self.fitted:
+            # A total fitted to the model's input allowance (see ``service.fitted_context_bytes``). Excerpts shrink with
+            # it so the first round still spreads across repositories and layers instead of one file taking it all.
+            self.budgets["max_context_bytes"] = max_context_bytes
+            share = max(MIN_FITTED_EXCERPT_BYTES, max_context_bytes // FITTED_EXCERPTS)
+            self.budgets["max_excerpt_bytes"] = min(self.budgets["max_excerpt_bytes"], share)
         self.extra_deny = settings.deny_names
         self.ir = ir
         self.repositories: dict[str, tuple[Path, dict[str, dict[str, Any]]]] = {}
@@ -349,7 +363,9 @@ class ContextResolver:
         if self._inventory is not None:
             return self._inventory
         limit = self.budgets["max_inventory_paths"]
-        share = self.budgets["max_context_bytes"] // 5 // max(1, len(self.repositories))
+        # A context fitted to a small model window keeps more of its room for excerpts than for the path list.
+        divisor = FITTED_INVENTORY_DIVISOR if self.fitted else 5
+        share = self.budgets["max_context_bytes"] // divisor // max(1, len(self.repositories))
         result = []
         for repository_id in sorted(self.repositories):
             paths = [path for path in self.repositories[repository_id][1] if not self.is_denied(path)]
@@ -543,9 +559,11 @@ def context_hash(bundle: dict[str, Any]) -> str:
     return sha256_text(canonical_json(bundle))
 
 
-def build_context(config: ProjectConfig, ir: dict[str, Any]) -> tuple[dict[str, Any], ContextResolver]:
+def build_context(
+    config: ProjectConfig, ir: dict[str, Any], max_context_bytes: int | None = None,
+) -> tuple[dict[str, Any], ContextResolver]:
     """The first-round context for a scan, and the resolver that serves later requests."""
 
-    resolver = ContextResolver(config, ir)
+    resolver = ContextResolver(config, ir, max_context_bytes=max_context_bytes)
     resolver.select_initial()
     return resolver.bundle(), resolver
