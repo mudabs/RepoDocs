@@ -55,14 +55,13 @@ function messageOf(err: unknown): string {
 }
 
 function sourceLabel(source: Record<string, unknown>): string {
-  if (source.kind === 'github') {
-    const rev = typeof source.revision === 'string' ? source.revision.slice(0, 7) : ''
-    return `${source.owner}/${source.repository}${rev ? ` @ ${rev}` : ''}`
-  }
+  // Stored workspace sources carry `label` and the resolved `git` state, not the request's owner/repository fields.
   const git = source.git as Record<string, unknown> | undefined
-  const rev = typeof git?.git_revision === 'string' ? ` @ ${git.git_revision.slice(0, 7)}` : ''
+  const revision = typeof git?.git_revision === 'string' ? git.git_revision : typeof source.revision === 'string' ? source.revision : ''
+  const rev = revision ? ` @ ${revision.slice(0, 7)}` : ''
   const dirty = git?.working_tree_state === 'dirty' ? ' (uncommitted changes)' : ''
-  return `local: ${String(source.label ?? source.name ?? source.id ?? 'source')}${rev}${dirty}`
+  const name = String(source.label ?? source.name ?? source.id ?? 'source')
+  return `${source.kind === 'github' ? 'github.com/' : 'local: '}${name}${rev}${dirty}`
 }
 
 function sameSource(stored: Array<Record<string, unknown>>, wanted: AnySource): boolean {
