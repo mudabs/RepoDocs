@@ -29,6 +29,7 @@ _SOURCE_FRONTEND = Path(__file__).resolve().parents[3] / "frontend" / "dist"
 _FRONTEND_DIST = _PACKAGED_FRONTEND if _PACKAGED_FRONTEND.is_dir() else _SOURCE_FRONTEND
 
 from .health import health_payload, readiness_status
+from .models import installed_ollama_models, model_catalog
 from .jobs import CONTRACT_VERSION, JobError, JobService, JobSettings, ProviderFactory, build_provider
 from .security import (
     COOKIE_NAME,
@@ -90,6 +91,7 @@ def create_app(
     provider_factory: ProviderFactory = build_provider,
     workspace_manager: WorkspaceManager | None = None,
     frontend_dist: Path | None = ...,  # type: ignore[assignment]
+    ollama_models: Callable[[], list[str] | None] = installed_ollama_models,
 ) -> FastAPI:
     """The application for one local service. ``provider_factory`` and ``workspace_manager`` are test seams.
 
@@ -264,6 +266,13 @@ def create_app(
     @app.post("/api/v1/providers")
     async def connect_provider(request: Request) -> Response:
         return await guarded(request, lambda access, payload: _json(201, jobs.connect_provider(access, payload)), body=True)
+
+    @app.get("/api/v1/providers/models")
+    async def provider_models(request: Request) -> Response:
+        # Declared before /providers/{handle}. Lists what the operator's machine offers; no provider is contacted.
+        return await guarded(request, lambda access, _: _json(200, model_catalog(
+            settings.jobs.models, settings.jobs.prices, ollama_models,
+        )))
 
     @app.get("/api/v1/providers/{handle}")
     async def provider(request: Request, handle: str) -> Response:

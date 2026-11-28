@@ -9,6 +9,7 @@
 import type {
   AnySource,
   ConsentResponse,
+  ModelCatalog,
   DraftData,
   DraftRecord,
   Job,
@@ -142,6 +143,11 @@ export class RepoDocsClient {
     api_key?: string
   }): Promise<ProviderResponse> {
     return request<ProviderResponse>('POST', '/api/v1/providers', this.csrfToken, opts)
+  }
+
+  /** Models the operator's machine offers in provider setup. Contacts no provider and needs no key. */
+  async listModels(): Promise<ModelCatalog> {
+    return request<ModelCatalog>('GET', '/api/v1/providers/models', this.csrfToken)
   }
 
   async getProvider(handle: string): Promise<ProviderResponse> {
