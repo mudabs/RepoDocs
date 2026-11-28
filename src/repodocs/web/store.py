@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 STORE_FILENAME = "repodocs-web.sqlite3"
 
 _MIGRATION_V1 = """
@@ -74,9 +74,28 @@ CREATE TABLE IF NOT EXISTS jobs (
 CREATE INDEX IF NOT EXISTS idx_jobs_workspace ON jobs(workspace_id);
 """
 
+_MIGRATION_V2 = """
+CREATE TABLE IF NOT EXISTS drafts (
+    draft_id TEXT PRIMARY KEY,
+    profile_id TEXT NOT NULL REFERENCES profiles(profile_id) ON DELETE CASCADE,
+    version INTEGER NOT NULL DEFAULT 1,
+    data_json TEXT NOT NULL,
+    updated_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_drafts_profile ON drafts(profile_id);
+"""
+
 
 class StoreError(RuntimeError):
     """Raised when the web metadata store is corrupt, locked, or incompatible."""
+
+
+class DraftConflict(StoreError):
+    """A draft write named a version that is no longer current (another tab saved first)."""
+
+
+class DraftNotOwned(StoreError):
+    """The draft ID belongs to another profile; callers report it as not found."""
 
 
 @dataclass(frozen=True)
@@ -152,6 +171,15 @@ class WebStore:
                 conn.execute(
                     "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                     (1, time.time()),
+                )
+            if current < 2:
+                for stmt in _MIGRATION_V2.split(";"):
+                    sql = stmt.strip()
+                    if sql:
+                        conn.execute(sql)
+                conn.execute(
+                    "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                    (2, time.time()),
                 )
 
     def schema_version(self) -> int:
@@ -398,6 +426,82 @@ class WebStore:
                 }
                 for r in rows
             ]
+
+    # ------------------------------------------------------------------ drafts (#97)
+    def save_draft(
+        self,
+        draft_id: str,
+        profile_id: str,
+        data: dict[str, Any],
+        *,
+        expected_version: int | None = None,
+        now: float | None = None,
+    ) -> dict[str, Any]:
+        ts = time.time() if now is None else now
+        payload_json = json.dumps(data, ensure_ascii=False, sort_keys=True)
+        with self._tx(write=True) as conn:
+            row = conn.execute(
+                "SELECT profile_id, version FROM drafts WHERE draft_id = ?",
+                (draft_id,),
+            ).fetchone()
+            if row is None:
+                if expected_version is not None and expected_version != 0:
+                    raise DraftConflict("Draft version conflict")
+                version = 1
+                conn.execute(
+                    "INSERT INTO drafts(draft_id, profile_id, version, data_json, updated_at) VALUES (?, ?, ?, ?, ?)",
+                    (draft_id, profile_id, version, payload_json, ts),
+                )
+            else:
+                if row["profile_id"] != profile_id:
+                    raise DraftNotOwned("draft")
+                current_version = int(row["version"])
+                if expected_version is not None and expected_version != current_version:
+                    raise DraftConflict(f"Draft version conflict: expected {expected_version}, found {current_version}")
+                version = current_version + 1
+                conn.execute(
+                    "UPDATE drafts SET version = ?, data_json = ?, updated_at = ? WHERE draft_id = ?",
+                    (version, payload_json, ts, draft_id),
+                )
+        return {"draft_id": draft_id, "profile_id": profile_id, "version": version, "data": data, "updated_at": ts}
+
+    def get_draft(self, draft_id: str, profile_id: str) -> dict[str, Any] | None:
+        with self._tx(write=False) as conn:
+            row = conn.execute(
+                "SELECT * FROM drafts WHERE draft_id = ? AND profile_id = ?",
+                (draft_id, profile_id),
+            ).fetchone()
+            if row is None:
+                return None
+            return {
+                "draft_id": row["draft_id"],
+                "profile_id": row["profile_id"],
+                "version": int(row["version"]),
+                "data": json.loads(row["data_json"]),
+                "updated_at": row["updated_at"],
+            }
+
+    def list_drafts(self, profile_id: str) -> list[dict[str, Any]]:
+        with self._tx(write=False) as conn:
+            rows = conn.execute(
+                "SELECT * FROM drafts WHERE profile_id = ? ORDER BY updated_at DESC",
+                (profile_id,),
+            ).fetchall()
+            return [
+                {
+                    "draft_id": r["draft_id"],
+                    "profile_id": r["profile_id"],
+                    "version": int(r["version"]),
+                    "data": json.loads(r["data_json"]),
+                    "updated_at": r["updated_at"],
+                }
+                for r in rows
+            ]
+
+    def delete_draft(self, draft_id: str, profile_id: str) -> bool:
+        with self._tx(write=True) as conn:
+            cur = conn.execute("DELETE FROM drafts WHERE draft_id = ? AND profile_id = ?", (draft_id, profile_id))
+            return cur.rowcount > 0
 
     def backup_to(self, target_path: Path) -> None:
         """Create a consistent SQLite online backup at ``target_path``."""

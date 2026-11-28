@@ -1,13 +1,15 @@
-import { useEffect, useState } from 'react'
-import { client } from '../api/client'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { ApiError, client } from '../api/client'
 import type {
   AnySource,
+  DraftData,
   Job,
   JobLimits,
   JobMode,
   JobView,
   PreviewResponse,
   ProviderResponse,
+  WorkspaceHistoryItem,
 } from '../api/types'
 import { ProviderForm } from '../components/ProviderForm'
 import { ConsentPanel } from '../components/ConsentPanel'
@@ -95,10 +97,22 @@ function Card({ children }: { children: React.ReactNode }) {
   )
 }
 
-export function WorkflowPage({ onViewJob }: { onViewJob: (jobId: string) => void }) {
+interface WorkflowPageProps {
+  draftId?: string
+  onSessionReady?: () => void
+  onDraftRoute?: (draftId: string, replace?: boolean) => void
+  onViewJob: (jobId: string, draftId?: string) => void
+}
+
+export function WorkflowPage({ draftId, onSessionReady, onDraftRoute, onViewJob }: WorkflowPageProps) {
   const [step, setStep] = useState<Step>('source')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [activeDraftId, setActiveDraftId] = useState<string>(() => draftId || `draft_${generateIdempotencyKey().slice(0, 12)}`)
+  const draftVersionRef = useRef<number | undefined>(undefined)
+  const initializedDraftRef = useRef<string | null>(null)
+  const [draftConflict, setDraftConflict] = useState<string | null>(null)
+  const [savedWorkspaces, setSavedWorkspaces] = useState<WorkspaceHistoryItem[]>([])
 
   // Session auth (transient, never stored in browser storage)
   const [authToken, setAuthToken] = useState('')
@@ -148,6 +162,125 @@ export function WorkflowPage({ onViewJob }: { onViewJob: (jobId: string) => void
   const [idempotencyKey, setIdempotencyKey] = useState(() => generateIdempotencyKey())
   const [completedJob, setCompletedJob] = useState<Job | null>(null)
 
+  const persistDraft = useCallback(
+    async (overrides: Partial<DraftData> = {}, targetDraftId?: string) => {
+      if (!client.hasSession()) return
+      const id = targetDraftId || activeDraftId
+      const data: DraftData = {
+        workspace_id: overrides.workspace_id !== undefined ? overrides.workspace_id : workspaceId,
+        workspace_name: overrides.workspace_name !== undefined ? overrides.workspace_name : workspaceName,
+        sources: overrides.sources !== undefined ? overrides.sources : sources,
+        mode: overrides.mode !== undefined ? overrides.mode : mode,
+        views: overrides.views !== undefined ? overrides.views : selectedViews,
+        max_requests: overrides.max_requests !== undefined ? overrides.max_requests : maxRequests,
+        max_tokens: overrides.max_tokens !== undefined ? overrides.max_tokens : maxTokens,
+        max_cost_dollars: overrides.max_cost_dollars !== undefined ? overrides.max_cost_dollars : maxCostDollars,
+        step: overrides.step !== undefined ? overrides.step : step,
+        active_job_id:
+          overrides.active_job_id !== undefined
+            ? overrides.active_job_id
+            : (completedJob?.job_id ?? submittedJob?.job_id ?? null),
+        pending_idempotency_key:
+          overrides.pending_idempotency_key !== undefined ? overrides.pending_idempotency_key : null,
+      }
+      try {
+        const saved = await client.saveDraft(id, data, draftVersionRef.current)
+        draftVersionRef.current = saved.version
+        initializedDraftRef.current = id
+        setDraftConflict(null)
+        onDraftRoute?.(id, true)
+      } catch (err: unknown) {
+        if (err instanceof ApiError && err.status === 409) {
+          setDraftConflict('A newer draft was saved in another tab. Load latest before overwriting.')
+        }
+      }
+    },
+    [
+      activeDraftId,
+      workspaceId,
+      workspaceName,
+      sources,
+      mode,
+      selectedViews,
+      maxRequests,
+      maxTokens,
+      maxCostDollars,
+      step,
+      completedJob,
+      submittedJob,
+      onDraftRoute,
+    ],
+  )
+
+  const restoreFromDraft = useCallback(async (id: string) => {
+    const rec = await client.getDraft(id)
+    draftVersionRef.current = rec.version
+    setActiveDraftId(rec.draft_id)
+    const d = rec.data
+    if (d.workspace_name !== undefined) setWorkspaceName(d.workspace_name)
+    if (d.sources) setSources(d.sources)
+    if (d.workspace_id !== undefined) setWorkspaceId(d.workspace_id ?? null)
+    if (d.mode) setMode(d.mode)
+    if (d.views && d.views.length > 0) setSelectedViews(d.views)
+    if (d.max_requests !== undefined) setMaxRequests(d.max_requests)
+    if (d.max_tokens !== undefined) setMaxTokens(d.max_tokens)
+    if (d.max_cost_dollars !== undefined) setMaxCostDollars(d.max_cost_dollars)
+
+    if (d.active_job_id) {
+      const job = await client.getJob(d.active_job_id)
+      const terminal = ['succeeded', 'partial', 'budget-exhausted', 'cancelled', 'failed', 'interrupted', 'stale']
+      if (terminal.includes(job.state)) {
+        setCompletedJob(job)
+        setSubmittedJob(job)
+        setStep('done')
+      } else {
+        setSubmittedJob(job)
+        setStep('poll')
+      }
+      return
+    }
+    if (d.pending_idempotency_key) {
+      setIdempotencyKey(d.pending_idempotency_key)
+    }
+    if (d.workspace_id) {
+      const p = await client.preview(d.workspace_id)
+      setPreview(p)
+      const restoredStep = (d.step as Step | undefined) || 'mode'
+      // Never treat restored draft as having live provider credentials or consent
+      if (restoredStep === 'consent' || restoredStep === 'submit' || restoredStep === 'limits') {
+        setStep(d.mode === 'architecture' ? 'provider' : restoredStep)
+      } else {
+        setStep(restoredStep === 'source' ? 'workspace' : restoredStep)
+      }
+    } else {
+      setStep('workspace')
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!draftId || initializedDraftRef.current === draftId) return
+    initializedDraftRef.current = draftId
+    let cancelled = false
+    async function reconnectDraft() {
+      try {
+        if (!client.hasSession()) {
+          await client.openSession()
+          onSessionReady?.()
+        }
+        if (cancelled) return
+        const workspaces = await client.listWorkspaces().catch(() => [])
+        if (!cancelled) setSavedWorkspaces(workspaces)
+        await restoreFromDraft(draftId!)
+      } catch {
+        // Session may require explicit auth token on exposed server; remain on session step
+      }
+    }
+    void reconnectDraft()
+    return () => {
+      cancelled = true
+    }
+  }, [draftId, onSessionReady, restoreFromDraft])
+
   function clearError() {
     setError(null)
   }
@@ -159,7 +292,21 @@ export function WorkflowPage({ onViewJob }: { onViewJob: (jobId: string) => void
       const token = authToken.trim() || undefined
       await client.openSession(token)
       setAuthToken('')
+      onSessionReady?.()
+      const workspaces = await client.listWorkspaces().catch(() => [])
+      setSavedWorkspaces(workspaces)
+      if (draftId) {
+        initializedDraftRef.current = draftId
+        try {
+          await restoreFromDraft(draftId)
+          return
+        } catch {
+          // Fall back to workspace selection if draft is missing
+        }
+      }
+      initializedDraftRef.current = activeDraftId
       setStep('workspace')
+      onDraftRoute?.(activeDraftId, true)
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -255,6 +402,7 @@ export function WorkflowPage({ onViewJob }: { onViewJob: (jobId: string) => void
       setSources(finalSources)
       setWorkspaceId(ws.workspace_id)
       setStep('preview')
+      await persistDraft({ workspace_id: ws.workspace_id, workspace_name: wsName, sources: finalSources, step: 'preview' })
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -270,6 +418,7 @@ export function WorkflowPage({ onViewJob }: { onViewJob: (jobId: string) => void
       const p = await client.preview(workspaceId, providerSession?.provider_session_id)
       setPreview(p)
       setStep('mode')
+      await persistDraft({ step: 'mode' })
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -364,9 +513,12 @@ export function WorkflowPage({ onViewJob }: { onViewJob: (jobId: string) => void
         views: selectedViews,
         limits,
       }
+      // Persist pending idempotency key before POST so a lost response recovers without duplicate submission.
+      await persistDraft({ step: 'submit', pending_idempotency_key: idempotencyKey })
       const { job } = await client.submitJob(jobReq)
       setSubmittedJob(job)
       setStep('poll')
+      await persistDraft({ step: 'poll', active_job_id: job.job_id, pending_idempotency_key: null })
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -377,6 +529,7 @@ export function WorkflowPage({ onViewJob }: { onViewJob: (jobId: string) => void
   function handleJobComplete(job: Job) {
     setCompletedJob(job)
     setStep('done')
+    void persistDraft({ step: 'done', active_job_id: job.job_id, pending_idempotency_key: null })
   }
 
   async function handleRetryWithSources() {
@@ -429,6 +582,19 @@ export function WorkflowPage({ onViewJob }: { onViewJob: (jobId: string) => void
         RepoDocs: Generate repository diagrams
       </h1>
 
+      {draftConflict && (
+        <div role="alert" style={{ marginBottom: '1rem', padding: '0.6rem 0.8rem', background: '#fef3c7', border: '1px solid #f59e0b', borderRadius: '0.4rem', fontSize: '0.85rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.75rem' }}>
+          <span>{draftConflict}</span>
+          <button
+            type="button"
+            onClick={() => { void restoreFromDraft(activeDraftId) }}
+            style={{ padding: '0.3rem 0.7rem', background: '#fff', border: '1px solid #d97706', borderRadius: '0.3rem', cursor: 'pointer', fontWeight: 600 }}
+          >
+            Load latest draft
+          </button>
+        </div>
+      )}
+
       {/* Step 1: Open session (optional auth token for self-hosted / non-loopback) */}
       {step === 'source' && !workspaceId && (
         <Card>
@@ -467,6 +633,44 @@ export function WorkflowPage({ onViewJob }: { onViewJob: (jobId: string) => void
           >
             {busy ? 'Opening...' : 'Open session'}
           </button>
+        </Card>
+      )}
+
+      {step === 'workspace' && savedWorkspaces.length > 0 && (
+        <Card>
+          <strong style={{ fontSize: '0.95rem' }}>Saved workspaces</strong>
+          <ul aria-label="Saved workspaces" style={{ margin: 0, padding: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+            {savedWorkspaces.map(ws => (
+              <li key={ws.workspace_id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', fontSize: '0.85rem', padding: '0.4rem 0.6rem', background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: '0.35rem' }}>
+                <span>
+                  <strong>{ws.name}</strong> ({ws.workspace_id.slice(0, 10)}...)
+                  {ws.latest_job ? ` - ${ws.latest_job.state}` : ''}
+                </span>
+                <div style={{ display: 'flex', gap: '0.5rem' }}>
+                  {ws.latest_job && ws.latest_job.result && ws.latest_job.result.artifact_ids.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => onViewJob(ws.latest_job!.job_id, activeDraftId)}
+                      style={{ fontSize: '0.8rem', color: '#2563eb', background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline' }}
+                    >
+                      Open result
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void client.deleteWorkspace(ws.workspace_id).then(() => {
+                        setSavedWorkspaces(prev => prev.filter(item => item.workspace_id !== ws.workspace_id))
+                      })
+                    }}
+                    style={{ fontSize: '0.8rem', color: '#dc2626', background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline' }}
+                  >
+                    Delete
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
         </Card>
       )}
 
@@ -1109,7 +1313,7 @@ export function WorkflowPage({ onViewJob }: { onViewJob: (jobId: string) => void
             {completedJob.result && completedJob.result.artifact_ids.length > 0 && (
               <button
                 type="button"
-                onClick={() => onViewJob(completedJob.job_id)}
+                onClick={() => onViewJob(completedJob.job_id, activeDraftId)}
                 style={{
                   padding: '0.5rem 1rem',
                   background: '#2563eb',

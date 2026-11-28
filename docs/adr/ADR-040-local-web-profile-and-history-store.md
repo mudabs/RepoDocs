@@ -61,3 +61,22 @@ without moving the engine into a database and without persisting credentials or 
   `ws-*` directories; restore both while the server is stopped.
 - Logging out makes saved history unreachable from the browser until an operator deletes it.
   Multi-user accounts, sign-in, OAuth and recovery flows remain deferred.
+
+## Amendment (#97): workflow drafts and browser routes
+
+- Schema version 2 adds a `drafts` table (`draft_id`, `profile_id`, `version`, `data_json`, `updated_at`). The
+  migration from version 1 is transactional like the others.
+- Routes: `GET /api/v1/drafts`, `GET|PUT|DELETE /api/v1/drafts/{draft_id}`, behind the same session and owner checks.
+  A draft holds only non-secret workflow state: sources and resolved revisions, workspace ID, mode, views, non-secret
+  provider choice, requested limits, step, the active job ID and a pending idempotency key. Keys named like
+  credentials or consent (`api_key`, `auth_token`, `csrf_token`, `consent_receipt_id`, `secret`, `password`) are
+  refused with 422.
+- `PUT` takes an optional `expected_version`; a stale version returns 409 `conflict`, so a second tab cannot silently
+  overwrite a newer draft. A draft ID owned by another profile returns 404, never revealing that it exists. A busy or
+  failing store returns 503 `store-unavailable`.
+- The UI persists the pending idempotency key before `POST /api/v1/jobs`, so reconnecting after a lost response
+  replays the same request and receives the existing job (200), never a second one.
+- `/workflow/{draft_id}`, `/viewer/{job_id}` and `/jobs/{job_id}` serve the single-page app. Restoring a draft never
+  restores a provider session or consent: both live in server memory, so after a restart the provider reads as
+  disconnected and a new request needs a fresh preview and consent; a changed source makes the old preview stale
+  (409 `stale-preview`).

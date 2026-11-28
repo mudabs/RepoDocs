@@ -206,3 +206,35 @@ export interface ConsentResponse {
 export interface SessionResponse {
   csrf_token: string
 }
+
+export interface DraftData {
+  workspace_id?: string | null
+  workspace_name?: string
+  sources?: AnySource[]
+  mode?: JobMode
+  views?: JobView[]
+  provider_config?: { provider: ProviderKind; host: string; model: string } | null
+  max_requests?: number
+  max_tokens?: string
+  max_cost_dollars?: string
+  step?: string
+  active_job_id?: string | null
+  pending_idempotency_key?: string | null
+}
+
+export interface DraftRecord {
+  draft_id: string
+  profile_id: string
+  version: number
+  data: DraftData
+  updated_at?: number
+}
+
+export interface WorkspaceHistoryItem {
+  workspace_id: string
+  profile_id: string
+  name: string
+  sources: Array<Record<string, unknown>>
+  saved: boolean
+  latest_job: Job | null
+}
