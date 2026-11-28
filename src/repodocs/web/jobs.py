@@ -35,6 +35,8 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Callable, Mapping
 from urllib.parse import urlsplit
 
+from .store import StoreError
+
 if TYPE_CHECKING:
     from .store import WebStore
 
@@ -406,10 +408,13 @@ class JobService:
             directory = None if root is None else root / JOBS_DIRECTORY
             if directory is None or directory.is_symlink() or not directory.is_dir():
                 continue
+            recorded = self._recorded_owner(workspace_id)
             for path in sorted(directory.glob("job_*.json"))[: self.settings.max_jobs_per_workspace]:
                 job = self._load(path, workspace_id)
                 if job is None:
                     continue
+                if recorded is not None and job.owner != recorded:
+                    continue  # file and metadata disagree about the owner: show it to nobody
                 self._workspaces.setdefault(workspace_id, _Workspace(workspace_id, job.owner, root))  # type: ignore[arg-type]
                 if job.state in ACTIVE_STATES:
                     started = job.stage in ("discover", "generate", "validate")
@@ -425,6 +430,11 @@ class JobService:
                         job.usage = dict(NO_REQUESTS)
                     job.sequence += 1
                     self._persist(job)
+                elif self._store is not None:
+                    try:
+                        self._store_job(job)  # reconcile history that a failed metadata write left behind
+                    except StoreError:
+                        pass
                 self._jobs[job.job_id] = job
                 self._keys[(job.owner, job.workspace_id, job.idempotency_key)] = job.job_id
         if self._store is not None:
@@ -435,6 +445,12 @@ class JobService:
                 root = _owned_path(self._manager.settings.store_root, workspace_id)
                 if record is not None and root is not None:
                     self._workspaces[workspace_id] = _Workspace(workspace_id, record["profile_id"], root)
+
+    def _recorded_owner(self, workspace_id: str) -> str | None:
+        if self._store is None:
+            return None
+        record = self._store.get_workspace(workspace_id)
+        return None if record is None else str(record["profile_id"])
 
     def _load(self, path: Path, workspace_id: str) -> _Job | None:
         try:
@@ -459,23 +475,32 @@ class JobService:
             "request_hash": job.request_hash, "artifacts": job.artifacts, "created_at": job.created_at, "job": job.public(),
         })
         if self._store is not None:
-            self._store.save_job(
-                job_id=job.job_id,
-                workspace_id=job.workspace_id,
-                profile_id=job.owner,
-                idempotency_key=job.idempotency_key,
-                request_hash=job.request_hash,
-                state=job.state,
-                stage=job.stage,
-                sequence=job.sequence,
-                error=job.error,
-                result=job.result,
-                usage=job.usage,
-                budget=job.budget,
-                artifacts=job.artifacts,
-                created_at=job.created_at,
-                updated_at=self._clock(),
-            )
+            # The job file above is the authoritative record and is rebuilt into the store's history on restart. A locked
+            # or failing metadata store must never stop a worker or leave a job without its terminal state.
+            try:
+                self._store_job(job)
+            except StoreError:
+                pass
+
+    def _store_job(self, job: _Job) -> None:
+        assert self._store is not None
+        self._store.save_job(
+            job_id=job.job_id,
+            workspace_id=job.workspace_id,
+            profile_id=job.owner,
+            idempotency_key=job.idempotency_key,
+            request_hash=job.request_hash,
+            state=job.state,
+            stage=job.stage,
+            sequence=job.sequence,
+            error=job.error,
+            result=job.result,
+            usage=job.usage,
+            budget=job.budget,
+            artifacts=job.artifacts,
+            created_at=job.created_at,
+            updated_at=self._clock(),
+        )
 
     # ------------------------------------------------------------------ workspaces and previews
     def create_workspace(self, access: Access, payload: Any) -> dict[str, Any]:
@@ -504,10 +529,14 @@ class JobService:
         config.ai = replace(config.ai, limits=self.settings.run_limits, prices=self.settings.prices)
         config.save()
         source_dicts = [record.to_dict() for record in workspace.sources]
+        if self._store is not None:
+            try:
+                self._store.save_workspace(workspace.workspace_id, access.owner, payload["name"], source_dicts, now=self._clock())
+            except StoreError:
+                shutil.rmtree(workspace.root, ignore_errors=True)
+                raise JobError("store-unavailable", "The saved-history store is unavailable; no workspace was kept. Try again", 503) from None
         with self._cond:
             self._workspaces[workspace.workspace_id] = _Workspace(workspace.workspace_id, access.owner, workspace.root)
-        if self._store is not None:
-            self._store.save_workspace(workspace.workspace_id, access.owner, payload["name"], source_dicts, now=self._clock())
         return {"workspace_id": workspace.workspace_id, "sources": source_dicts}
 
     # ------------------------------------------------------------------ profile & history (#95)

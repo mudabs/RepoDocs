@@ -123,11 +123,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"repodocs-web: {exc}", file=sys.stderr)
         return 2
 
-    if cleanup_hours is not None:
-        from .store import STORE_FILENAME, WebStore
+    from .store import STORE_FILENAME, StoreError, WebStore
 
+    if cleanup_hours is not None:
         store_path = workspaces.store_root / STORE_FILENAME
-        store = WebStore(store_path) if store_path.exists() else None
+        try:
+            store = WebStore(store_path) if store_path.exists() else None
+        except StoreError as exc:
+            print(f"repodocs-web: {exc}; nothing was cleaned up", file=sys.stderr)
+            return 2
         cleanup_workspaces(workspaces.store_root, max_age_seconds=cleanup_hours * 3600.0, store=store)
 
     try:
@@ -139,7 +143,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 2 if str(exc) else 2
 
-    serve(WebSettings(access=access, workspaces=workspaces, frontend_dist=frontend_dist))
+    try:
+        serve(WebSettings(access=access, workspaces=workspaces, frontend_dist=frontend_dist))
+    except StoreError as exc:
+        # A corrupt, newer or locked metadata store fails closed; it is never replaced or silently reset.
+        print(f"repodocs-web: {exc}. Restore {STORE_FILENAME} from a backup or move it aside to start empty", file=sys.stderr)
+        return 2
     return 0
 
 

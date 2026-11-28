@@ -83,3 +83,7 @@ Errors use one envelope (`kind: error`, a stable code, a sanitized message, `ret
 - `views` select which artifacts a result references; the engine still generates its full set. Scoped views are #74, interactive evidence and the remaining downloads #75.
 - `ai-interpret` and `publish` are not exposed over HTTP.
 - Tests use replayed providers and dummy credentials only. Live model quality is unmeasured here; #54 and #77 remain the gate.
+
+## Amendment (2026-11-27, #95)
+
+ADR-040 adds an optional web-only SQLite store for local profiles, hashed session authenticators and saved workspace/job history, so a legitimate owner keeps their work across browser and server restarts. Provider credentials and consent receipts remain in memory only, job files remain authoritative, and nothing resumes inference after a restart.
