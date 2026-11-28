@@ -6,6 +6,15 @@ export function scopeOfArtifact(artifactId: string): DiagramScope {
   return 'overview'
 }
 
+export function labelOfArtifact(artifactId: string): string {
+  if (artifactId === 'architecture-view.mmd') return 'Architecture overview'
+  if (artifactId.startsWith('architecture-view-')) return `Subsystem: ${artifactId.replace(/^architecture-view-|\.mmd$/g, '')}`
+  if (artifactId.startsWith('erd')) return 'Database ERD'
+  if (artifactId === 'overview.mmd') return 'Static overview'
+  if (artifactId === 'architecture.mmd') return 'Repository overview'
+  return artifactId
+}
+
 interface Props {
   artifactIds: string[]
   selectedArtifactId: string | null
@@ -25,7 +34,6 @@ export function ScopeSelector({ artifactIds, selectedArtifactId, onSelect }: Pro
     <div role="tablist" aria-label="Diagram scope selector" style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
       {mmdArtifacts.map(id => {
         const selected = id === selectedArtifactId
-        const scope = scopeOfArtifact(id)
         return (
           <button
             key={id}
@@ -44,7 +52,8 @@ export function ScopeSelector({ artifactIds, selectedArtifactId, onSelect }: Pro
               cursor: 'pointer',
             }}
           >
-            {scope}: {id}
+            {labelOfArtifact(id)}
+            {labelOfArtifact(id) !== id && <span style={{ fontWeight: 400, color: '#4b5563' }}> ({id})</span>}
           </button>
         )
       })}

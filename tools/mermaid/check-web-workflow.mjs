@@ -110,7 +110,7 @@ const report = await withBrowser(async (browser) => {
     if (msg.type() === 'error') consoleErrors.push(msg.text());
   });
 
-  await page.goto(baseUrl, { waitUntil: 'networkidle0', timeout: 20000 });
+  await page.goto(`${baseUrl}/workflow`, { waitUntil: 'networkidle0', timeout: 20000 });
   const a11y = await page.evaluate(() => ({
     hasMain: Boolean(document.querySelector('main')),
     hasH1: Boolean(document.querySelector('h1')),

@@ -78,10 +78,6 @@ export function ViewerPage({ jobId, onBack }: Props) {
   return (
     <main
       style={{
-        maxWidth: '1120px',
-        margin: '1.5rem auto',
-        padding: '0 1rem',
-        fontFamily: 'system-ui, sans-serif',
         display: 'flex',
         flexDirection: 'column',
         gap: '1rem',
@@ -101,8 +97,9 @@ export function ViewerPage({ jobId, onBack }: Props) {
             textDecoration: 'underline',
           }}
         >
-          Back to workflow
+          Back
         </button>
+        <h1 style={{ fontSize: '1.4rem', margin: 0, flex: '1 1 auto' }}>Architecture diagrams</h1>
 
         {job && (
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
@@ -188,14 +185,7 @@ export function ViewerPage({ jobId, onBack }: Props) {
             }}
           />
 
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'minmax(0, 2fr) minmax(280px, 1fr)',
-              gap: '1rem',
-              alignItems: 'start',
-            }}
-          >
+          <div className="repodocs-viewer-grid">
             <div>
               {selectedArtifact ? (
                 <DiagramViewer
