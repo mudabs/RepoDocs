@@ -40,17 +40,25 @@ def remove(path: Path) -> None:
         shutil.rmtree(path, onerror=writable)
 
 
-def run(args: list[str], cwd: Path | None = None, check: bool = True) -> tuple[int, str, float]:
+TIMED_OUT = 124
+
+
+def run(args: list[str], cwd: Path | None = None, check: bool = True, timeout: float | None = None) -> tuple[int, str, float]:
     started = time.perf_counter()
-    done = subprocess.run(args, cwd=cwd, capture_output=True, text=True, encoding="utf-8", check=False)
+    try:
+        done = subprocess.run(args, cwd=cwd, capture_output=True, text=True, encoding="utf-8", check=False, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        output = (exc.stdout or "") + (exc.stderr or "")
+        output = output.decode("utf-8", "replace") if isinstance(output, bytes) else output
+        return TIMED_OUT, f"timed out after {timeout} s\n{output}", round(time.perf_counter() - started, 3)
     elapsed = round(time.perf_counter() - started, 3)
     if check and done.returncode != 0:
         raise SystemExit(f"{' '.join(args)} exited {done.returncode}\n{done.stdout[-2000:]}\n{done.stderr[-2000:]}")
     return done.returncode, done.stdout + done.stderr, elapsed
 
 
-def repodocs(root: Path, *args: str, check: bool = True) -> tuple[int, str, float]:
-    return run([sys.executable, "-m", "repodocs.cli", "--root", str(root), *args], check=check)
+def repodocs(root: Path, *args: str, check: bool = True, timeout: float | None = None) -> tuple[int, str, float]:
+    return run([sys.executable, "-m", "repodocs.cli", "--root", str(root), *args], check=check, timeout=timeout)
 
 
 def git(repo: Path, *args: str) -> str:
@@ -148,6 +156,7 @@ def main() -> int:
     parser.add_argument("--model")
     parser.add_argument("--consent-external", action="store_true",
                         help="record consent to send redacted source excerpts off this machine (required for any non-local provider)")
+    parser.add_argument("--discover-timeout", type=float, default=3600.0, help="seconds before live discovery counts as a timeout failure")
     parser.add_argument("--ai-settings", type=Path, help="JSON merged into the project's ai settings, e.g. limits and prices")
     parser.add_argument("--ai-args", nargs=argparse.REMAINDER, default=[], help="extra ai-configure arguments, e.g. --ollama-host URL")
     options = parser.parse_args()
@@ -185,13 +194,19 @@ def main() -> int:
         if options.ai_settings:
             config_path = root / "repodocs.json"
             config = json.loads(config_path.read_text(encoding="utf-8"))
-            config.setdefault("ai", {}).update(json.loads(options.ai_settings.read_text(encoding="utf-8")))
+            settings = json.loads(options.ai_settings.read_text(encoding="utf-8"))
+            # A file with "ai" and/or "architecture" objects sets both sections; any other file is the "ai" section.
+            sections = settings if set(settings) & {"ai", "architecture"} else {"ai": settings}
+            for section, values in sections.items():
+                config.setdefault(section, {}).update(values)
             config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
             report["ai_settings"] = config["ai"]
+            report["architecture_settings"] = config.get("architecture", {})
         repodocs(root, "architecture", "context")
-        code, out, elapsed = repodocs(root, "architecture", "discover", check=False)
-        report["live"] = {"provider": options.provider, "model": options.model, "discover_exit": code, "discover_s": elapsed,
+        code, out, elapsed = repodocs(root, "architecture", "discover", check=False, timeout=options.discover_timeout)
+        report["live"] = {"provider": options.provider, "model": options.model, "discover_exit": code, "discover_timed_out": code == TIMED_OUT, "discover_s": elapsed,
                           "discover_tail": out[-1500:]}
+        (work / f"{options.subject}-discover-output.txt").write_text(out, encoding="utf-8")
         repodocs(root, "generate", check=False)
         report["live"]["validate_exit"] = repodocs(root, "validate", check=False)[0]
         code, out, _ = run([sys.executable, "-m", "repodocs.architecture.evaluation", "--root", str(root), "--expected", str(expected_path)],

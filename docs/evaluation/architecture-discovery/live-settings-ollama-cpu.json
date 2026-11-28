@@ -1,0 +1,17 @@
+{
+  "ai": {
+    "limits": {
+      "context_window_tokens": 32768,
+      "request_output_tokens": 2048,
+      "max_requests": 6,
+      "max_total_tokens": 200000
+    }
+  },
+  "architecture": {
+    "budgets": {
+      "max_files_per_round": 4,
+      "max_excerpt_bytes": 2048,
+      "max_inventory_paths": 120
+    }
+  }
+}

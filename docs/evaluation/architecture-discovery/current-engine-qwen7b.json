@@ -1,0 +1,206 @@
+{
+  "attempt_1_default_budgets": {
+    "digitalbonebox": {
+      "discover_exit": 7,
+      "discover_s": 0.6,
+      "failure": "admission refused before sending: up to 64,436 prompt tokens plus 4,096 reserved output exceed the 32,768-token window",
+      "requests": 0
+    },
+    "flaskr": {
+      "discover_exit": 7,
+      "discover_s": 302.7,
+      "failure": "Ollama did not answer within the engine's 300 s per-request limit",
+      "requests": 1,
+      "usage_upper_bound": {
+        "input_tokens": 27494,
+        "output_tokens": 4096,
+        "unmeasured_requests": 1
+      }
+    },
+    "settings": "live-settings-ollama.json"
+  },
+  "attempt_2_reduced_context": {
+    "digitalbonebox": {
+      "discover_exit": 0,
+      "discover_s": 592.96,
+      "input_tokens_upper_bound": 30892,
+      "output_tokens_upper_bound": 2855,
+      "rejected": {
+        "no-valid-members": 3,
+        "unknown-component": 2
+      },
+      "requests": 2,
+      "score": {
+        "components": {
+          "deployment_shown_as_application": [],
+          "extra": [
+            "Documentation",
+            "Image Service"
+          ],
+          "matched": 1,
+          "missing": [
+            "Anatomy dataset",
+            "Scenes service",
+            "Study web client"
+          ],
+          "precision": 0.3333,
+          "proposed": 3,
+          "recall": 0.25,
+          "required_expected": 4,
+          "required_found": 1
+        },
+        "connections": {
+          "covered": 0,
+          "expected": 4,
+          "missing": [
+            "Boneset API -> Anatomy dataset",
+            "Boneset API -> Scenes service",
+            "Study web client -> Boneset API",
+            "Study web client -> Scenes service"
+          ],
+          "precision": 0.0,
+          "proposed": 1,
+          "recall": 0.0,
+          "supported": 0,
+          "unsupported_for_review": {
+            "unmapped": [
+              {
+                "classification": "proposed",
+                "kind": "depends-on",
+                "label": "API Service Depends on API Service",
+                "source": "API Service",
+                "target": "Image Service"
+              }
+            ]
+          }
+        }
+      },
+      "status": "partial (provider-error on the second request)",
+      "unmeasured_requests": 1,
+      "usage_complete": false,
+      "validate_exit": 0
+    },
+    "flaskr": {
+      "discover_exit": 0,
+      "discover_s": 428.96,
+      "input_tokens": 5854,
+      "output_tokens": 1595,
+      "rejected": {
+        "duplicate-connection": 1
+      },
+      "requests": 2,
+      "score": {
+        "components": {
+          "deployment_shown_as_application": [],
+          "extra": [
+            "Backend Service"
+          ],
+          "matched": 2,
+          "missing": [
+            "Application factory",
+            "Authentication",
+            "Blog"
+          ],
+          "precision": 0.6667,
+          "proposed": 3,
+          "recall": 0.4,
+          "required_expected": 5,
+          "required_found": 2
+        },
+        "connections": {
+          "covered": 0,
+          "expected": 8,
+          "missing": [
+            "Application factory -> Authentication",
+            "Application factory -> Blog",
+            "Application factory -> Database",
+            "Authentication -> Database",
+            "Authentication -> Pages",
+            "Blog -> Authentication",
+            "Blog -> Database",
+            "Blog -> Pages"
+          ],
+          "precision": 0.0,
+          "proposed": 3,
+          "recall": 0.0,
+          "supported": 0,
+          "unsupported_for_review": {
+            "unmapped": [
+              {
+                "classification": "inferred",
+                "kind": "depends-on",
+                "label": "/auth/login",
+                "source": "Backend Service",
+                "target": "Database"
+              },
+              {
+                "classification": "proposed",
+                "kind": "depends-on",
+                "label": "/auth/login",
+                "source": "Frontend",
+                "target": "Backend Service"
+              },
+              {
+                "classification": "proposed",
+                "kind": "depends-on",
+                "label": "/auth/login",
+                "source": "Backend Service",
+                "target": "Frontend"
+              }
+            ]
+          }
+        }
+      },
+      "status": "partial (no-progress)",
+      "usage_complete": true,
+      "validate_exit": 0
+    },
+    "settings": "live-settings-ollama-cpu.json (max_files_per_round 4, max_excerpt_bytes 2048, max_inventory_paths 120, request_output_tokens 2048)"
+  },
+  "contention": "Contended: 15 to 17 Python, Node and Chrome processes from concurrent test suites were running during both attempts.",
+  "date": "2026-11-28",
+  "engine_revision": "a55b3fac9307b7a0b40c26e211fba4060bb3b19c",
+  "engine_src_dirty": false,
+  "hand_review": [
+    {
+      "cited": "flaskr/schema.sql:1-20",
+      "connection": "Backend Service -> Database",
+      "label": "/auth/login",
+      "reason": "The cited lines only create the user and post tables; they show no use by any code. The use exists elsewhere (auth.py and blog.py call get_db), but the citation does not establish it and the label is unrelated. schema.sql is also a member of both components.",
+      "subject": "flaskr",
+      "verdict": "unsupported"
+    },
+    {
+      "cited": "flaskr/templates/blog/index.html:1-28",
+      "connection": "Frontend -> Backend Service",
+      "label": "/auth/login",
+      "reason": "The template links to blog.create and blog.update, which live in blog.py, not in any member of Backend Service. /auth/login does not appear.",
+      "subject": "flaskr",
+      "verdict": "unsupported"
+    },
+    {
+      "cited": "flaskr/auth.py:14-85",
+      "connection": "Backend Service -> Frontend",
+      "label": "/auth/login",
+      "reason": "auth.py renders auth/register.html and auth/login.html in the cited range (expected relationship Authentication -> Pages). The /login route is in range but the /auth prefix is on line 11, outside it; the engine flagged route-not-in-cited-source.",
+      "subject": "flaskr",
+      "verdict": "supported, label partly supported"
+    },
+    {
+      "cited": "boneset-api/server.js:31-96",
+      "connection": "API Service -> Image Service",
+      "label": "API Service Depends on API Service",
+      "reason": "server.js line 32 mounts createImageCatalogRouter from ./images, so server.js does depend on images.js. The reviewed expected set treats both files as one Boneset API component, so the harness reports it as unmapped, and the label names the wrong target.",
+      "subject": "digitalbonebox",
+      "verdict": "supported, label wrong"
+    }
+  ],
+  "machine": "AMD Ryzen AI 7 350, 15.3 GB RAM, integrated GPU, Windows 11",
+  "model": "qwen2.5-coder:7b (Ollama, Q4_K_M, 7.6B, model context 32768), local, no source left the machine",
+  "rendering": "Both views render with the pinned Mermaid renderer and are legible; every element is labeled unverified. The Flaskr overview draws no edges because all three connections failed the engine support check.",
+  "throughput_probe": {
+    "generation_tokens_per_s": 8.58,
+    "note": "single short probe under contention",
+    "prompt_eval_tokens_per_s": 34.23
+  }
+}
