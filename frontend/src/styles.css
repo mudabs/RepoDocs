@@ -393,13 +393,15 @@ details > summary {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  /* Turn motion off rather than shortening it: a near-zero duration still starts a transition for every property
+     change, and a page that is not painting frames never finishes it (zoom stayed at its old scale). */
   *, *::before, *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
+    animation: none !important;
+    transition: none !important;
     scroll-behavior: auto !important;
   }
 }
+
 
 .rd-visually-hidden {
   position: absolute;

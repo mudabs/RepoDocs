@@ -127,6 +127,12 @@ try {
     assert(diagram.fills.length > 0 && diagram.fills.every((f) => f !== 'rgb(0, 0, 0)' && f !== 'none'), `Unreadable fills ${JSON.stringify(diagram.fills)}`);
     assert(diagram.heights.length > 0 && diagram.heights.every((h) => h >= 9), `Labels too small ${JSON.stringify(diagram.heights)}`);
     assert(!diagram.clipped, 'The diagram content extends past its viewBox');
+    // Zoom must take effect at once with reduced motion on (no transition left pending).
+    const svgWidth = () => page.evaluate(() => document.querySelector('[aria-label^="Diagram canvas for"] svg').getBoundingClientRect().width);
+    const beforeZoom = await svgWidth();
+    await clickButton(page, 'Zoom +');
+    const afterZoom = await svgWidth();
+    assert(afterZoom > beforeZoom * 1.1, `Zoom + did not enlarge the diagram (${beforeZoom} -> ${afterZoom})`);
     const viewerNarrow = await noHorizontalOverflow(page, 375);
     await page.setViewport({ width: 1280, height: 860 });
 
