@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Job, JobState } from '../api/types'
+import { ApiError } from '../api/client'
 import { StatusBadge, BudgetPreview } from './StatusBadge'
 
 const ACTIVE_STATES: JobState[] = ['queued', 'preflight', 'running']
@@ -36,20 +37,33 @@ export function JobPoller({ initialJob, mode, onComplete, getJob, cancelJob }: P
   const delayRef = useRef(1000)
 
   const poll = useCallback(async () => {
+    let updated: Job
     try {
-      const updated = await getJob(job.job_id)
-      setJob(updated)
-      sequenceRef.current = updated.sequence
-      if (isTerminal(updated.state)) {
-        onComplete(updated)
+      updated = await getJob(job.job_id)
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Polling failed'
+      // A failed read is not a job outcome. Network errors, server errors and retryable responses keep polling with
+      // backoff so one transient failure cannot strand the view; other refusals (expired session, missing job) stop.
+      const transient = !(err instanceof ApiError) || err.status >= 500 || err.retryable
+      if (!transient) {
+        setError(message)
         return
       }
-      // Increase poll interval up to 5s.
+      setError(`${message}. Retrying...`)
       delayRef.current = Math.min(delayRef.current * 1.5, 5000)
       intervalRef.current = setTimeout(poll, delayRef.current)
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Polling failed')
+      return
     }
+    setError(null)
+    setJob(updated)
+    sequenceRef.current = updated.sequence
+    if (isTerminal(updated.state)) {
+      onComplete(updated)
+      return
+    }
+    // Increase poll interval up to 5s.
+    delayRef.current = Math.min(delayRef.current * 1.5, 5000)
+    intervalRef.current = setTimeout(poll, delayRef.current)
   }, [job.job_id, getJob, onComplete])
 
   useEffect(() => {
