@@ -241,6 +241,8 @@ try {
       await clickButton(page, 'Generate architecture');
       await connectOllama();
       await waitForText(page, 'Generating');
+      const whileRunning = await page.evaluate(() => document.body.innerText);
+      assert(!whileRunning.includes('No model request was made.'), 'A running job claimed that no model request was made');
       await clickButton(page, 'Cancel generation');
       await waitForText(page, 'The run was cancelled.', 45000);
       const announcements = await page.evaluate(() => window.__announcements);
