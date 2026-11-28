@@ -1,0 +1,179 @@
+{
+  "digitalbonebox": {
+    "context_preview": {
+      "context_bytes": 45697,
+      "context_hash": "d3a5f3ade76dbe6888099b3068dc8a7b1a38af14bf2e7207beedc792c44a99ba",
+      "documents": 8,
+      "omitted": {
+        "denied-name": 3
+      },
+      "redactions": 0
+    },
+    "deterministic": {
+      "change_checks": {
+        "committed": {
+          "generate_exit": 0,
+          "new_revision": "c683413008a816b85199f9b8de1bd92b68cd77ef",
+          "output_changed": true,
+          "snapshot": [
+            {
+              "repository_id": "digitalbonebox",
+              "revision": "c683413008a816b85199f9b8de1bd92b68cd77ef",
+              "revision_kind": "commit",
+              "working_tree_state": "clean"
+            }
+          ]
+        },
+        "dirty": {
+          "generate_exit": 0,
+          "output_changed": true,
+          "snapshot": [
+            {
+              "repository_id": "digitalbonebox",
+              "revision": "cdbded6fd373e4c252f7726aafb4b19965bd1e76553b8e0b5de585fea06267c0",
+              "revision_kind": "content",
+              "working_tree_state": "dirty"
+            }
+          ]
+        },
+        "edited_file": "api/index.js",
+        "manual_edit": {
+          "edit_kept": true,
+          "generate_exit": 4
+        },
+        "noop_after_change": true
+      },
+      "fresh_rerun_identical": true,
+      "generated_files": [
+        "README.md",
+        "docs/generated/architecture.md",
+        "docs/generated/architecture.mmd"
+      ],
+      "second_generate_unchanged": true,
+      "times": {
+        "generate_s": 0.693,
+        "scan_s": 1.462
+      },
+      "validate_exit": 0
+    },
+    "engine_revision": "a55b3fac9307b7a0b40c26e211fba4060bb3b19c",
+    "engine_src_dirty": false,
+    "evidence_resolution": {
+      "hash_equals_committed_blob": 38,
+      "hash_equals_working_tree_bytes": 798,
+      "items": 798,
+      "path_at_pinned_commit": 798
+    },
+    "scoring": {
+      "application_components": 0,
+      "component_precision": null,
+      "component_recall": 0.0,
+      "connection_recall": 0.0,
+      "stored_view": "none (deterministic mode stores no architecture view)",
+      "unsupported_connections": 0
+    },
+    "source_revision": "602e9c53c656f55b5e69b1a4dd4c6f79e53b368c",
+    "subject": "digitalbonebox"
+  },
+  "flaskr": {
+    "context_preview": {
+      "context_bytes": 16858,
+      "context_hash": "f30bea002f6a567b4c68c6939f7dffb4b4eb0e8e29c3d475e5251bd5e40b099b",
+      "documents": 8,
+      "omitted": {
+        "denied-name": 1
+      },
+      "redactions": 3
+    },
+    "deterministic": {
+      "change_checks": {
+        "committed": {
+          "generate_exit": 0,
+          "new_revision": "9341478b7c9147e9f88f77b2648cf2fabd6befb8",
+          "output_changed": true,
+          "snapshot": [
+            {
+              "repository_id": "flaskr",
+              "revision": "9341478b7c9147e9f88f77b2648cf2fabd6befb8",
+              "revision_kind": "commit",
+              "working_tree_state": "clean"
+            }
+          ]
+        },
+        "dirty": {
+          "generate_exit": 0,
+          "output_changed": true,
+          "snapshot": [
+            {
+              "repository_id": "flaskr",
+              "revision": "731f130e72b57d051bc1e914f3ef92035f61737f116054dd36144826e4c75d11",
+              "revision_kind": "content",
+              "working_tree_state": "dirty"
+            }
+          ]
+        },
+        "edited_file": "examples/tutorial/flaskr/__init__.py",
+        "manual_edit": {
+          "edit_kept": true,
+          "generate_exit": 4
+        },
+        "noop_after_change": true
+      },
+      "fresh_rerun_identical": true,
+      "generated_files": [
+        "README.md",
+        "docs/generated/architecture.md",
+        "docs/generated/architecture.mmd"
+      ],
+      "second_generate_unchanged": true,
+      "times": {
+        "generate_s": 0.61,
+        "scan_s": 0.644
+      },
+      "validate_exit": 0
+    },
+    "engine_revision": "a55b3fac9307b7a0b40c26e211fba4060bb3b19c",
+    "engine_src_dirty": false,
+    "evidence_resolution": {
+      "hash_equals_committed_blob": 0,
+      "hash_equals_working_tree_bytes": 22,
+      "items": 22,
+      "path_at_pinned_commit": 22
+    },
+    "line_ending_check": {
+      "architecture_md_identical": false,
+      "architecture_mmd_identical": true,
+      "checkout_a": "core.autocrlf=true (CRLF working tree)",
+      "checkout_b": "core.autocrlf=false (LF)",
+      "evidence_hashes_differing": "22 of 22",
+      "same_commit": true
+    },
+    "scoring": {
+      "application_components": 0,
+      "component_precision": null,
+      "component_recall": 0.0,
+      "connection_recall": 0.0,
+      "stored_view": "none (deterministic mode stores no architecture view)",
+      "unsupported_connections": 0
+    },
+    "source_revision": "49943b5a94413a530761350f04e896f76e8d620e",
+    "subject": "flaskr"
+  },
+  "live_dry_run": {
+    "discover_exit": 7,
+    "error": "provider-error: Ollama error (HTTP 404); the model is not pulled",
+    "external_requests": 0,
+    "model": "qwen3:4b (not pulled)",
+    "provider": "ollama (http://localhost:11434, no models installed)",
+    "requests_to_localhost": 1,
+    "subject": "flaskr"
+  },
+  "machine": {
+    "cpu": "AMD Ryzen AI 7 350, 16 logical processors",
+    "gpu": "AMD Radeon 860M integrated",
+    "os": "Windows 11 Pro 10.0.26300",
+    "python": "3.11.9",
+    "ram_gb": 15.3
+  },
+  "note": "Measured on 2026-11-27. Deterministic only; no model produced any output. Structural validity does not establish semantic correctness."
+}

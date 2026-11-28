@@ -1,10 +1,127 @@
 # Architecture discovery evaluation: DigitalBoneBox and Flaskr
 
-Epic #47, issue #54. Date: 2026-11-17. The context and replay measurements were re-checked on 2026-11-22 after `main` (source context selection 1.1, ADR-029) was merged into this branch; see [`reference-replay-merged-head.json`](reference-replay-merged-head.json).
+Epic #47, issue #54. Date: 2026-11-17, with a current-engine deterministic re-measurement on 2026-11-27 (next section). The context and replay measurements were re-checked on 2026-11-22 after `main` (source context selection 1.1, ADR-029) was merged into this branch; see [`reference-replay-merged-head.json`](reference-replay-merged-head.json).
 
 ## Status in one paragraph
 
-The evaluation workflow, the scoring harness, the expected sets, and a reproducible demonstration on two real repositories are finished. Two **historical live smoke-test observations** with `qwen2.5-coder:1.5b` on a remote Ollama endpoint were saved earlier and are summarized below and in [`historical-live-results.json`](historical-live-results.json). They are not new runs, they used different engine revisions, and they are not verification of the current head. Both ended `partial`, and the model's architecture quality is **not accepted**: Flaskr scored component precision 0.3333, component recall 0.2, and connection recall 0; DigitalBoneBox showed unsupported endpoint labels and backend files under a UI component. The question the issue asks (does AI-assisted discovery give users the architecture understanding they expected?) is therefore **not settled**: no other model was run and no human review verdicts exist. The scripted reference replay numbers answer from the expected set and say nothing about model quality. Deterministic mode, measured for real, produces no application components for either repository. The owner go/no-go decision is pending and is not made here.
+The evaluation workflow, the scoring harness, the expected sets, and a reproducible demonstration on two real repositories are finished. Two **historical live smoke-test observations** with `qwen2.5-coder:1.5b` on a remote Ollama endpoint were saved earlier and are summarized below and in [`historical-live-results.json`](historical-live-results.json). They are not new runs, they used different engine revisions, and they are not verification of the current head. Both ended `partial`, and the model's architecture quality is **not accepted**: Flaskr scored component precision 0.3333, component recall 0.2, and connection recall 0; DigitalBoneBox showed unsupported endpoint labels and backend files under a UI component. The question the issue asks (does AI-assisted discovery give users the architecture understanding they expected?) is therefore **not settled**: no other model was run and no human review verdicts existed at that time (the 2026-11-28 local `qwen2.5-coder:7b` run and its hand review are recorded below). The scripted reference replay numbers answer from the expected set and say nothing about model quality. Deterministic mode, measured for real, produces no application components for either repository. The owner go/no-go decision is pending and is not made here.
+
+## Current-engine re-measurement (2026-11-27)
+
+Engine `a55b3fac9307b7a0b40c26e211fba4060bb3b19c` (`main`, engine source unmodified), Windows 11, Python 3.11.9, AMD Ryzen AI 7 350, 15.3 GB RAM, integrated GPU only. Same pinned sources as below. Deterministic mode only in this table; the authorized local model run follows below. Raw numbers are in [`current-engine-deterministic.json`](current-engine-deterministic.json); the protocol is [`run_benchmark.py`](run_benchmark.py).
+
+| | DigitalBoneBox | Flaskr |
+|---|---|---|
+| Source revision | `602e9c53c656f55b5e69b1a4dd4c6f79e53b368c` | `49943b5a94413a530761350f04e896f76e8d620e` |
+| Application components (expected) | 0 (6) | 0 (5) |
+| Component recall / connection recall | 0.0 / 0.0 (0 of 5 relationships) | 0.0 / 0.0 (0 of 8 relationships) |
+| Component precision, unsupported connections | not defined (nothing proposed), 0 | not defined, 0 |
+| Harness score | refused: no stored architecture view | same |
+| Evidence items, path present at the pinned commit | 798 of 798 | 22 of 22 |
+| `validate` | exit 0 | exit 0 |
+| Second `generate` | unchanged (no-op) | unchanged |
+| Fresh project, same inputs | byte-identical output | byte-identical output |
+| Uncommitted edit, rescan | snapshot `content` / `dirty`, output regenerated | same |
+| Committed edit, rescan | new commit pinned, output regenerated, next `generate` a no-op | same |
+| Manual edit of a generated file | `generate` exit 4, edit kept | same |
+| Context preview (nothing sent) | 8 excerpts, 45,697 bytes, 0 redactions, 3 denied names | 8 excerpts, 16,858 bytes, 3 redactions, 1 denied name |
+| Wall clock: scan, generate, context | 1.46 s, 0.69 s, 0.52 s | 0.64 s, 0.61 s, 0.39 s |
+
+The context preview is unchanged from the merged-head check, so the first-round findings below still apply, including the three false-positive `password = ...` redactions in Flaskr.
+
+Readability: the deterministic diagrams render with the pinned Mermaid renderer ([`screenshots/current-engine/`](screenshots/current-engine)) and are legible, but they show only a repository and its languages. They answer none of the architecture questions in the expected sets.
+
+### New failure found: evidence hashes depend on checkout line endings
+
+- On this Windows machine (`core.autocrlf=true`) every evidence `content_hash` equals the hash of the CRLF working-tree bytes, not the committed blob (Flaskr 0 of 22 match the blob; DigitalBoneBox 38 of 798, the files git leaves unconverted).
+- A second Flaskr checkout of the **same commit** with `core.autocrlf=false` produced different hashes for 22 of 22 evidence items, so different evidence IDs, and a different `architecture.md` (`architecture.mmd` was identical). The IR fingerprint field compared equal.
+- Consequence: the same commit can produce different generated documentation on a Windows CRLF checkout and on a Linux CI runner, which breaks cross-platform no-op detection and would make a publication run propose a spurious change. Paths and revisions still resolve. This is recorded here only; a fix (hashing normalized or committed content for clean commit snapshots) needs its own issue.
+
+## Local real-model run: qwen2.5-coder:7b (2026-11-28)
+
+Authorized by the owner as a local run: no source left the machine and no external provider was called. Model `qwen2.5-coder:7b` through Ollama (Q4_K_M, 7.6B parameters, model context 32,768 tokens), engine `a55b3fac9307b7a0b40c26e211fba4060bb3b19c` unmodified, same pinned sources. Each `discover` was bounded at 60 minutes; none reached that bound. Raw numbers and the hand review are in [`current-engine-qwen7b.json`](current-engine-qwen7b.json). The driver, [`run_benchmark.py`](run_benchmark.py), runs `ai-configure`, `architecture context`, `architecture discover`, `generate`, `validate` and the scoring harness in one command.
+
+**Latency is contended.** Other test suites (15 to 17 Python, Node and Chrome processes) ran on the same machine throughout. A short probe under that load measured about 34 prompt tokens/s and 8.6 generated tokens/s. The times below are not a clean measurement of this model or machine.
+
+### Attempt 1: default context budgets ([`live-settings-ollama.json`](live-settings-ollama.json))
+
+| | DigitalBoneBox | Flaskr |
+|---|---|---|
+| Outcome | **failed before sending**: admission estimated up to 64,436 prompt tokens plus 4,096 reserved output, above the 32,768-token window | **failed**: Ollama did not answer within the engine's fixed 300 s per-request limit |
+| Requests, time | 0, 0.6 s | 1, 302.7 s |
+| Usage | none | unmeasured; reserved upper bound 27,494 input and 4,096 output tokens |
+
+The engine's default context budgets do not fit this model's window for DigitalBoneBox, and on this CPU a full-size request cannot finish in 300 s. Both behaved as the contracts say: nothing over the window was sent, and the timeout was reported rather than retried. (The RepoDocs default Ollama window is 4,096 tokens, so the settings file raises it to the model's 32,768.)
+
+### Attempt 2: reduced context ([`live-settings-ollama-cpu.json`](live-settings-ollama-cpu.json))
+
+Budgets lowered within the allowed range: at most 4 files per round, 2,048-byte excerpts, 120 inventory paths, 2,048 output tokens per request. **The model therefore saw less source than the default design intends**, so this is a lower bound on what the model can do, not a fair test of it.
+
+| | DigitalBoneBox | Flaskr |
+|---|---|---|
+| Status | partial (second request ended in a provider error, consistent with the 300 s limit) | partial (stopped for no progress) |
+| Requests, `discover` time | 2, 593 s | 2, 429 s |
+| Tokens | upper bound 30,892 input and 2,855 output (one request unmeasured) | 5,854 input and 1,595 output (complete) |
+| Components proposed / matched to expected | 3 / 1 | 3 / 2 |
+| Component recall / precision | 0.25 (1 of 4 required) / 0.33 | 0.40 (2 of 5) / 0.67 |
+| Connections proposed | 1 | 3 (a fourth rejected as a duplicate) |
+| Connection recall / precision (harness) | 0.0 (0 of 4) / 0.0 | 0.0 (0 of 8) / 0.0 |
+| Engine support check on connections | 1 unverified | 3 unsupported (`route-not-in-cited-source`) |
+| Rejected by validation | 3 components with no valid members, 2 unknown components | 1 duplicate connection |
+| Citations resolving, evidence linked to the commit | 3 of 3, 4 of 4 | 3 of 3, 7 of 7 |
+| `validate` | exit 0 | exit 0 |
+| Missing expected components | Study web client, Scenes service, Anatomy dataset | Application factory, Authentication, Blog (Authentication merged into a generic Backend Service; `blog.py` absent) |
+| Extra components | Documentation (`README.md`), Image Service (part of the expected Boneset API) | Backend Service |
+
+### Hand review of every proposed relationship
+
+Each citation was opened at the pinned commit.
+
+| Subject | Relationship (label) | Cited lines | Verdict | Why |
+|---|---|---|---|---|
+| Flaskr | Backend Service -> Database (`/auth/login`) | `flaskr/schema.sql:1-20` | unsupported | Only table definitions. The code that uses the database (`get_db` in `auth.py` and `blog.py`) is not cited, and the label is unrelated. `schema.sql` is also listed in both components. |
+| Flaskr | Frontend -> Backend Service (`/auth/login`) | `flaskr/templates/blog/index.html:1-28` | unsupported | The template links to `blog.create` and `blog.update` in `blog.py`, which is in neither component. `/auth/login` does not appear. |
+| Flaskr | Backend Service -> Frontend (`/auth/login`) | `flaskr/auth.py:14-85` | supported, label partly supported | `auth.py` renders the auth templates in range (expected Authentication -> Pages). The `/auth` prefix is on line 11, outside the citation. |
+| DigitalBoneBox | API Service -> Image Service (`API Service Depends on API Service`) | `boneset-api/server.js:31-96` | supported, label wrong | Line 32 mounts the router from `./images`. The expected set keeps both files in one Boneset API component, so the harness counts it as unmapped. |
+
+Two of four relationships are supported by their citations, but neither covers an expected cross-component relationship, and every label is wrong or only partly right.
+
+### Readability
+
+Both views render with the pinned Mermaid renderer ([`flaskr-qwen7b.png`](screenshots/current-engine/flaskr-qwen7b.png), [`digitalbonebox-qwen7b.png`](screenshots/current-engine/digitalbonebox-qwen7b.png)). They are legible and label every element as unverified. The Flaskr overview draws no edges, because all three connections failed the engine's support check. A reader learns three layer names and little else.
+
+### Failures recorded
+
+- Default context budgets exceed a 32,768-token model window on DigitalBoneBox (refused before sending, as designed).
+- The fixed 300 s per-request limit is shorter than one full-context request on this CPU (Flaskr attempt 1; DigitalBoneBox attempt 2, second request).
+- Partial views on both subjects, wrong labels on all connections, a file assigned to two components, and six model outputs rejected by validation.
+- Line-ending dependent evidence hashes (above).
+
+## Owner decision required
+
+Pending. Nothing in this report is a go/no-go, and the owner records the decision on #54.
+
+**Recommendation (not a decision): no-go for accepting this local configuration as the architecture-discovery experience.** Reasons:
+
+- Connection recall is 0 on both subjects. The engine's own checks flagged every connection, and the hand review found two of four relationships supported, none of them an expected cross-component relationship.
+- Component recall is 0.25 and 0.40 even with the reduced context, and the core application parts (DigitalBoneBox web client and scenes, Flaskr authentication and blog) were missed.
+- On this machine the model only completed with context cut well below the design, and requests still hit the 300 s limit.
+
+What is not established: whether the approach works with a stronger model or uncontended hardware. Narrow follow-ups, each needing an owner choice:
+
+1. One external-model run on the same two pinned subjects at default budgets. This needs consent to send redacted excerpts of both public repositories, a key and an approved spend cap. It is the cheapest way to separate "this small local model on this CPU" from "the approach".
+2. Or rerun `qwen2.5-coder:7b` (or `qwen3:8b`) on uncontended hardware with a GPU at default budgets, which needs a per-request timeout above 300 s. That is an engine change for its own issue.
+3. Separately, file an issue for the line-ending evidence-hash defect.
+
+Do not expand scope (more analyzers, more providers, viewer features) until one of these produces supported cross-component relationships. Structural validity, rendering and green CI are not evidence of usefulness.
+
+Commands (from the repository root, with both sources cloned at the pinned revisions):
+
+```bash
+python docs/evaluation/architecture-discovery/run_benchmark.py --subject flaskr --source flask --work eval --provider ollama --model qwen2.5-coder:7b --ai-settings docs/evaluation/architecture-discovery/live-settings-ollama-cpu.json
+python docs/evaluation/architecture-discovery/run_benchmark.py --subject digitalbonebox --source DigitalBoneBox --work eval --provider ollama --model qwen2.5-coder:7b --ai-settings docs/evaluation/architecture-discovery/live-settings-ollama-cpu.json
+# External: --provider anthropic --model <model> --consent-external --ai-settings <file with ai.limits.max_cost_usd and ai.prices>
+```
 
 ## Subjects
 
