@@ -81,7 +81,10 @@ function when(seconds: number | undefined): string {
 function usageSummary(job: Job): string {
   const requests = job.budget?.requests ?? 0
   const counts = job.budget?.count_requests ?? 0
-  if (requests === 0 && counts === 0) return 'No model request was made.'
+  if (requests === 0 && counts === 0) {
+    // Requests are counted when they finish, so a running job may have one in flight.
+    return TERMINAL.includes(job.state) ? 'No model request was made.' : 'No model response has finished yet.'
+  }
   const usage = job.usage
   const tokens = usage && usage.input_tokens !== null && usage.output_tokens !== null
     ? `${(usage.input_tokens + usage.output_tokens).toLocaleString()} tokens${usage.accounting === 'estimated' ? ' (estimated)' : ''}`
