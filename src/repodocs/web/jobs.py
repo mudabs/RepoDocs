@@ -35,7 +35,7 @@ from typing import Any, Callable, Mapping
 from urllib.parse import urlsplit
 
 from .. import service
-from ..ai.budgets import METHOD_BYTE_BOUND, PriceProfile, RunLimits, RunStopped, estimate_tokens, ledger_for, serialized_request
+from ..ai.budgets import PriceProfile, RunLimits, RunStopped, ledger_for
 from ..ai.bundle import redact_text
 from ..ai.providers import AnthropicProvider, OllamaProvider, Provider, is_loopback
 from ..common import canonical_json, scrub, sha256_bytes, write_json_atomic
@@ -654,21 +654,9 @@ class JobService:
         except ConfigError as exc:
             raise _invalid(self._safe(str(exc))) from None
         if not service.can_reuse_view(service.DiscoverRequest(workspace.root, refresh=request.refresh, limits=request.run_limits())):
-            from ..architecture.discovery import initial_prompt_inputs
-
-            ir = service.load_scanned_ir(config)
-            system, user, schema = initial_prompt_inputs(config, ir)
-            estimate = estimate_tokens(serialized_request(_identity(context), system, user, schema))
-            reserved_output = int(ledger.limits.request_output_tokens or 0)
-            window = int(ledger.limits.context_window_tokens or 0)
-            if estimate + reserved_output > window:
-                raise JobError(
-                    "invalid-request",
-                    f"Initial request needs up to {estimate} input tokens ({METHOD_BYTE_BOUND}) plus {reserved_output} "
-                    f"reserved output tokens ({estimate + reserved_output} total), exceeding the configured {window}-token "
-                    "context window; nothing was sent. Narrow scope or configure --context-window-tokens.",
-                    422,
-                )
+            fit = service.initial_request_fit(_identity(context), config, service.load_scanned_ir(config), ledger.limits)  # type: ignore[arg-type]
+            if fit["error"] is not None:
+                raise JobError("invalid-request", fit["error"]["message"], 422)
         # The worst case this job may use, reported before it starts. Unknown cost is null, never zero.
         return _budget(_summary_of(ledger.snapshot()))
 
