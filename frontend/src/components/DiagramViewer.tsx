@@ -98,6 +98,26 @@ interface Props {
  * Renders a Mermaid .mmd artifact with securityLevel:'strict' and htmlLabels:false,
  * interactive pan/zoom/fit, and clickable + keyboard-accessible node and edge selection.
  */
+/** Set the SVG's viewBox, width and height to its drawn content plus a margin. Exported for tests. */
+export function fitViewBoxToContent(svg: SVGSVGElement, margin = 8): void {
+  const content = svg.querySelector(':scope > g') as SVGGraphicsElement | null
+  if (!content || typeof content.getBBox !== 'function') return
+  let box: DOMRect
+  try {
+    box = content.getBBox()
+  } catch {
+    return
+  }
+  if (!(box.width > 0 && box.height > 0)) return
+  const x = box.x - margin
+  const y = box.y - margin
+  const width = box.width + 2 * margin
+  const height = box.height + 2 * margin
+  svg.setAttribute('viewBox', `${x} ${y} ${width} ${height}`)
+  svg.setAttribute('width', String(width))
+  svg.setAttribute('height', String(height))
+}
+
 export function DiagramViewer({
   jobId,
   artifactId,
@@ -134,8 +154,9 @@ export function DiagramViewer({
     const availH = Math.max(100, stage.clientHeight - pad)
     const fitScale = Math.max(0.15, Math.min(2, Number(Math.min(availW / svgW, availH / svgH, 1).toFixed(2))))
     if (readableFloor && fitScale < 0.55) {
+      // Too wide to read when fitted: start readable and centred on the drawing; Fit still shows all of it.
       setScale(0.6)
-      setOffset({ x: 16, y: 16 })
+      setOffset({ x: Math.round((stage.clientWidth - svgW * 0.6) / 2), y: 16 })
       return
     }
     const dx = Math.max(12, Math.round((stage.clientWidth - svgW * fitScale) / 2))
@@ -261,6 +282,9 @@ export function DiagramViewer({
             }
 
             el.appendChild(imported)
+            // Mermaid sizes the viewBox while rendering off-screen. If the laid-out drawing ends up larger than that
+            // box, its edges are clipped, so size the viewBox from the drawing as it is actually laid out here.
+            fitViewBoxToContent(imported as unknown as SVGSVGElement)
             requestAnimationFrame(() => {
               if (!cancelled) computeFit(true)
             })

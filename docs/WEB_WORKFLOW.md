@@ -1,9 +1,12 @@
 # Local web-first workflow contract 1.0
 
-This contract (#64, epic #63) is implemented on the backend by the local HTTP jobs adapter (#72, ADR-036, the optional `repodocs[web]` extra); the browser UI (#73) is not built yet. The existing CLI remains usable independently. See ADR-027 and `schemas/web-workflow-1.0.json`.
+This contract (#64, epic #63) is implemented by the local HTTP jobs adapter (#72, ADR-036, the optional `repodocs[web]` extra) and the React browser UI (#73, ADR-037). The default page is the URL-first home (#99); the step-by-step journey below is the Advanced page at `/workflow`. The existing CLI remains usable independently. See ADR-027 and `schemas/web-workflow-1.0.json`.
 
 ## Browser journey
 
+The home page (`/`, #99) runs steps 1 to 6 as one action: paste a repository URL, pick AI architecture or local facts only, connect a provider on first use, confirm the disclosure review when the provider is external, then follow progress to the result. Saved projects on the same page reopen results without inference. The numbered steps below are the Advanced page (`/workflow`), which exposes every step for multi-repository, pinned-revision and limit settings.
+
+1. Open the locally served UI. Register one or more sources through an allowlisted local root or a public GitHub repository at an exact revision (#70). A browser cannot select an arbitrary server path. Local sources include working-tree changes; fetched sources are pinned clean revisions.
 1. Open the locally served UI. Register one or more sources through an allowlisted local root or a public GitHub repository at an exact revision (#70). A pasted `https://github.com/<owner>/<repo>` URL is resolved server-side to its default branch head and pinned to that exact SHA before acquisition (#96); explicit owner, repository and SHA remain available under Advanced. A browser cannot select an arbitrary server path. Local sources include working-tree changes; fetched sources are pinned clean revisions.
 2. Scan through the shared engine and display each snapshot, limitations and unresolved cross-repository candidates. Select one documentation destination; downloads use a backend-owned export directory until publication is explicitly configured.
 3. Select deterministic mode or a user-connected provider/model. Enter a credential only when the provider needs it. A provider-session handle refers to a backend in-memory credential; no key goes into localStorage, URLs, job JSON, logs or `repodocs.json`.

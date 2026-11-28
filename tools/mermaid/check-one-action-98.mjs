@@ -35,26 +35,23 @@ try {
   const page = await browser.newPage()
   page.on('pageerror', err => pageErrors.push(err.message))
 
-  await page.goto(`${baseUrl}/workflow`, { waitUntil: 'networkidle0' })
-  await clickButton(page, 'Open session')
+  // The URL-first home (#99) is the one primary action: URL, Generate, first-use provider setup, result.
+  await page.goto(`${baseUrl}/`, { waitUntil: 'networkidle0' })
+  await page.waitForSelector('#repo-url', { timeout: 15000 })
+  await page.type('#repo-url', repoUrl)
 
-  await page.waitForSelector('input[aria-label="Quick GitHub repository URL"]', { timeout: 15000 })
-  await page.type('input[aria-label="Quick GitHub repository URL"]', repoUrl)
-
-  // First click without a provider opens inline provider setup
+  // First click without a provider opens provider setup
   await clickButton(page, 'Generate architecture')
   await page.waitForSelector('input[aria-label="Provider host URL"]', { timeout: 15000 })
-
-  // Enter model and connect Ollama provider -> automatically completes workspace, scan, preview, submit, poll, and done!
   await page.evaluate(nextModel => {
-    const inputs = Array.from(document.querySelectorAll('input'))
-    const modelInput = inputs.find(i => i.placeholder?.includes('llama'))
+    const modelInput = Array.from(document.querySelectorAll('input')).find(i => i.placeholder?.includes('llama'))
     if (!modelInput) throw new Error('Model input not found')
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set
     setter.call(modelInput, nextModel)
     modelInput.dispatchEvent(new Event('input', { bubbles: true }))
   }, 'replay-model')
 
+  // Connecting continues the same generation: resolve, workspace, scan, submit, progress, result.
   await clickButton(page, 'Connect provider')
   try {
     await clickButton(page, 'View diagrams')
@@ -62,19 +59,13 @@ try {
     const body = await page.evaluate(() => document.body.innerText)
     throw new Error(`Timed out waiting for View diagrams. Body: ${body}`)
   }
-  try {
-    await page.waitForSelector('[aria-label^="Diagram canvas for"] svg', { timeout: 20000 })
-  } catch (err) {
-    const body = await page.evaluate(() => document.body.innerText)
-    throw new Error(`Timed out waiting for SVG. PageErrors: ${JSON.stringify(pageErrors)} Body: ${body}`)
-  }
+  await page.waitForSelector('[aria-label^="Diagram canvas for"] svg', { timeout: 20000 })
 
-  // Back navigation must not trigger a second provider call
+  // Back returns to the home page with the saved project; reopening it must not run the model again.
   await page.goBack({ waitUntil: 'networkidle0' })
-  await page.waitForFunction(
-    () => Array.from(document.querySelectorAll('button')).some(b => b.textContent?.trim() === 'View diagrams'),
-    { timeout: 15000 },
-  )
+  await page.waitForSelector('button[aria-label="Open result for mudabs/EventShare"]', { timeout: 15000 })
+  await page.click('button[aria-label="Open result for mudabs/EventShare"]')
+  await page.waitForSelector('[aria-label^="Diagram canvas for"] svg', { timeout: 20000 })
 
   assert(pageErrors.length === 0, `Uncaught page errors: ${pageErrors.join('; ')}`)
   console.log(JSON.stringify({ ok: true }))

@@ -75,7 +75,7 @@ const report = await withBrowser(async (browser) => {
     const attackerUrl = extraArg;
     // Step 1: On the RepoDocs origin, establish the victim session, workspace, provider,
     // and two successful positive-control jobs (deterministic + provider-backed) in this same browser session.
-    await page.goto(baseUrl, { waitUntil: 'networkidle0', timeout: 20000 });
+    await page.goto(`${baseUrl}/workflow`, { waitUntil: 'networkidle0', timeout: 20000 });
     const victimIds = await page.evaluate(async () => {
       async function api(method, path, body, csrf) {
         const headers = { 'Content-Type': 'application/json' };
@@ -230,7 +230,7 @@ const report = await withBrowser(async (browser) => {
   }
 
   if (scenario === 'hostile-pinned-viewer') {
-    await page.goto(baseUrl, { waitUntil: 'networkidle0', timeout: 20000 });
+    await page.goto(`${baseUrl}/workflow`, { waitUntil: 'networkidle0', timeout: 20000 });
     await clickButton(page, 'Open session');
     await waitForText(page, 'Select source repositories');
 

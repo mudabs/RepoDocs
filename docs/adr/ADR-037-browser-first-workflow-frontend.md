@@ -51,3 +51,26 @@ implementation decisions for the frontend build that #73 adds.
 - The `frontend-build` CI job is independent of the Python test matrix; both must pass.
 - Authenticated remote Ollama gateways are CLI-only. The web UI only supports loopback Ollama.
 - Public hosting, managed AI inference, and accounts are not part of this release.
+
+## Amendment (#99): URL-first home, Advanced step-by-step page and saved history
+
+- `/` is a URL-first home page: repository URL (or an allowlisted local source name), a choice between AI
+  architecture and local facts only, and one primary Generate action. First-use provider setup appears only when no
+  provider session is live; a disclosure review that names the provider, destination, revisions, excerpt count,
+  bytes, redactions and limits must be confirmed (both consent kinds) before anything is sent. Progress shows the
+  job's own stages, a cancel action and plain-language outcomes; nothing claims verified architecture.
+- The home page lists saved projects (source, revision, status, date). Opening a result never runs a model.
+  Generating again for the same source and revision reuses the saved project and, if its latest run is still active,
+  follows that run instead of submitting another. Delete asks for a second, explicit confirmation.
+- The step-by-step workflow is unchanged in behaviour and moves to `/workflow` ("Advanced"). The #98 quick-generate
+  card on that page is removed; the home page is the only one-action path.
+- Home, `/viewer/:jobId` and `/workflow/:draftId` open a loopback session automatically; `/workflow` keeps its
+  explicit session step. Sign out asks first: with the #95 store a new session starts a new local profile, so saved
+  projects stay on disk but are no longer listed (ADR-040).
+- The connected provider is remembered in page memory only (its server handle, never the key). A reload or server
+  restart forgets it and the next AI run asks to connect again.
+- The viewer sizes the diagram's viewBox from the drawing as laid out in the page. Mermaid's off-screen measurement
+  could leave the last row of a wide graph outside the viewBox (the #93 fix did not cover this).
+- Accessibility: a skip link, labelled controls, focus moved to each new step heading, a polite live region for
+  progress and outcomes, 3 px focus outlines, WCAG AA text contrast, `prefers-reduced-motion`, and no horizontal
+  scrolling at 320 px. `tests/test_polished_workspace_99.py` checks these in Chrome.

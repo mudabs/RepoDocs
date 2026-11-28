@@ -50,12 +50,13 @@ export interface JobResult {
   warnings: string[]
 }
 
+/** Usage as the server reports it. Unknown is null, never zero. Request counts live in `JobBudget`. */
 export interface JobUsage {
-  requests: number
-  prompt_tokens: number | null
+  input_tokens: number | null
   output_tokens: number | null
   cost_microunits: number | null
   currency: string | null
+  accounting: 'known' | 'estimated' | 'unknown'
 }
 
 export interface Job {
@@ -66,8 +67,8 @@ export interface Job {
   state: JobState
   stage: JobStage
   sequence: number
-  created_at: string
-  updated_at: string
+  created_at?: string
+  updated_at?: string
   error: JobError | null
   result: JobResult | null
   budget: JobBudget | null
@@ -236,5 +237,7 @@ export interface WorkspaceHistoryItem {
   name: string
   sources: Array<Record<string, unknown>>
   saved: boolean
+  created_at?: number
+  updated_at?: number
   latest_job: Job | null
 }

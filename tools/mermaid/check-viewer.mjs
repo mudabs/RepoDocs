@@ -61,7 +61,7 @@ const report = await withBrowser(async (browser) => {
     if (msg.type() === 'error') consoleErrors.push(msg.text());
   });
 
-  await page.goto(baseUrl, { waitUntil: 'networkidle0', timeout: 20000 });
+  await page.goto(`${baseUrl}/workflow`, { waitUntil: 'networkidle0', timeout: 20000 });
   await clickButton(page, 'Open session');
   await waitForText(page, 'Select source repositories');
 
