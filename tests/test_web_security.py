@@ -268,7 +268,10 @@ def test_no_credentialed_cors_is_ever_offered() -> None:
 
 def test_hostile_artifacts_cannot_execute() -> None:
     page = response_headers()["Content-Security-Policy"]
-    assert "script-src 'self'" in page and "'unsafe-inline'" not in page and "object-src 'none'" in page
+    directives = {part.strip().split(" ", 1)[0]: part.strip() for part in page.split(";") if part.strip()}
+    assert directives.get("script-src") == "script-src 'self'"
+    assert directives.get("style-src") == "style-src 'self' 'unsafe-inline'"
+    assert directives.get("object-src") == "object-src 'none'"
     artifact = response_headers(artifact=True)
     assert artifact["Content-Disposition"] == "attachment"
     assert artifact["Content-Security-Policy"].startswith("sandbox;") and "script-src" not in artifact["Content-Security-Policy"]
