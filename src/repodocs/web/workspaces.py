@@ -436,6 +436,8 @@ GIT_OPTIONS = (
     "-c", "core.protectNTFS=true",
     "-c", "core.protectHFS=true",
     "-c", "core.autocrlf=false",
+    # Git for Windows otherwise skips paths over 260 characters, so a deep checkout looks dirty. No-op elsewhere.
+    "-c", "core.longpaths=true",
     "-c", "credential.helper=",
     "-c", "protocol.allow=never",
     "-c", "protocol.https.allow=always",

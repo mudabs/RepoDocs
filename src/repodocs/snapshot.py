@@ -83,7 +83,10 @@ def _inert_options(root: Path) -> list[str]:
     locks are off, so ``status`` does not rewrite the index, and hooks are looked up in an empty path.
     """
 
-    options = ["--no-optional-locks", "-c", "core.fsmonitor=false", "-c", f"core.hooksPath={os.devnull}"]
+    # core.longpaths: Git for Windows otherwise cannot stat paths over 260 characters and reports them deleted.
+    options = [
+        "--no-optional-locks", "-c", "core.fsmonitor=false", "-c", f"core.hooksPath={os.devnull}", "-c", "core.longpaths=true",
+    ]
     listed = _git(root, arguments=("config", "--list", "--name-only"))
     if listed.returncode != 0:
         # Without the list, filter commands could not be switched off, so nothing may be inspected.
