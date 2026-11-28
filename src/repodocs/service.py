@@ -15,7 +15,18 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Callable, Mapping, Protocol, TypeVar
 
-from .ai.budgets import BudgetedProvider, RunLimits, RunStopped, budgeted, ledger_for, write_receipt
+from .ai.budgets import (
+    DEFAULT_CONTEXT_WINDOWS,
+    METHOD_BYTE_BOUND,
+    BudgetedProvider,
+    RunLimits,
+    RunStopped,
+    budgeted,
+    estimate_tokens,
+    ledger_for,
+    serialized_request,
+    write_receipt,
+)
 from .ai.providers import Provider, ProviderResponse, require_source_consent
 from .common import write_json
 from .confirmations import apply_decisions, load_decisions, status_counts, unresolved_candidates
@@ -346,6 +357,51 @@ def scan(request: ScanRequest, hooks: RunHooks = NO_HOOKS) -> WorkflowResult:
     return WorkflowResult("scan", STATUS_COMPLETE, data, tuple(warnings))
 
 
+def initial_request_fit(provider: Provider, config: ProjectConfig, ir: dict[str, Any], limits: RunLimits) -> dict[str, Any]:
+    """Whether the first discovery request fits one request's context window, estimated locally.
+
+    The estimate is the byte bound of the serialized round-0 request, so it never contacts the provider and is an upper
+    bound, not a token count. ``limits`` are resolved run limits. Later rounds, repairs and retries are admitted again by
+    the run ledger before each request; this check only refuses work that cannot start.
+    """
+
+    from .architecture.discovery import initial_prompt_inputs
+
+    system, user, schema = initial_prompt_inputs(config, ir)
+    input_tokens = estimate_tokens(serialized_request(provider, system, user, schema))
+    window = int(limits.context_window_tokens or 0)
+    reserved = int(limits.request_output_tokens or 0)
+    if config.ai.limits.context_window_tokens is not None:
+        source = "operator"
+    elif provider.name in DEFAULT_CONTEXT_WINDOWS:
+        source = "provider-default"
+    else:
+        source = "fallback"
+    error: dict[str, str] | None = None
+    if input_tokens + reserved > window:
+        error = {
+            "code": "context-window",
+            "message": (
+                f"Initial request needs up to {input_tokens} input tokens ({METHOD_BYTE_BOUND}) plus {reserved} reserved "
+                f"output tokens ({input_tokens + reserved} total), exceeding the configured {window}-token context window "
+                f"({source}); nothing was sent. Narrow repository scope or configure a larger context window via "
+                "--context-window-tokens."
+            ),
+        }
+    return {
+        "context_window_source": source,
+        "initial_request": {
+            "input_tokens": input_tokens,
+            "estimate_method": METHOD_BYTE_BOUND,
+            "reserved_output_tokens": reserved,
+            "total_tokens": input_tokens + reserved,
+            "context_window_tokens": window,
+            "fits_context_window": error is None,
+        },
+        "error": error,
+    }
+
+
 def preview_context(request: ContextRequest, hooks: RunHooks = NO_HOOKS) -> WorkflowResult:
     """Write the bounded, redacted source context for review. Never contacts a provider."""
 
@@ -362,9 +418,20 @@ def preview_context(request: ContextRequest, hooks: RunHooks = NO_HOOKS) -> Work
         reasons[item["reason"]] = reasons.get(item["reason"], 0) + 1
     budget: dict[str, Any] | None = None
     if request.provider is not None:
-        # The limits and worst-case cost a run would start with. Nothing is counted or sent.
-        snapshot = ledger_for(request.provider, config.ai).snapshot()
-        budget = {key: snapshot[key] for key in ("limits", "price_profile", "max_estimated_cost_usd", "notes")}
+        # The limits, initial local estimate, and worst-case cost a run would start with. Nothing is counted or sent.
+        ledger = ledger_for(request.provider, config.ai)
+        snapshot = ledger.snapshot()
+        fit = initial_request_fit(request.provider, config, ir, ledger.limits)
+        budget = {
+            "limits": snapshot["limits"],
+            "price_profile": snapshot["price_profile"],
+            "max_estimated_cost_usd": snapshot["max_estimated_cost_usd"],
+            "notes": snapshot["notes"],
+            "context_window_source": fit["context_window_source"],
+            "initial_request": fit["initial_request"],
+            "preflight_ok": fit["error"] is None,
+            "preflight_error": fit["error"],
+        }
     data = {
         "context": path.as_posix(),
         "context_version": bundle["context_version"],

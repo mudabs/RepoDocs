@@ -653,6 +653,10 @@ class JobService:
             ledger = ledger_for(_identity(context), config.ai, request.run_limits())  # type: ignore[arg-type]
         except ConfigError as exc:
             raise _invalid(self._safe(str(exc))) from None
+        if not service.can_reuse_view(service.DiscoverRequest(workspace.root, refresh=request.refresh, limits=request.run_limits())):
+            fit = service.initial_request_fit(_identity(context), config, service.load_scanned_ir(config), ledger.limits)  # type: ignore[arg-type]
+            if fit["error"] is not None:
+                raise JobError("invalid-request", fit["error"]["message"], 422)
         # The worst case this job may use, reported before it starts. Unknown cost is null, never zero.
         return _budget(_summary_of(ledger.snapshot()))
 
