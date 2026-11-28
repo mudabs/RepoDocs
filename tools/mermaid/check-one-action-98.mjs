@@ -64,6 +64,8 @@ try {
   // Back returns to the home page with the saved project; reopening it must not run the model again.
   await page.goBack({ waitUntil: 'networkidle0' })
   await page.waitForSelector('button[aria-label="Open result for mudabs/EventShare"]', { timeout: 15000 })
+  const historyText = await page.evaluate(() => document.querySelector('[aria-label="Saved projects"]').innerText)
+  assert(/github\.com\/mudabs\/EventShare @ [0-9a-f]{7}/.test(historyText) && !historyText.includes('undefined'), `Saved project source is not shown: ${historyText}`)
   await page.click('button[aria-label="Open result for mudabs/EventShare"]')
   await page.waitForSelector('[aria-label^="Diagram canvas for"] svg', { timeout: 20000 })
 
