@@ -1,6 +1,6 @@
 # RepoDocs Roadmap and Validation Checklist
 
-**Target:** November 30, 2026 MVP, high schedule risk. Do not interpret this as a delivery commitment. Milestone 1 implementation is in progress.
+**Target:** November 30, 2026 MVP, high schedule risk. Do not interpret this as a delivery commitment. The local web-first baseline is implemented; the real-model quality gate (#54) and owner acceptance (#77) are open.
 
 ## Phase 0: contracts and threat model
 - Independent architecture review and threat model.
@@ -39,14 +39,11 @@
 - Coordination-repository config for multi-repo projects uses the existing destination configuration with sources checked out under `sources/`.
 - Not yet demonstrated: a real documentation pull request opened on GitHub, which needs a token and a coordination repository, and the end-to-end SmartCart change-to-docs-PR run.
 
-## Next delivery: local web-first diagram baseline (epic #63)
-- #64 specifies workflow, shared-engine contracts, quality rubric and ADR-027; no runtime web code is included in the spike.
-- After contracts: #65 grounding (separates member citation from computed claim support, ADR-028; automation cannot prove behavior and #54 review remains), #66 useful context, #67 aggregate token/cost limits (implemented, ADR-031), #69 shared application service; #68 provider integration follows usage contracts (native OpenAI Responses provider, ADR-032).
-- #71's access, credential and consent boundary (`repodocs.web.security`, ADR-033) is implemented as a pure-Python module; #69 and #72 integrate it.
-- #70 safe sources and #71 local access/credential protection precede #72 bounded HTTP jobs and #73 browser workflow. #74 scoped views runs alongside this once its dependencies land.
-- #72's bounded HTTP jobs (`repodocs.web.jobs`, `repodocs.web.app`, ADR-036) are implemented over the shared service, workspaces and security boundary, with polling, a bounded queue, idempotent submission, explicit refresh, cancellation and restart recovery. The browser workflow (#73) and packaging (#76) follow.
-- #75 interactive evidence/downloads, #76 packaging and #77 CLI/web parity complete the local baseline; #54 remains the existing real-source quality gate and owner go/no-go.
-- Each issue ships in a focused PR with relevant tests and `Closes #<issue>` once acceptance criteria are met; verify issue closure and board status after merge to main.
+## Local web-first diagram baseline (epic #63)
+- Implemented and merged: contracts (#64, ADR-027), grounding (#65), context selection (#66), usage budgets (#67), the OpenAI Responses provider (#68), the shared service (#69), safe workspaces (#70), the access, credential and consent boundary (#71), bounded HTTP jobs (#72), the browser workflow (#73), readable views (#74), the evidence viewer (#75), installation (#76), Mermaid styling and sizing (#93), model limits and preflight (#94), the SQLite profile and history store (#95, ADR-040), GitHub URL pinning (#96), drafts and browser navigation (#97), one-action orchestration (#98) and the URL-first home page (#99).
+- CLI and web produce byte-identical artifacts for equivalent inputs (tests and an EventShare run); the evidence is in `docs/evaluation/web-release-acceptance.md`.
+- Open: #77 stays open until #54 has real-model outcomes and the owner's go/no-go, and the owner has walked through the running app. Deterministic output alone shows repositories, languages, frameworks and tables, not application components.
+- Not yet demonstrated: a real documentation pull request on GitHub for SmartCart, which needs a coordination repository and a token.
 
 ## Phase 5: post-MVP
 - Hosted managed AI with quotas, privacy and cost controls.
@@ -65,4 +62,4 @@
 - All advertised limitations are visible in output.
 
 ## Agent's next action
-Complete and review #64 before dependent local web implementation. Preserve the existing CLI/Actions contracts and the unresolved real-model quality acceptance in #54.
+Record the #54 owner decision, then close #77 and epic #63 only if every acceptance gate passes. Cut the first release with `docs/RELEASE.md` once the owner approves publication.
