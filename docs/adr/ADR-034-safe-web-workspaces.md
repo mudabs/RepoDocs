@@ -7,6 +7,8 @@
 
 ## Context
 
+Amendment (#96, 2026-11-27): the browser may also submit a public repository URL. `POST /api/v1/sources/github/resolve` accepts only `https://github.com/<owner>/<repo>` (optional `www.`, trailing slash or `.git`) and refuses other schemes and hosts, ports, userinfo, queries, fragments and extra path segments. It reads two fixed, unauthenticated API URLs through the same bounded fetch (no proxies, credentials or redirects): `https://api.github.com/repos/<owner>/<repo>` for the default branch and `https://api.github.com/repos/<owner>/<repo>/commits/<branch>` for its head. Only an exact 40-character SHA is returned, and the workspace is then created from canonical owner, repository and that SHA exactly as before, so a branch that moves after resolution cannot change the acquired revision. Resolution builds no provider and needs no consent. A URL edited after resolution drops the earlier pin in the browser.
+
 Review update (2026-11-21): preflight first resolves the immutable commit through GitHub's commit endpoint, then requests its validated root tree SHA at a constructed fixed GitHub URL. It never treats a commit ID as a tree ID or follows a response-supplied URL. Canonical origin metadata is retained for pinned evidence links. Streaming reads allow deadline checks between individual reads, and the Git time limit covers the entire acquisition rather than resetting for each command.
 
 The browser workflow must analyze approved local checkouts and public GitHub repositories without running their code, choosing server paths, or leaving unbounded data behind. Existing scanning already records commit or content-fingerprint provenance and inspects Git state with fsmonitor, hooks and filters disabled.
