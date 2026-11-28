@@ -113,13 +113,22 @@ Server-owned workspaces are created under `<store_root>/ws-<id>/`, containing:
 - `jobs/` (atomic job metadata without credentials)
 - `destination/` and `sources/` (fetched pinned checkouts)
 
-Web-only metadata (local profiles, non-secret preferences, hashed session authenticators, and
-saved workspace/job history) is stored in `<store_root>/repodocs-web.sqlite3` (WAL mode, schema
-migrations). Provider API keys, raw session bearer tokens, and consent receipts are never
-stored in SQLite. Core `repodocs` CLI and GitHub Actions never read or require this database.
+Web-only metadata (local profiles, non-secret preferences, hashed session authenticators,
+workspace ownership and a job history mirror) is stored in `<store_root>/repodocs-web.sqlite3`
+(WAL mode, versioned migrations, ADR-040). Provider API keys, raw session cookies, CSRF and auth
+tokens, and consent receipts are never stored in SQLite; provider connections and consent end with
+the server. Core `repodocs` CLI and GitHub Actions never read or require this database.
 
-To back up `<store_root>/repodocs-web.sqlite3`, stop `repodocs-web` (or use `WebStore.backup_to` /
-`sqlite3 .backup`) and copy `<store_root>/ws-*/` alongside it.
+Trust and lifetimes: on loopback a browser session lasts 30 days and renews each time the app opens
+a session. Anyone who can use that browser profile or read the store directory can reach its saved
+history (local-machine trust). Non-loopback access always needs the auth token and keeps 8-hour
+sessions; one shared operator token is not multi-user isolation.
+
+Backup and restore: run `sqlite3 <store_root>/repodocs-web.sqlite3 ".backup backup.sqlite3"` (safe
+while running) or stop `repodocs-web` and copy the file, and copy the `<store_root>/ws-*/`
+directories with it. To restore, stop the server and put both back. A corrupt or newer-version
+database stops `repodocs-web` with exit code 2 and is never reset; restore it from a backup or move
+it aside to start with empty history.
 
 To remove old unsaved/ephemeral inactive workspaces on startup:
 
@@ -129,9 +138,12 @@ repodocs-web --store-root ./repodocs-store --cleanup-max-age-hours 24
 
 Cleanup inspects only direct children of `store_root` with a valid `.repodocs-workspace.json`
 marker, skips symlinks, non-workspace directories, active/uncertain jobs, and saved user
-workspaces recorded in SQLite. Logging out (`POST /api/v1/session/end`) revokes only the active
-browser session cookie and CSRF token while preserving saved workspaces; deleting a workspace
-(`DELETE /api/v1/workspaces/{workspace_id}`) removes both its directory and SQLite metadata.
+workspaces recorded in SQLite. Logging out (`POST /api/v1/session/end`) revokes every session of
+that profile, its provider connections and consent. Its saved workspaces stay on disk and in SQLite,
+but a later session is a new profile and cannot reach them; delete work you no longer want before
+logging out. Deleting a workspace (`DELETE /api/v1/workspaces/{workspace_id}`) removes both its
+directory and its SQLite metadata. Workspaces created before the SQLite store existed are not
+adopted by any profile.
 
 ## 8. Troubleshooting
 

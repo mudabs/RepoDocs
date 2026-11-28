@@ -65,6 +65,9 @@ class WebSettings:
     max_body_bytes: int = 64 * 1024
     frontend_dist: Path | None = None
     use_store: bool = True
+    # A loopback session with saved history lasts this long (sliding: reopening the session rotates and renews it).
+    # Exposed (non-loopback) access keeps the shorter SessionGuard default and always needs the auth token to open.
+    durable_session_ttl: float = 30 * 24 * 3600
 
 
 class _TooLarge(Exception):
@@ -95,7 +98,10 @@ def create_app(
     """
 
     store = WebStore(settings.workspaces.store_root / STORE_FILENAME) if settings.use_store else None
-    guard = SessionGuard(settings.access, store=store)
+    if store is not None and not settings.access.exposed:
+        guard = SessionGuard(settings.access, store=store, ttl=settings.durable_session_ttl)
+    else:
+        guard = SessionGuard(settings.access, store=store)
     providers = ProviderSessions(guard)
     consent = ConsentLedger(guard)
     jobs = JobService(workspace_manager or WorkspaceManager(settings.workspaces), providers, consent, settings.jobs,
@@ -156,6 +162,8 @@ def create_app(
             return _error(404, "not-found", str(exc))
         except LimitExceeded as exc:
             return _error(429, "queue-full", str(exc))
+        except StoreError:
+            return _error(503, "store-unavailable", "The saved-history store is busy or unavailable; try again")
 
     # ------------------------------------------------------------------ session
     @app.post("/api/v1/session")
@@ -166,6 +174,8 @@ def create_app(
             payload = await read_json(request)
             token = payload.get("auth_token") if isinstance(payload, dict) else None
             bootstrap = guard.open_session(dict(request.headers), token if isinstance(token, str) else None)
+        except StoreError:
+            return _error(503, "store-unavailable", "The saved-history store is busy or unavailable; try again")
         except _TooLarge:
             return _error(413, "too-large", f"The request body is larger than {settings.max_body_bytes} bytes")
         except JobError as exc:

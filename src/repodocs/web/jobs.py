@@ -35,11 +35,13 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Callable, Mapping
 from urllib.parse import urlsplit
 
+from .store import StoreError
+
 if TYPE_CHECKING:
     from .store import WebStore
 
 from .. import service
-from ..ai.budgets import METHOD_BYTE_BOUND, PriceProfile, RunLimits, RunStopped, estimate_tokens, ledger_for, serialized_request
+from ..ai.budgets import PriceProfile, RunLimits, RunStopped, ledger_for
 from ..ai.bundle import redact_text
 from ..ai.providers import AnthropicProvider, OllamaProvider, Provider, is_loopback
 from ..common import canonical_json, scrub, sha256_bytes, write_json_atomic
@@ -413,10 +415,13 @@ class JobService:
             directory = None if root is None else root / JOBS_DIRECTORY
             if directory is None or directory.is_symlink() or not directory.is_dir():
                 continue
+            recorded = self._recorded_owner(workspace_id)
             for path in sorted(directory.glob("job_*.json"))[: self.settings.max_jobs_per_workspace]:
                 job = self._load(path, workspace_id)
                 if job is None:
                     continue
+                if recorded is not None and job.owner != recorded:
+                    continue  # file and metadata disagree about the owner: show it to nobody
                 self._workspaces.setdefault(workspace_id, _Workspace(workspace_id, job.owner, root))  # type: ignore[arg-type]
                 if job.state in ACTIVE_STATES:
                     started = job.stage in ("discover", "generate", "validate")
@@ -432,6 +437,11 @@ class JobService:
                         job.usage = dict(NO_REQUESTS)
                     job.sequence += 1
                     self._persist(job)
+                elif self._store is not None:
+                    try:
+                        self._store_job(job)  # reconcile history that a failed metadata write left behind
+                    except StoreError:
+                        pass
                 self._jobs[job.job_id] = job
                 self._keys[(job.owner, job.workspace_id, job.idempotency_key)] = job.job_id
         if self._store is not None:
@@ -442,6 +452,12 @@ class JobService:
                 root = _owned_path(self._manager.settings.store_root, workspace_id)
                 if record is not None and root is not None:
                     self._workspaces[workspace_id] = _Workspace(workspace_id, record["profile_id"], root)
+
+    def _recorded_owner(self, workspace_id: str) -> str | None:
+        if self._store is None:
+            return None
+        record = self._store.get_workspace(workspace_id)
+        return None if record is None else str(record["profile_id"])
 
     def _load(self, path: Path, workspace_id: str) -> _Job | None:
         try:
@@ -466,23 +482,32 @@ class JobService:
             "request_hash": job.request_hash, "artifacts": job.artifacts, "created_at": job.created_at, "job": job.public(),
         })
         if self._store is not None:
-            self._store.save_job(
-                job_id=job.job_id,
-                workspace_id=job.workspace_id,
-                profile_id=job.owner,
-                idempotency_key=job.idempotency_key,
-                request_hash=job.request_hash,
-                state=job.state,
-                stage=job.stage,
-                sequence=job.sequence,
-                error=job.error,
-                result=job.result,
-                usage=job.usage,
-                budget=job.budget,
-                artifacts=job.artifacts,
-                created_at=job.created_at,
-                updated_at=self._clock(),
-            )
+            # The job file above is the authoritative record and is rebuilt into the store's history on restart. A locked
+            # or failing metadata store must never stop a worker or leave a job without its terminal state.
+            try:
+                self._store_job(job)
+            except StoreError:
+                pass
+
+    def _store_job(self, job: _Job) -> None:
+        assert self._store is not None
+        self._store.save_job(
+            job_id=job.job_id,
+            workspace_id=job.workspace_id,
+            profile_id=job.owner,
+            idempotency_key=job.idempotency_key,
+            request_hash=job.request_hash,
+            state=job.state,
+            stage=job.stage,
+            sequence=job.sequence,
+            error=job.error,
+            result=job.result,
+            usage=job.usage,
+            budget=job.budget,
+            artifacts=job.artifacts,
+            created_at=job.created_at,
+            updated_at=self._clock(),
+        )
 
     # ------------------------------------------------------------------ workspaces and previews
     def resolve_github_url(self, access: Access, payload: Any) -> dict[str, Any]:
@@ -524,10 +549,14 @@ class JobService:
         config.ai = replace(config.ai, limits=self.settings.run_limits, prices=self.settings.prices)
         config.save()
         source_dicts = [record.to_dict() for record in workspace.sources]
+        if self._store is not None:
+            try:
+                self._store.save_workspace(workspace.workspace_id, access.owner, payload["name"], source_dicts, now=self._clock())
+            except StoreError:
+                shutil.rmtree(workspace.root, ignore_errors=True)
+                raise JobError("store-unavailable", "The saved-history store is unavailable; no workspace was kept. Try again", 503) from None
         with self._cond:
             self._workspaces[workspace.workspace_id] = _Workspace(workspace.workspace_id, access.owner, workspace.root)
-        if self._store is not None:
-            self._store.save_workspace(workspace.workspace_id, access.owner, payload["name"], source_dicts, now=self._clock())
         return {"workspace_id": workspace.workspace_id, "sources": source_dicts}
 
     # ------------------------------------------------------------------ profile & history (#95)
@@ -633,14 +662,18 @@ class JobService:
         self._validate_draft_data(payload["data"])
         if self._store is None:
             return {"draft_id": draft_id, "profile_id": access.owner, "version": 1, "data": payload["data"]}
-        from .store import StoreError
+        from .store import DraftConflict, DraftNotOwned, StoreError
 
         try:
             return self._store.save_draft(
                 draft_id, access.owner, payload["data"], expected_version=expected, now=self._clock()
             )
-        except StoreError as exc:
+        except DraftNotOwned:
+            raise _not_found("draft") from None
+        except DraftConflict as exc:
             raise JobError("conflict", str(exc), 409) from None
+        except StoreError:
+            raise JobError("store-unavailable", "The saved-history store is busy or unavailable; try again", 503) from None
 
     def delete_draft(self, access: Access, draft_id: str) -> None:
         if self._store is None or not self._store.delete_draft(draft_id, access.owner):
@@ -825,21 +858,9 @@ class JobService:
         except ConfigError as exc:
             raise _invalid(self._safe(str(exc))) from None
         if not service.can_reuse_view(service.DiscoverRequest(workspace.root, refresh=request.refresh, limits=request.run_limits())):
-            from ..architecture.discovery import initial_prompt_inputs
-
-            ir = service.load_scanned_ir(config)
-            system, user, schema = initial_prompt_inputs(config, ir)
-            estimate = estimate_tokens(serialized_request(_identity(context), system, user, schema))
-            reserved_output = int(ledger.limits.request_output_tokens or 0)
-            window = int(ledger.limits.context_window_tokens or 0)
-            if estimate + reserved_output > window:
-                raise JobError(
-                    "invalid-request",
-                    f"Initial request needs up to {estimate} input tokens ({METHOD_BYTE_BOUND}) plus {reserved_output} "
-                    f"reserved output tokens ({estimate + reserved_output} total), exceeding the configured {window}-token "
-                    "context window; nothing was sent. Narrow scope or configure --context-window-tokens.",
-                    422,
-                )
+            fit = service.initial_request_fit(_identity(context), config, service.load_scanned_ir(config), ledger.limits)  # type: ignore[arg-type]
+            if fit["error"] is not None:
+                raise JobError("invalid-request", fit["error"]["message"], 422)
         # The worst case this job may use, reported before it starts. Unknown cost is null, never zero.
         return _budget(_summary_of(ledger.snapshot()))
 

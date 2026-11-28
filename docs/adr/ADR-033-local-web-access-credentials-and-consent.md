@@ -19,7 +19,7 @@ A browser workflow can start paid, source-disclosing work. A website the user ha
 - **Consent.** `ConsentLedger` receipts bind the owner, kinds (`external`, `source-excerpts`; separate, one never implies the other), provider, host, model, policy and the reviewed preview hash, and expire (1 hour). Provider, host and model come from the credential context, so switching providers needs a new receipt. Revocation deletes the receipt.
 - **Endpoint identity.** Connections accept only the supported providers. Canonical URLs reject credentials, queries, fragments, control characters and insecure remote HTTP; only the scheme and authority are normalized, preserving case-sensitive API paths. Bare authorities become HTTPS (loopback Ollama defaults to HTTP). Invalid endpoint errors never echo their input. An external `RunGate` cannot request an empty consent scope; the adapter must additionally require source-excerpt consent for architecture work.
 - **Choke point.** `RunGate` re-checks session, credential and consent at admission and before every `call`. The service must route each model request, token-count request and retry through `call`, with a retry being a new call. An in-flight request cannot be recalled; the next is refused.
-- **Hostile content.** `response_headers` provides a strict CSP, `nosniff`, no caching and no CORS; repository-derived artifacts (HTML, SVG, Markdown) are served as sandboxed attachments with no script. The UI (#73) must render repository text as text and use Mermaid with its strict security level; ADR-025 escaping of generated output stays in force.
+- **Hostile content.** `response_headers` provides a strict CSP (inline styles are allowed for Mermaid's SVG theme only; see ADR-038, #93), `nosniff`, no caching and no CORS; repository-derived artifacts (HTML, SVG, Markdown) are served as sandboxed attachments with no script. The UI (#73) must render repository text as text and use Mermaid with its strict security level; ADR-025 escaping of generated output stays in force.
 
 ## Alternatives
 
@@ -34,3 +34,7 @@ A browser workflow can start paid, source-disclosing work. A website the user ha
 - Pattern redaction of provider-side or provider-error text is not provided here; the boundary never logs and never puts a credential in its own messages.
 - #69 must accept a `RunGate` (or equivalent per-request callback) and call it before every provider and count request including repairs and retries; #72 must call `authorize` first and apply `response_headers`. Until then no HTTP path exists to exercise the boundary end to end; tests use in-process fake paid operations.
 - Integrated by ADR-036 (#72): every route authorizes first and applies `response_headers`; `RunGate` reaches the shared service through `DiscoverRequest.gate`, and `tests/test_web_jobs.py` exercises the boundary over HTTP (unrelated origins, missing CSRF, revoked consent, disconnected credentials and secret canaries).
+
+## Amendment (2026-11-27, #95)
+
+ADR-040 adds an optional web-only SQLite store for local profiles, hashed session authenticators and saved workspace/job history, so a legitimate owner keeps their work across browser and server restarts. Provider credentials and consent receipts remain in memory only, job files remain authoritative, and nothing resumes inference after a restart.
