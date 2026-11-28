@@ -205,6 +205,43 @@ try {
     assert(pageErrors.length === 0, `Page errors: ${pageErrors.join('; ')}`);
     assert(consoleErrors.length === 0, `Console errors: ${consoleErrors.join('; ')}`);
     console.log(JSON.stringify({ ok: true, outcome: outcome.slice(0, 1500), leak, reopened: Boolean(openButton) }));
+  } else if (scenario === 'reconnect-cancel' || scenario === 'provider-error') {
+    const connectOllama = async () => {
+      await waitForText(page, 'Connect an AI provider');
+      await page.type('input[aria-label="Model name"]', 'replay-model');
+      await clickButton(page, 'Connect provider');
+    };
+    await page.type('#repo-url', 'shop');
+    await clickButton(page, 'Generate architecture');
+    await connectOllama();
+    if (scenario === 'provider-error') {
+      await waitForText(page, 'The run failed and produced no current result.', 45000);
+      await page.waitForFunction(() => Array.from(document.querySelectorAll('button')).some((b) => b.textContent.trim() === 'Start another'));
+      assert(pageErrors.length === 0, `Page errors: ${pageErrors.join('; ')}`);
+      console.log(JSON.stringify({ ok: true, text: (await page.evaluate(() => document.body.innerText)).slice(0, 1200) }));
+    } else {
+      await waitForText(page, 'Generating');
+      // Reload mid-run: the page forgets the provider, but the run continues on the server.
+      await page.reload({ waitUntil: 'networkidle0' });
+      await page.waitForSelector('button[aria-label="Show progress for shop"]', { timeout: 15000 });
+      await page.evaluate(() => {
+        window.__announcements = [];
+        const region = document.querySelector('[role="status"][aria-live="polite"]');
+        new MutationObserver(() => window.__announcements.push(region.textContent)).observe(region, { childList: true, characterData: true, subtree: true });
+      });
+      // Generating again for the same source follows the active run instead of submitting a second one.
+      await page.$eval('#repo-url', (el) => { el.value = ''; });
+      await page.type('#repo-url', 'shop');
+      await clickButton(page, 'Generate architecture');
+      await connectOllama();
+      await waitForText(page, 'Generating');
+      await clickButton(page, 'Cancel generation');
+      await waitForText(page, 'The run was cancelled.', 45000);
+      const announcements = await page.evaluate(() => window.__announcements);
+      assert(announcements.some((a) => a.includes('already in progress')), `Reconnect was not announced: ${JSON.stringify(announcements)}`);
+      assert(pageErrors.length === 0, `Page errors: ${pageErrors.join('; ')}`);
+      console.log(JSON.stringify({ ok: true }));
+    }
   } else {
     throw new Error(`Unknown scenario ${scenario}`);
   }

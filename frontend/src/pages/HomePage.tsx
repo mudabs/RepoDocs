@@ -194,8 +194,8 @@ export function HomePage({ onViewJob, onAdvanced }: Props) {
       // A run for this source that is still active (for example after a lost response or a reload) is followed,
       // never submitted a second time.
       if (saved?.latest_job && !TERMINAL.includes(saved.latest_job.state)) {
-        setAnnounce('A run for this repository is already in progress.')
         follow(saved.latest_job)
+        setAnnounce('A run for this repository is already in progress; showing its progress instead of starting another.')
         return
       }
       const workspace = saved ? { workspace_id: saved.workspace_id } : await client.createWorkspace(name, sources)
