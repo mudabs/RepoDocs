@@ -5,7 +5,7 @@ providers and visible diagrams do not show that the diagrams are useful; that ju
 
 | Item | Value |
 |---|---|
-| Engine | `main` at `4ce55076ad6116f83baaadc0091233ff228f95e7` |
+| Engine | `main` at `b49205584c3e7426133510854c4f20068d10e0d4` (packaged walkthrough); parity run on `4ce55076` with the same engine code |
 | Platform | Windows 11, Python 3.11.9, Node 24, Chrome 158; CI also runs Linux and Windows on Python 3.11 and 3.14 |
 | EventShare | `mudabs/EventShare` at `93970207969ecdb9b35cf5c1f8e811ef930a2a55` |
 | #54 subjects | DigitalBoneBox `602e9c53c656f55b5e69b1a4dd4c6f79e53b368c`, Flaskr `49943b5a94413a530761350f04e896f76e8d620e` |
@@ -15,7 +15,7 @@ providers and visible diagrams do not show that the diagrams are useful; that ju
 | Criterion | Evidence | Status |
 |---|---|---|
 | Equivalent CLI and web inputs give matching artifacts | `test_the_cli_and_the_http_adapter_produce_identical_state_and_artifacts` (replayed AI), `test_cli_and_an_in_process_adapter_produce_identical_ir_view_and_artifacts`, `test_web_artifact_bytes_match_cli_for_same_source`; EventShare deterministic run below: IR, manifest, Markdown, overview and ERD byte-identical | Met |
-| Fresh-user EventShare flow without SHA, workspace or token setup | URL alone resolves and pins `93970207...` and acquires a clean checkout on Windows (#96, long paths fixed); home page runs local facts end to end; AI path blocked by preflight on the configured 32,768-token window (EventShare needs about 92,600 input tokens plus 16,000 reserved output) | Local path met; AI path not verified with a real model |
+| Fresh-user EventShare flow without SHA, workspace or token setup | Packaged app on `b4920558`: URL alone pins `93970207`; provider chosen from the model list (`qwen2.5-coder:7b`, local); coverage disclosed before the run; one model request; viewer, evidence, refresh and reopen work. The AI result was **partial** (`no-progress`). A rehearsal on the same code and model completed (`succeeded`, 1 request, 191 s). | Ran end to end; AI result not yet complete in the live run |
 | Back/Forward, refresh, deep links, browser and server restart | `check-nav-97.mjs` (Back, Forward, refresh, bookmarked result, browser restart with the same profile), `test_restart_restores_owned_draft_and_result_without_inference_and_requires_fresh_authorization`, home tests (reload, history reopen) | Met |
 | Reopen, restore and download never run inference | Provider factory counts asserted in #97, #98 and #99 browser tests (0 for local runs, exactly 1 for one consented AI run, still 1 after reload, reopen, reconnect and cancel) | Met |
 | Expired provider, revoked consent need explicit recovery | After restart the provider reads 404 and old consent is refused 403; home asks to connect again after a reload; a second AI run shows a fresh disclosure review | Met |
@@ -50,6 +50,17 @@ workspace after its outputs were removed (the IR records absolute source paths, 
 - Signing out hides saved projects from new sessions (ADR-040); the owner chose to keep this and document it.
 - A context-window refusal at submission is reported as `invalid-request` (422); only the preview carries `context-window` as a code.
 - The external-provider run (OpenAI `gpt-6 Sol`) has not been performed: no API key is configured and no spend cap or price profile was given.
+- The first EventShare preflight failure (92,643 byte-bound input tokens against a 32,768-token window) is fixed by #112: the context is fitted to the model's input allowance and disclosed. With the default 16,000-token output reserve only 4 of 230 candidate files fit and the storage layer is not covered. The byte bound is conservative: the fitted request measured 15,371 byte-bound tokens but the model reported 3,210 input tokens.
+- During a run the progress card claimed no model request was made while one was in flight; fixed by #114.
+
+## Live AI walkthrough (packaged app, `b4920558`)
+
+- Wheel SHA-256 `7766ed6be9b3281025898a4909475777eff4c18e23d2105260aef6f06284250c`, fresh virtual environment, `repodocs-web --context-window-tokens 32768 --model ollama:qwen2.5-coder:7b --model openai:gpt-6-sol`; `/health` ok, `/ready` with `ui_built: true`.
+- Home page: `https://github.com/mudabs/EventShare`, AI architecture. Provider setup listed `qwen2.5-coder:7b` (Ollama) and `gpt-6-sol` (OpenAI) from the operator's list; choosing one filled the model field.
+- Before the run: "4 of 230 candidate source files are included. The context was reduced to 16,812 bytes to fit the model's input allowance. Not covered: storage files."
+- Result: **partial** (`no-progress`) after one request (4,019 tokens), with 4 components (1 supported, 3 unverified: generic names `api`, `backend-service`, `db`) and 1 connection rejected as unsupported. The supported component cites `frontend/src/components/Gallery.tsx:164-207` at `93970207`.
+- Refreshing `/viewer/<job>` and reopening from Saved projects made only GET requests: no job, provider or model call.
+- This is not a successful quality outcome. It is evidence for the #54 decision, not a substitute for it.
 
 ## Packaged build
 
