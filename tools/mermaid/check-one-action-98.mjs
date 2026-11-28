@@ -44,7 +44,7 @@ try {
   await clickButton(page, 'Generate architecture')
   await page.waitForSelector('input[aria-label="Provider host URL"]', { timeout: 15000 })
   await page.evaluate(nextModel => {
-    const modelInput = Array.from(document.querySelectorAll('input')).find(i => i.placeholder?.includes('llama'))
+    const modelInput = Array.from(document.querySelectorAll('input')).find(i => i.getAttribute('aria-label') === 'Model name')
     if (!modelInput) throw new Error('Model input not found')
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set
     setter.call(modelInput, nextModel)
