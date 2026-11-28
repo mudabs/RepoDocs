@@ -357,11 +357,55 @@ def scan(request: ScanRequest, hooks: RunHooks = NO_HOOKS) -> WorkflowResult:
     return WorkflowResult("scan", STATUS_COMPLETE, data, tuple(warnings))
 
 
+def initial_request_fit(provider: Provider, config: ProjectConfig, ir: dict[str, Any], limits: RunLimits) -> dict[str, Any]:
+    """Whether the first discovery request fits one request's context window, estimated locally.
+
+    The estimate is the byte bound of the serialized round-0 request, so it never contacts the provider and is an upper
+    bound, not a token count. ``limits`` are resolved run limits. Later rounds, repairs and retries are admitted again by
+    the run ledger before each request; this check only refuses work that cannot start.
+    """
+
+    from .architecture.discovery import initial_prompt_inputs
+
+    system, user, schema = initial_prompt_inputs(config, ir)
+    input_tokens = estimate_tokens(serialized_request(provider, system, user, schema))
+    window = int(limits.context_window_tokens or 0)
+    reserved = int(limits.request_output_tokens or 0)
+    if config.ai.limits.context_window_tokens is not None:
+        source = "operator"
+    elif provider.name in DEFAULT_CONTEXT_WINDOWS:
+        source = "provider-default"
+    else:
+        source = "fallback"
+    error: dict[str, str] | None = None
+    if input_tokens + reserved > window:
+        error = {
+            "code": "context-window",
+            "message": (
+                f"Initial request needs up to {input_tokens} input tokens ({METHOD_BYTE_BOUND}) plus {reserved} reserved "
+                f"output tokens ({input_tokens + reserved} total), exceeding the configured {window}-token context window "
+                f"({source}); nothing was sent. Narrow repository scope or configure a larger context window via "
+                "--context-window-tokens."
+            ),
+        }
+    return {
+        "context_window_source": source,
+        "initial_request": {
+            "input_tokens": input_tokens,
+            "estimate_method": METHOD_BYTE_BOUND,
+            "reserved_output_tokens": reserved,
+            "total_tokens": input_tokens + reserved,
+            "context_window_tokens": window,
+            "fits_context_window": error is None,
+        },
+        "error": error,
+    }
+
+
 def preview_context(request: ContextRequest, hooks: RunHooks = NO_HOOKS) -> WorkflowResult:
     """Write the bounded, redacted source context for review. Never contacts a provider."""
 
     from .architecture.context import CONTEXT_FILENAME, build_context, context_hash
-    from .architecture.discovery import initial_prompt_inputs
 
     config = ProjectConfig.load(request.root)
     ir = load_scanned_ir(config)
@@ -377,45 +421,16 @@ def preview_context(request: ContextRequest, hooks: RunHooks = NO_HOOKS) -> Work
         # The limits, initial local estimate, and worst-case cost a run would start with. Nothing is counted or sent.
         ledger = ledger_for(request.provider, config.ai)
         snapshot = ledger.snapshot()
-        system, user, schema = initial_prompt_inputs(config, ir)
-        input_estimate = estimate_tokens(serialized_request(request.provider, system, user, schema))
-        window = int(snapshot["limits"]["context_window_tokens"])
-        reserved_output = int(snapshot["limits"]["request_output_tokens"])
-        total_estimate = input_estimate + reserved_output
-        fits_window = total_estimate <= window
-        if config.ai.limits.context_window_tokens is not None:
-            window_source = "operator"
-        elif request.provider.name in DEFAULT_CONTEXT_WINDOWS:
-            window_source = "provider-default"
-        else:
-            window_source = "fallback"
-        preflight_error: dict[str, str] | None = None
-        if not fits_window:
-            preflight_error = {
-                "code": "context-window",
-                "message": (
-                    f"Initial request needs up to {input_estimate} input tokens ({METHOD_BYTE_BOUND}) plus "
-                    f"{reserved_output} reserved output tokens ({total_estimate} total), exceeding the configured "
-                    f"{window}-token context window ({window_source}). Narrow repository scope or configure a larger "
-                    "context window via --context-window-tokens."
-                ),
-            }
+        fit = initial_request_fit(request.provider, config, ir, ledger.limits)
         budget = {
             "limits": snapshot["limits"],
             "price_profile": snapshot["price_profile"],
             "max_estimated_cost_usd": snapshot["max_estimated_cost_usd"],
             "notes": snapshot["notes"],
-            "context_window_source": window_source,
-            "initial_request": {
-                "input_tokens": input_estimate,
-                "estimate_method": METHOD_BYTE_BOUND,
-                "reserved_output_tokens": reserved_output,
-                "total_tokens": total_estimate,
-                "context_window_tokens": window,
-                "fits_context_window": fits_window,
-            },
-            "preflight_ok": fits_window,
-            "preflight_error": preflight_error,
+            "context_window_source": fit["context_window_source"],
+            "initial_request": fit["initial_request"],
+            "preflight_ok": fit["error"] is None,
+            "preflight_error": fit["error"],
         }
     data = {
         "context": path.as_posix(),

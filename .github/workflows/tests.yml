@@ -23,7 +23,8 @@ jobs:
     # Check names are stable and used by branch protection: "test (ubuntu-latest, 3.11)" etc.
     name: test (${{ matrix.os }}, ${{ matrix.python }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    # Windows runs the full suite with real-browser checks in about 10 to 14 minutes; leave headroom.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:

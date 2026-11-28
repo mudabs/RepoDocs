@@ -33,7 +33,7 @@ from repodocs.web.workspaces import WorkspaceSettings  # noqa: E402
 from conftest import invoke  # noqa: E402
 from test_architecture_discovery import FIXTURE, full_answer  # noqa: E402
 from test_security_acceptance_71 import FRONTEND_DIST, TOOL_DIRECTORY, _browser_or_skip, _free_port  # noqa: E402
-from test_web_jobs import Api, Factory, Replay, architecture_job, request, shop  # noqa: E402
+from test_web_jobs import Api, Factory, Replay, architecture_job, asks, request, shop  # noqa: E402
 
 
 @contextmanager
@@ -332,3 +332,69 @@ def test_real_browser_preflight_block_and_retry_recovery(tmp_path: Path) -> None
             check=False,
         )
         assert res.returncode == 0, f"Browser budget-retry failed:\nSTDOUT: {res.stdout}\nSTDERR: {res.stderr}"
+
+
+def test_later_round_is_admitted_again_and_stops_before_an_oversized_second_request(tmp_path: Path) -> None:
+    """A passing first admission is not permission for later rounds: each request is counted and checked first."""
+
+    class _GrowingCounter(Replay):
+        def __init__(self, *replies: Any) -> None:
+            super().__init__(*replies)
+            self.counts = [1_000, 200_000]
+            self.count_calls = 0
+
+        def count_input_tokens(self, system: str, user: str, schema: dict[str, Any]) -> int:
+            self.count_calls += 1
+            return self.counts[min(self.count_calls - 1, len(self.counts) - 1)]
+
+    provider = _GrowingCounter(asks, full_answer)
+    with _running(tmp_path, Factory(provider), run_limits=RunLimits(context_window_tokens=131072)) as (api, _, _factory):
+        _, _, queued = architecture_job(api)
+        job = api.wait(queued["job_id"])
+
+    assert provider.count_calls == 2
+    assert len(provider.messages) == 1, "the second, oversized request must never be sent"
+    assert job["budget"]["requests"] == 1
+    assert job["budget"]["count_requests"] == 2
+    assert job["budget"]["stop_reason"] == STOP_CONTEXT
+    assert job["state"] == "budget-exhausted", job["state"]
+
+
+def test_changed_provider_model_needs_its_own_consent_and_reports_its_own_window(tmp_path: Path) -> None:
+    """Consent and limits are bound to one provider/model; switching model refuses the old receipt before any count."""
+
+    class _Counter(Replay):
+        def __init__(self, *replies: Any) -> None:
+            super().__init__(*replies)
+            self.count_calls = 0
+
+        def count_input_tokens(self, system: str, user: str, schema: dict[str, Any]) -> int:
+            self.count_calls += 1
+            return 1_000
+
+    provider = _Counter(full_answer)
+    with _running(tmp_path, Factory(provider), run_limits=RunLimits()) as (api, _, factory):
+        workspace = api.workspace()
+        first = api.post(
+            "/api/v1/providers",
+            {"provider": "anthropic", "host": "https://api.anthropic.com", "model": "claude-haiku-5-5", "api_key": "sk-ant-94-a"},
+        ).json()["provider_session_id"]
+        first_preview = api.preview(workspace, first)
+        assert first_preview["budget"]["context_window_source"] == "provider-default"
+        assert first_preview["budget"]["limits"]["context_window_tokens"] == 200_000
+        receipt = api.consent(workspace, first, first_preview["context_hash"]).json()["consent_receipt_id"]
+
+        second = api.post(
+            "/api/v1/providers",
+            {"provider": "openai", "host": "https://api.openai.com/v1", "model": "gpt-6-luna", "api_key": "sk-94-b"},
+        ).json()["provider_session_id"]
+        second_preview = api.preview(workspace, second)
+        assert second_preview["budget"]["context_window_source"] == "fallback"
+        assert second_preview["budget"]["limits"]["context_window_tokens"] == 4096
+
+        response = api.submit(request(workspace, provider=second, context=second_preview["context_hash"], receipt=receipt))
+        assert response.status_code == 403
+        assert response.json()["error"]["code"] == "consent-required"
+    assert provider.count_calls == 0
+    assert provider.messages == []
+    assert factory.contexts == []

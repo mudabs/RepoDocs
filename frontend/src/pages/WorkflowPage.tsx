@@ -453,9 +453,11 @@ export function WorkflowPage({ draftId, onSessionReady, onDraftRoute, onViewJob 
       model: opts.model,
       ...(opts.api_key ? { api_key: opts.api_key } : {}),
     })
-    setProviderSession(sess)
+    // Show the provider as connected only together with the preview bound to it. A step taken on the older
+    // preview would not know the provider is external and could skip the consent review.
     const updatedPreview = await client.preview(workspaceId, sess.provider_session_id)
     setPreview(updatedPreview)
+    setProviderSession(sess)
   }
 
   async function handleProviderDisconnect() {
@@ -496,8 +498,10 @@ export function WorkflowPage({ draftId, onSessionReady, onDraftRoute, onViewJob 
     }
   }
 
+  const consentMissing = mode === 'architecture' && Boolean(preview?.provider_is_external) && !consentReceiptId
+
   async function handleSubmit() {
-    if (!workspaceId || !preview) return
+    if (!workspaceId || !preview || consentMissing) return
     clearError()
     setBusy(true)
     try {
@@ -844,7 +848,14 @@ export function WorkflowPage({ draftId, onSessionReady, onDraftRoute, onViewJob 
                   <input
                     type="url"
                     value={ghUrl}
-                    onChange={e => { setGhUrl(e.target.value); setResolvedBranch(null) }}
+                    onChange={e => {
+                      // A new URL invalidates the previous pin, so an older repository or SHA is never used for it.
+                      setGhUrl(e.target.value)
+                      setResolvedBranch(null)
+                      setGhOwner('')
+                      setGhRepo('')
+                      setGhRevision('')
+                    }}
                     placeholder="https://github.com/mudabs/EventShare"
                     aria-label="GitHub repository URL"
                     style={{ flex: 1, minWidth: '220px', padding: '0.4rem 0.6rem', border: '1px solid #d1d5db', borderRadius: '0.3rem', fontSize: '0.9rem' }}
@@ -1310,7 +1321,7 @@ export function WorkflowPage({ draftId, onSessionReady, onDraftRoute, onViewJob 
               <button
                 type="button"
                 onClick={handleSubmit}
-                disabled={busy}
+                disabled={busy || consentMissing}
                 style={{
                   padding: '0.5rem 1rem',
                   background: busy ? '#93c5fd' : '#2563eb',

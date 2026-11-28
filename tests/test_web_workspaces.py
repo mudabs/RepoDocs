@@ -636,3 +636,30 @@ def test_commit_tree_identity_is_resolved_without_following_a_response_url(tmp_p
     checkout = workspace.root / "sources" / "octo-shop"
     assert git(checkout, "remote", "get-url", "origin") == "https://github.com/octo/shop.git"
     assert git(checkout, "rev-parse", "HEAD^{tree}") == remote.document["sha"]
+
+
+def test_pinned_github_checkout_keeps_files_beyond_the_windows_path_limit(tmp_path: Path) -> None:
+    """Regression: without core.longpaths, Git for Windows skips deep files and the pinned checkout looks dirty."""
+
+    repository = copy_fixture(tmp_path / "long")
+    deep = repository.joinpath(*(f"segment{index:02d}" + "x" * 40 for index in range(5)), "TooManyRequestsException.java")
+    try:
+        deep.parent.mkdir(parents=True)
+        deep.write_text("class TooManyRequestsException {}\n", encoding="utf-8")
+    except OSError:
+        pytest.skip("this machine cannot create paths beyond the Windows limit")
+    git(repository, "init", "-q")
+    git(repository, "config", "user.email", "t@example.com")
+    git(repository, "config", "user.name", "T")
+    git(repository, "-c", "core.longpaths=true", "add", ".")
+    git(repository, "-c", "core.longpaths=true", "commit", "-q", "-m", "deep")
+    remote = Remote(repository)
+
+    workspace = make_manager(tmp_path / "srv", remote).acquire("Shop", [GitHubSource("octo", "shop", remote.sha)])
+    checkout = workspace.root / "sources" / "octo-shop"
+    copied = checkout / deep.relative_to(repository)
+    assert len(str(copied)) > 260
+    assert copied.is_file()
+    record = workspace.sources[0]
+    assert record.git["git_revision"] == remote.sha
+    assert record.git["working_tree_state"] == "clean"
