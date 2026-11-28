@@ -90,6 +90,14 @@ class StoreError(RuntimeError):
     """Raised when the web metadata store is corrupt, locked, or incompatible."""
 
 
+class DraftConflict(StoreError):
+    """A draft write named a version that is no longer current (another tab saved first)."""
+
+
+class DraftNotOwned(StoreError):
+    """The draft ID belongs to another profile; callers report it as not found."""
+
+
 @dataclass(frozen=True)
 class StoredSession:
     profile_id: str
@@ -438,7 +446,7 @@ class WebStore:
             ).fetchone()
             if row is None:
                 if expected_version is not None and expected_version != 0:
-                    raise StoreError("Draft version conflict")
+                    raise DraftConflict("Draft version conflict")
                 version = 1
                 conn.execute(
                     "INSERT INTO drafts(draft_id, profile_id, version, data_json, updated_at) VALUES (?, ?, ?, ?, ?)",
@@ -446,10 +454,10 @@ class WebStore:
                 )
             else:
                 if row["profile_id"] != profile_id:
-                    raise StoreError("Draft belongs to another profile")
+                    raise DraftNotOwned("draft")
                 current_version = int(row["version"])
                 if expected_version is not None and expected_version != current_version:
-                    raise StoreError(f"Draft version conflict: expected {expected_version}, found {current_version}")
+                    raise DraftConflict(f"Draft version conflict: expected {expected_version}, found {current_version}")
                 version = current_version + 1
                 conn.execute(
                     "UPDATE drafts SET version = ?, data_json = ?, updated_at = ? WHERE draft_id = ?",

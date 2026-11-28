@@ -69,10 +69,29 @@ def test_draft_persistence_optimistic_concurrency_and_secret_rejection(tmp_path:
         )
         assert conflict.status_code == 409
 
-        # Another session cannot read draft_1
+        # Another session can neither read nor overwrite draft_1, and is not told it exists
         with TestClient(app, base_url=ORIGIN) as other:
-            other.post("/api/v1/session", headers={"Origin": ORIGIN})
+            other_csrf = other.post("/api/v1/session", headers={"Origin": ORIGIN}).json()["csrf_token"]
             assert other.get("/api/v1/drafts/draft_1", headers={"Origin": ORIGIN}).status_code == 404
+            taken = other.put("/api/v1/drafts/draft_1", json={"data": {"workspace_name": "Mine"}},
+                              headers={"Origin": ORIGIN, "x-csrf-token": other_csrf})
+            assert taken.status_code == 404 and "profile" not in taken.text
+
+        # A busy or failing store is reported as unavailable, not as a draft conflict
+        from repodocs.web.store import StoreError
+
+        def broken(*args: object, **kwargs: object) -> None:
+            raise StoreError("database is locked")
+
+        store = app.state.jobs._store
+        assert store is not None
+        original = store.save_draft
+        store.save_draft = broken  # type: ignore[method-assign]
+        try:
+            busy = client.put("/api/v1/drafts/draft_1", json={"data": {"workspace_name": "Shop"}}, headers=headers)
+            assert busy.status_code == 503 and busy.json()["error"]["code"] == "store-unavailable"
+        finally:
+            store.save_draft = original  # type: ignore[method-assign]
 
 
 def test_lost_submit_response_recovers_idempotently_across_restart(tmp_path: Path) -> None:

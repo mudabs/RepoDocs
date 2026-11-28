@@ -642,14 +642,18 @@ class JobService:
         self._validate_draft_data(payload["data"])
         if self._store is None:
             return {"draft_id": draft_id, "profile_id": access.owner, "version": 1, "data": payload["data"]}
-        from .store import StoreError
+        from .store import DraftConflict, DraftNotOwned, StoreError
 
         try:
             return self._store.save_draft(
                 draft_id, access.owner, payload["data"], expected_version=expected, now=self._clock()
             )
-        except StoreError as exc:
+        except DraftNotOwned:
+            raise _not_found("draft") from None
+        except DraftConflict as exc:
             raise JobError("conflict", str(exc), 409) from None
+        except StoreError:
+            raise JobError("store-unavailable", "The saved-history store is busy or unavailable; try again", 503) from None
 
     def delete_draft(self, access: Access, draft_id: str) -> None:
         if self._store is None or not self._store.delete_draft(draft_id, access.owner):
