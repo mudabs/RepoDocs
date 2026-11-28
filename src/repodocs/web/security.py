@@ -16,10 +16,13 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from http.cookies import CookieError, SimpleCookie
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 from urllib.parse import urlsplit, urlunsplit
 
 from ..errors import RepoDocsError
+
+if TYPE_CHECKING:
+    from .store import WebStore
 
 T = TypeVar("T")
 
@@ -197,24 +200,57 @@ class SessionGuard:
         ttl: float = 8 * 3600,
         max_sessions: int = 32,
         clock: Callable[[], float] = time.monotonic,
+        wall_clock: Callable[[], float] = time.time,
+        store: "WebStore | None" = None,
     ) -> None:
         self._config = config
         self._ttl = ttl
         self._max = max_sessions
         self._clock = clock
+        self._wall_clock = wall_clock
+        self._store = store
         self._lock = threading.Lock()
         self._sessions: dict[bytes, _Session] = {}
 
     def open_session(self, headers: Mapping[str, str], auth_token: str | None = None) -> Bootstrap:
-        self._check_origin(_lower(headers), unsafe=False)
+        lower = _lower(headers)
+        self._check_origin(lower, unsafe=False)
         if self._config.exposed and not (auth_token and _same(auth_token, self._config.auth_token or "")):
             raise SessionRequired("A valid authentication token is required")
-        cookie, csrf, owner = secrets.token_urlsafe(32), secrets.token_urlsafe(32), secrets.token_hex(8)
+
+        cookie, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
+        old_digest: bytes | None = None
+        owner: str | None = None
+        if self._store is not None:
+            raw_cookie = self._extract_cookie(lower.get("cookie", ""))
+            if raw_cookie:
+                candidate_digest = _digest(raw_cookie)
+                existing = self._store.get_session(candidate_digest, now=self._wall_clock())
+                if existing is not None:
+                    owner = existing.profile_id
+                    old_digest = candidate_digest
+            if owner is None:
+                owner = f"prof_{secrets.token_hex(8)}"
+                self._store.create_profile(owner, now=self._wall_clock())
+        else:
+            owner = secrets.token_hex(8)
+
         with self._lock:
             self._purge()
+            if old_digest is not None:
+                self._sessions.pop(old_digest, None)
             if len(self._sessions) >= self._max:
                 raise LimitExceeded("Too many active sessions")
             self._sessions[_digest(cookie)] = _Session(owner, _digest(csrf), self._clock() + self._ttl)
+        if self._store is not None:
+            self._store.put_session(
+                _digest(cookie),
+                owner,
+                _digest(csrf),
+                self._wall_clock() + self._ttl,
+                replace_token_hash=old_digest,
+                now=self._wall_clock(),
+            )
         attributes = f"Path=/; HttpOnly; SameSite=Strict; Max-Age={int(self._ttl)}"
         if self._config.exposed:
             attributes += "; Secure"
@@ -236,6 +272,8 @@ class SessionGuard:
         with self._lock:
             for key in [k for k, s in self._sessions.items() if s.owner == access.owner]:
                 del self._sessions[key]
+        if self._store is not None:
+            self._store.delete_profile_sessions(access.owner)
 
     def is_live(self, owner: str) -> bool:
         with self._lock:
@@ -247,14 +285,28 @@ class SessionGuard:
         for key in [k for k, s in self._sessions.items() if s.expires_at <= now]:
             del self._sessions[key]
 
-    def _session(self, cookie_header: str) -> _Session:
+    @staticmethod
+    def _extract_cookie(cookie_header: str) -> str | None:
         try:
             morsel = SimpleCookie(cookie_header).get(COOKIE_NAME)
         except CookieError:
-            morsel = None
+            return None
+        return morsel.value if morsel else None
+
+    def _session(self, cookie_header: str) -> _Session:
+        raw = self._extract_cookie(cookie_header)
+        token_hash = _digest(raw) if raw else None
         with self._lock:
             self._purge()
-            session = self._sessions.get(_digest(morsel.value)) if morsel else None
+            session = self._sessions.get(token_hash) if token_hash is not None else None
+        if session is None and token_hash is not None and self._store is not None:
+            stored = self._store.get_session(token_hash, now=self._wall_clock())
+            if stored is not None:
+                remaining = max(1.0, stored.expires_at - self._wall_clock())
+                session = _Session(stored.profile_id, stored.csrf_digest, self._clock() + remaining)
+                with self._lock:
+                    if len(self._sessions) < self._max:
+                        self._sessions[token_hash] = session
         if session is None:
             raise SessionRequired("A session is required")
         return session

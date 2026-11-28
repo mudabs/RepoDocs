@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import shutil
 import stat
 import threading
 import time
@@ -31,8 +32,13 @@ from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Callable, Mapping
+from typing import TYPE_CHECKING, Any, Callable, Mapping
 from urllib.parse import urlsplit
+
+from .store import StoreError
+
+if TYPE_CHECKING:
+    from .store import WebStore
 
 from .. import service
 from ..ai.budgets import PriceProfile, RunLimits, RunStopped, ledger_for
@@ -362,6 +368,7 @@ class JobService:
         *,
         provider_factory: ProviderFactory = build_provider,
         clock: Callable[[], float] = time.time,
+        store: "WebStore | None" = None,
     ) -> None:
         self.settings = settings
         self._manager = workspaces
@@ -369,6 +376,7 @@ class JobService:
         self._consent = consent
         self._factory = provider_factory
         self._clock = clock
+        self._store = store
         self._cond = threading.Condition()
         self._workspaces: dict[str, _Workspace] = {}
         self._jobs: dict[str, _Job] = {}
@@ -400,10 +408,13 @@ class JobService:
             directory = None if root is None else root / JOBS_DIRECTORY
             if directory is None or directory.is_symlink() or not directory.is_dir():
                 continue
+            recorded = self._recorded_owner(workspace_id)
             for path in sorted(directory.glob("job_*.json"))[: self.settings.max_jobs_per_workspace]:
                 job = self._load(path, workspace_id)
                 if job is None:
                     continue
+                if recorded is not None and job.owner != recorded:
+                    continue  # file and metadata disagree about the owner: show it to nobody
                 self._workspaces.setdefault(workspace_id, _Workspace(workspace_id, job.owner, root))  # type: ignore[arg-type]
                 if job.state in ACTIVE_STATES:
                     started = job.stage in ("discover", "generate", "validate")
@@ -419,8 +430,27 @@ class JobService:
                         job.usage = dict(NO_REQUESTS)
                     job.sequence += 1
                     self._persist(job)
+                elif self._store is not None:
+                    try:
+                        self._store_job(job)  # reconcile history that a failed metadata write left behind
+                    except StoreError:
+                        pass
                 self._jobs[job.job_id] = job
                 self._keys[(job.owner, job.workspace_id, job.idempotency_key)] = job.job_id
+        if self._store is not None:
+            for workspace_id in sorted(self._manager.owned_workspaces()):
+                if workspace_id in self._workspaces:
+                    continue
+                record = self._store.get_workspace(workspace_id)
+                root = _owned_path(self._manager.settings.store_root, workspace_id)
+                if record is not None and root is not None:
+                    self._workspaces[workspace_id] = _Workspace(workspace_id, record["profile_id"], root)
+
+    def _recorded_owner(self, workspace_id: str) -> str | None:
+        if self._store is None:
+            return None
+        record = self._store.get_workspace(workspace_id)
+        return None if record is None else str(record["profile_id"])
 
     def _load(self, path: Path, workspace_id: str) -> _Job | None:
         try:
@@ -444,6 +474,33 @@ class JobService:
             "record_version": RECORD_VERSION, "owner": job.owner, "idempotency_key": job.idempotency_key,
             "request_hash": job.request_hash, "artifacts": job.artifacts, "created_at": job.created_at, "job": job.public(),
         })
+        if self._store is not None:
+            # The job file above is the authoritative record and is rebuilt into the store's history on restart. A locked
+            # or failing metadata store must never stop a worker or leave a job without its terminal state.
+            try:
+                self._store_job(job)
+            except StoreError:
+                pass
+
+    def _store_job(self, job: _Job) -> None:
+        assert self._store is not None
+        self._store.save_job(
+            job_id=job.job_id,
+            workspace_id=job.workspace_id,
+            profile_id=job.owner,
+            idempotency_key=job.idempotency_key,
+            request_hash=job.request_hash,
+            state=job.state,
+            stage=job.stage,
+            sequence=job.sequence,
+            error=job.error,
+            result=job.result,
+            usage=job.usage,
+            budget=job.budget,
+            artifacts=job.artifacts,
+            created_at=job.created_at,
+            updated_at=self._clock(),
+        )
 
     # ------------------------------------------------------------------ workspaces and previews
     def create_workspace(self, access: Access, payload: Any) -> dict[str, Any]:
@@ -471,9 +528,79 @@ class JobService:
         config = workspace.config
         config.ai = replace(config.ai, limits=self.settings.run_limits, prices=self.settings.prices)
         config.save()
+        source_dicts = [record.to_dict() for record in workspace.sources]
+        if self._store is not None:
+            try:
+                self._store.save_workspace(workspace.workspace_id, access.owner, payload["name"], source_dicts, now=self._clock())
+            except StoreError:
+                shutil.rmtree(workspace.root, ignore_errors=True)
+                raise JobError("store-unavailable", "The saved-history store is unavailable; no workspace was kept. Try again", 503) from None
         with self._cond:
             self._workspaces[workspace.workspace_id] = _Workspace(workspace.workspace_id, access.owner, workspace.root)
-        return {"workspace_id": workspace.workspace_id, "sources": [record.to_dict() for record in workspace.sources]}
+        return {"workspace_id": workspace.workspace_id, "sources": source_dicts}
+
+    # ------------------------------------------------------------------ profile & history (#95)
+    def get_profile(self, access: Access) -> dict[str, Any]:
+        if self._store is None:
+            return {"profile_id": access.owner, "display_name": None, "preferences": {}}
+        return self._store.get_profile(access.owner) or {"profile_id": access.owner, "display_name": None, "preferences": {}}
+
+    def update_profile(self, access: Access, payload: Any) -> dict[str, Any]:
+        if not isinstance(payload, dict) or set(payload) - {"display_name", "preferences"}:
+            raise _invalid("Profile updates may hold only display_name and preferences")
+        display_name = payload.get("display_name", ...)
+        if display_name is not ... and display_name is not None and (not isinstance(display_name, str) or len(display_name) > 120):
+            raise _invalid("display_name must be null or a string of at most 120 characters")
+        preferences = payload.get("preferences")
+        if preferences is not None and not isinstance(preferences, dict):
+            raise _invalid("preferences must be a JSON object")
+        if self._store is None:
+            return {"profile_id": access.owner, "display_name": None if display_name is ... else display_name, "preferences": preferences or {}}
+        updated = self._store.update_profile(access.owner, display_name=display_name, preferences=preferences, now=self._clock())
+        if updated is None:
+            raise _not_found("profile")
+        return updated
+
+    def list_workspaces(self, access: Access) -> list[dict[str, Any]]:
+        if self._store is not None:
+            records = self._store.list_workspaces(access.owner)
+            items: list[dict[str, Any]] = []
+            for rec in records:
+                ws_id = rec["workspace_id"]
+                if _owned_path(self._manager.settings.store_root, ws_id) is None:
+                    continue
+                ws_jobs = [job.public() for job in self._jobs.values() if job.workspace_id == ws_id and job.owner == access.owner]
+                ws_jobs.sort(key=lambda j: j["sequence"], reverse=True)
+                items.append({**rec, "latest_job": ws_jobs[0] if ws_jobs else None})
+            return items
+        return [
+            {"workspace_id": ws.workspace_id, "profile_id": ws.owner, "name": ws.workspace_id, "sources": [], "saved": True, "latest_job": None}
+            for ws in self._workspaces.values()
+            if ws.owner == access.owner and _owned_path(self._manager.settings.store_root, ws.workspace_id) is not None
+        ]
+
+    def list_workspace_jobs(self, access: Access, workspace_id: str) -> list[dict[str, Any]]:
+        with self._cond:
+            self._workspace(access, workspace_id)
+            jobs = [job.public() for job in self._jobs.values() if job.workspace_id == workspace_id and job.owner == access.owner]
+        jobs.sort(key=lambda j: j["job_id"])
+        return jobs
+
+    def delete_workspace(self, access: Access, workspace_id: str) -> None:
+        with self._cond:
+            workspace = self._workspace(access, workspace_id)
+            if workspace.busy or any(job.workspace_id == workspace_id and job.state in ACTIVE_STATES for job in self._jobs.values()):
+                raise JobError("busy", "Cannot delete a workspace with an active job", 409)
+            owned = _owned_path(self._manager.settings.store_root, workspace_id)
+            if owned is None:
+                raise _not_found("workspace")
+            shutil.rmtree(owned, ignore_errors=False)
+            self._workspaces.pop(workspace_id, None)
+            for jid in [jid for jid, job in self._jobs.items() if job.workspace_id == workspace_id]:
+                job = self._jobs.pop(jid)
+                self._keys.pop((job.owner, job.workspace_id, job.idempotency_key), None)
+            if self._store is not None:
+                self._store.delete_workspace(workspace_id)
 
     def _workspace(self, access: Access, workspace_id: Any) -> _Workspace:
         workspace = self._workspaces.get(workspace_id) if isinstance(workspace_id, str) else None

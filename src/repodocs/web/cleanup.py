@@ -14,9 +14,13 @@ import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .jobs import CONTRACT_VERSION, JOBS_DIRECTORY, RECORD_VERSION
 from .workspaces import MARKER_NAME, WORKSPACE_ID, _owned_path
+
+if TYPE_CHECKING:
+    from .store import WebStore
 
 TERMINAL_STATES = frozenset(
     {"succeeded", "partial", "budget-exhausted", "cancelled", "failed", "interrupted", "stale"}
@@ -112,6 +116,8 @@ def cleanup_workspaces(
     *,
     max_age_seconds: float,
     now: float | None = None,
+    store: "WebStore | None" = None,
+    include_saved: bool = False,
 ) -> CleanupReport:
     """Remove marker-owned workspaces older than ``max_age_seconds`` without active or uncertain jobs."""
 
@@ -150,12 +156,17 @@ def cleanup_workspaces(
         if has_active:
             skipped_active.append(entry.name)
             continue
+        if store is not None and not include_saved and store.is_workspace_saved(entry.name):
+            skipped_active.append(entry.name)
+            continue
         latest_activity = _latest_activity_time(owned, latest_job_time)
         if latest_activity is None:
             skipped_active.append(entry.name)
             continue
         if latest_activity <= cutoff:
             shutil.rmtree(owned, ignore_errors=False)
+            if store is not None:
+                store.delete_workspace(entry.name)
             deleted.append(entry.name)
 
     return CleanupReport(
