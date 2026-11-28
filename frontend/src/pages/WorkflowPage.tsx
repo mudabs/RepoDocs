@@ -505,7 +505,14 @@ export function WorkflowPage({ onViewJob }: { onViewJob: (jobId: string) => void
                   <input
                     type="url"
                     value={ghUrl}
-                    onChange={e => { setGhUrl(e.target.value); setResolvedBranch(null) }}
+                    onChange={e => {
+                      // A new URL invalidates the previous pin, so an older repository or SHA is never used for it.
+                      setGhUrl(e.target.value)
+                      setResolvedBranch(null)
+                      setGhOwner('')
+                      setGhRepo('')
+                      setGhRevision('')
+                    }}
                     placeholder="https://github.com/mudabs/EventShare"
                     aria-label="GitHub repository URL"
                     style={{ flex: 1, minWidth: '220px', padding: '0.4rem 0.6rem', border: '1px solid #d1d5db', borderRadius: '0.3rem', fontSize: '0.9rem' }}
